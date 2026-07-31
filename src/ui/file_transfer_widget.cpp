@@ -14,6 +14,8 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QDragLeaveEvent>
+#include <QStyledItemDelegate>
+#include <QPainter>
 #include <QMimeData>
 #include <QList>
 
@@ -46,17 +48,70 @@ protected:
     }
 };
 
+// Paints the currently-targeted drop folder with a highlighted row.
+class LocalDropDelegate : public QStyledItemDelegate {
+    Q_OBJECT
+public:
+    explicit LocalDropDelegate(QTreeView* tree, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), m_tree(tree) {}
+
+    void setDropIndex(const QModelIndex& idx) { m_dropIndex = idx; }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override {
+        QStyleOptionViewItem opt = option;
+        if (index == m_dropIndex && index.isValid() && m_tree) {
+            int w = m_tree->viewport()->width();
+            QRect r(0, opt.rect.y(), w, opt.rect.height());
+            painter->fillRect(r, QColor(43, 108, 255, 70));
+        }
+        QStyledItemDelegate::paint(painter, opt, index);
+    }
+
+private:
+    QTreeView* m_tree = nullptr;
+    QModelIndex m_dropIndex;
+};
+
 // Local tree acts as a drop target for the custom remote-path MIME.
 class LocalDropTree : public QTreeView {
     Q_OBJECT
 public:
-    explicit LocalDropTree(QWidget* parent = nullptr) : QTreeView(parent) {}
+    explicit LocalDropTree(QWidget* parent = nullptr) : QTreeView(parent) {
+        m_delegate = new LocalDropDelegate(this, this);
+        setItemDelegate(m_delegate);
+    }
 
 signals:
     void remoteDropped(const QMimeData* mime, const QModelIndex& index);
     void dragActiveChanged(bool active);
+    void dropTargetChanged(const QString& path);
 
 private:
+    // Resolve the folder a drop at point p would land in: the hovered dir,
+    // or the parent folder of a hovered file.
+    QModelIndex folderIndexAt(const QPoint& p) const {
+        QModelIndex idx = indexAt(p);
+        if (!idx.isValid()) return QModelIndex();
+        auto* fs = qobject_cast<QFileSystemModel*>(model());
+        if (fs && !fs->isDir(idx)) idx = fs->parent(idx);
+        return idx;
+    }
+
+    void updateDropTarget(const QPoint& p) {
+        QModelIndex folder = folderIndexAt(p);
+        m_delegate->setDropIndex(folder);
+        viewport()->update();
+
+        QString path;
+        auto* fs = qobject_cast<QFileSystemModel*>(model());
+        if (fs && folder.isValid()) path = fs->filePath(folder);
+        if (path != m_lastTarget) {
+            m_lastTarget = path;
+            emit dropTargetChanged(path);
+        }
+    }
+
     void setActive(bool active) {
         if (m_active == active) return;
         m_active = active;
@@ -64,8 +119,18 @@ private:
         style()->unpolish(this);
         style()->polish(this);
         emit dragActiveChanged(active);
+        if (!active) {
+            m_delegate->setDropIndex(QModelIndex());
+            viewport()->update();
+            if (!m_lastTarget.isEmpty()) {
+                m_lastTarget.clear();
+                emit dropTargetChanged(QString());
+            }
+        }
     }
 
+    LocalDropDelegate* m_delegate = nullptr;
+    QString m_lastTarget;
     bool m_active = false;
 
 protected:
@@ -74,6 +139,7 @@ protected:
             e->setDropAction(Qt::CopyAction);
             e->accept();
             setActive(true);
+            updateDropTarget(e->pos());
         } else {
             e->ignore();
         }
@@ -84,6 +150,7 @@ protected:
             e->setDropAction(Qt::CopyAction);
             e->accept();
             setActive(true);
+            updateDropTarget(e->pos());
         } else {
             e->ignore();
         }
@@ -470,7 +537,14 @@ void FileTransferWidget::setupUI() {
             m_dropHint->setProperty("dropping", active);
             m_dropHint->style()->unpolish(m_dropHint);
             m_dropHint->style()->polish(m_dropHint);
-            m_dropHint->setText(active ? "松开鼠标即可下载到该目录" : "将远程文件或目录拖拽到此处即可下载");
+            if (!active) m_dropHint->setText("将远程文件或目录拖拽到此处即可下载");
+        }
+    });
+    connect(dropTree, &LocalDropTree::dropTargetChanged, this, [this](const QString& path) {
+        if (m_dropHint) {
+            m_dropHint->setText(path.isEmpty()
+                ? "将远程文件或目录拖拽到此处即可下载"
+                : QString("松开鼠标即可下载到：%1").arg(path));
         }
     });
 
