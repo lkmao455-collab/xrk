@@ -127,6 +127,16 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         m_toolbarLayout->addWidget(m_privacyButton);
         m_toolbarLayout->addStretch(1);
     }
+
+    // Toolbar buttons must NOT take keyboard focus, otherwise clicking one
+    // (e.g. 隐私屏) steals focus from this widget and remote keystrokes stop
+    // being delivered. The remote desktop keeps focus so keyboard control of
+    // the host keeps working after toggling any toolbar action.
+    for (QPushButton* b : {m_annotateButton, m_annotateColorButton,
+                            m_annotateClearButton, m_watermarkButton,
+                            m_micButton, m_privacyButton}) {
+        if (b) b->setFocusPolicy(Qt::NoFocus);
+    }
 }
 
 RemoteDesktopWidget::~RemoteDesktopWidget() {

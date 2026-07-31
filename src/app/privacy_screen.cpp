@@ -58,8 +58,11 @@ bool PrivacyScreen::isVisible() const {
 void PrivacyScreen::setupOverlay() {
     m_overlay = new QWidget(nullptr,
         Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint |
-        Qt::Tool | Qt::BypassWindowManagerHint | Qt::WindowTransparentForInput);
-    
+        Qt::Tool | Qt::BypassWindowManagerHint | Qt::WindowTransparentForInput |
+        Qt::WindowDoesNotAcceptFocus);
+
+    m_overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    m_overlay->setFocusPolicy(Qt::NoFocus);
     m_overlay->setStyleSheet(
         "background-color: #000000;"
     );
