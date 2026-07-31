@@ -434,6 +434,12 @@ void FileTransferWidget::setupUI() {
             this, &FileTransferWidget::onRemoteDropped);
     localLayout->addWidget(m_localTree);
 
+    QLabel* dropHint = new QLabel("将远程文件或目录拖拽到此处即可下载", localPanel);
+    dropHint->setObjectName("drop-hint");
+    dropHint->setWordWrap(true);
+    dropHint->setAlignment(Qt::AlignCenter);
+    localLayout->addWidget(dropHint);
+
     // ---- Remote panel ----
     QWidget* remotePanel = new QWidget();
     QVBoxLayout* remoteLayout = new QVBoxLayout(remotePanel);

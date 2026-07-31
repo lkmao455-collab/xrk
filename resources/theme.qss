@@ -592,6 +592,16 @@ QToolTip {
     padding: 4px 8px;
 }
 
+/* ---- File transfer: drag-to-download hint ---- */
+#drop-hint {
+    color: #8a93b0;
+    font-size: 11px;
+    padding: 6px 8px;
+    background-color: #11182b;
+    border: 1px dashed #2a3552;
+    border-radius: 6px;
+}
+
 /* ---- Dialog ---- */
 QDialog {
     background-color: #1a1a2e;
