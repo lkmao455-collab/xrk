@@ -165,6 +165,12 @@ public:
     int jpegQuality() const { return m_jpegQuality; }
     void setJpegQuality(int quality);
 
+    // Controller-pinned quality gear. AUTO/ADAPTIVE resumes measured bandwidth
+    // adaptation; any other level locks jpegQuality/captureFps. gameMode prefers
+    // the H264 encoder at a higher frame rate for lower interactive latency.
+    void setQualityLevel(QualityLevel level, bool gameMode = false);
+    QualityLevel qualityMode() const { return m_qualityMode; }
+
     // Phase 5: host-side connection consent. After a client authenticates, the
     // session does NOT start until the host user approves (grantConsent) or is
     // rejected (denyConsent).
@@ -298,6 +304,13 @@ private:
     int m_consecutiveUnderload = 0;
     int m_qualityLevelIndex = 3; // 0=min, 4=max quality step
     static constexpr int QUALITY_STEPS[5] = {30, 50, 65, 80, 95};
+
+    // Controller-selected quality gear. When m_autoAdapt is false the measured
+    // bandwidth adaptation in onQualityTimer() is suspended and the pinned
+    // jpegQuality/captureFps stay fixed.
+    QualityLevel m_qualityMode = QualityLevel::AUTO;
+    bool m_autoAdapt = true;
+    bool m_gameMode = false;
 
     // P2P / relay
     NatTraversal* m_nat = nullptr;

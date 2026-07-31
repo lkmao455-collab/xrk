@@ -240,6 +240,18 @@
 - [x] 输入穿透（Qt::WindowTransparentForInput，远控不受影响）
 - [x] 启用时立即生效（setPrivacyScreenEnabled修复：无需等客户端重连）
 
+### 画质/延迟档位（Task 26）
+- [x] 新增 MessageType::SET_QUALITY + QualityRequest{level,gameMode} 协议
+- [x] 协议编解码 encode/decodeQualityRequest（protocol_manager）
+- [x] 控制器发送档位：RemoteController::sendQualityLevel(QualityLevel,bool)
+- [x] 主机应用档位：Host::setQualityLevel
+  - AUTO/ADAPTIVE 恢复带宽自适应（onQualityTimer 在 m_autoAdapt=false 时仅上报）
+  - 流畅=JPEG45/24fps，标准=JPEG65/30fps，高清=JPEG82/30fps
+  - 游戏=ULTRA JPEG92/60fps + 尝试切 H264 低延迟编码器（无 libx264 自动回退 JPEG）
+- [x] 工具栏画质下拉（自动/流畅/标准/高清/游戏），切换即下发，不抢键盘焦点
+- [x] 新会话重置为「自动」
+- [x] 单测：协议往返 + 主机档位映射（headless）
+
 ### 用户体验
 - [x] F11全屏切换
 - [x] Escape断开连接

@@ -823,4 +823,26 @@ QualityInfo ProtocolManager::decodeQualityInfo(const QByteArray& data) {
     return info;
 }
 
+QByteArray ProtocolManager::encodeQualityRequest(const QualityRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(req.level);
+    stream << static_cast<uint8_t>(req.gameMode ? 1 : 0);
+    return data;
+}
+
+QualityRequest ProtocolManager::decodeQualityRequest(const QByteArray& data) {
+    QualityRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint8_t level = 0;
+    uint8_t game = 0;
+    stream >> level;
+    stream >> game;
+    req.level = static_cast<QualityLevel>(level);
+    req.gameMode = (game != 0);
+    return req;
+}
+
 } // namespace xrk

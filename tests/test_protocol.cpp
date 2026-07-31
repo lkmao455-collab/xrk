@@ -226,3 +226,46 @@ TEST_F(ProtocolTest, MessageCodecLargePayload) {
     EXPECT_EQ(decodedPayload, payload);
     EXPECT_EQ(decodedSessionId, sessionId);
 }
+
+TEST_F(ProtocolTest, EncodeQualityRequest) {
+    struct Case { QualityLevel level; bool game; };
+    Case cases[] = {
+        {QualityLevel::AUTO, false},
+        {QualityLevel::LOW, false},
+        {QualityLevel::MEDIUM, false},
+        {QualityLevel::HIGH, false},
+        {QualityLevel::ULTRA, true},
+    };
+    for (const Case& c : cases) {
+        QualityRequest req;
+        req.level = c.level;
+        req.gameMode = c.game;
+
+        QByteArray encoded = ProtocolManager::encodeQualityRequest(req);
+        EXPECT_FALSE(encoded.isEmpty());
+
+        QualityRequest decoded = ProtocolManager::decodeQualityRequest(encoded);
+        EXPECT_EQ(decoded.level, c.level);
+        EXPECT_EQ(decoded.gameMode, c.game);
+    }
+}
+
+TEST_F(ProtocolTest, QualityRequestRoundTripThroughMessage) {
+    QualityRequest req;
+    req.level = QualityLevel::HIGH;
+    req.gameMode = false;
+
+    QByteArray payload = ProtocolManager::encodeQualityRequest(req);
+    QByteArray message = ProtocolManager::encode(MessageType::SET_QUALITY, payload, "sess-1");
+
+    MessageType type;
+    QByteArray outPayload;
+    QString sessionId;
+    ASSERT_TRUE(ProtocolManager::decode(message, type, outPayload, sessionId));
+    EXPECT_EQ(type, MessageType::SET_QUALITY);
+    EXPECT_EQ(sessionId, "sess-1");
+
+    QualityRequest decoded = ProtocolManager::decodeQualityRequest(outPayload);
+    EXPECT_EQ(decoded.level, QualityLevel::HIGH);
+    EXPECT_FALSE(decoded.gameMode);
+}

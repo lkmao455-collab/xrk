@@ -63,6 +63,7 @@ enum class MessageType : uint32_t {
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
     PRIVACY_SCREEN = 180,
+    SET_QUALITY = 181,
     CONSENT_REQUEST = 190,
     CONSENT_RESPONSE = 191
 };
@@ -120,6 +121,15 @@ struct QualityInfo {
     int targetFps = 30;
     int bandwidthKbps = 0;
     int64_t roundTripMs = 0;
+};
+
+// Controller -> Host request to pin a quality/latency gear. When level is
+// AUTO/ADAPTIVE the host resumes its measured bandwidth adaptation; otherwise
+// it locks jpegQuality/captureFps (and, in gameMode, prefers the H264 encoder
+// at a higher frame rate for lower interactive latency).
+struct QualityRequest {
+    QualityLevel level = QualityLevel::AUTO;
+    bool gameMode = false;
 };
 
 struct DeviceInfo {

@@ -601,6 +601,50 @@ void Host::setJpegQuality(int quality) {
     }
 }
 
+void Host::setQualityLevel(QualityLevel level, bool gameMode) {
+    m_qualityMode = level;
+    m_gameMode = gameMode;
+
+    if (level == QualityLevel::AUTO || level == QualityLevel::ADAPTIVE) {
+        m_autoAdapt = true;
+        LOG_INFO("Host: Quality gear AUTO (resume adaptive bandwidth control)");
+        sendQualityInfo();
+        return;
+    }
+
+    m_autoAdapt = false;
+
+    int jpeg = 80;
+    int fps = 30;
+    switch (level) {
+        case QualityLevel::LOW:    jpeg = 45; fps = 24; break;
+        case QualityLevel::MEDIUM: jpeg = 65; fps = 30; break;
+        case QualityLevel::HIGH:   jpeg = 82; fps = 30; break;
+        case QualityLevel::ULTRA:  jpeg = 92; fps = 30; break;
+        default:                   jpeg = 80; fps = 30; break;
+    }
+
+    // Game/low-latency mode: raise the capture frame rate and prefer the H264
+    // encoder for lower per-frame delay. If H264 is unavailable in this build
+    // (e.g. no libx264), setEncoderType() falls back to JPEG transparently.
+    if (gameMode) {
+        fps = 60;
+        setCaptureFps(fps);
+        setEncoderType(EncoderType::H264);
+        setJpegQuality(jpeg);
+    } else {
+        // Non-game gears use the efficient JPEG encoder for consistent behavior.
+        setCaptureFps(fps);
+        setEncoderType(EncoderType::JPEG);
+        setJpegQuality(jpeg);
+    }
+
+    LOG_INFO(QString("Host: Quality gear pinned: level=%1 jpeg=%2 fps=%3 game=%4")
+                 .arg(static_cast<int>(level)).arg(jpeg).arg(fps)
+                 .arg(gameMode ? 1 : 0));
+    sendQualityInfo();
+}
+
 void Host::logAudit(const QString& clientId, const QString& event, const QString& details) {
     if (m_auditLogger) {
         m_auditLogger->logConnection(clientId, event, details);
@@ -633,6 +677,13 @@ void Host::onQualityTimer() {
         if (it.value().authenticated) clientCount++;
     }
     if (clientCount == 0) return;
+
+    // When the controller pinned a quality gear, suspend measured bandwidth
+    // adaptation and just keep reporting the current settings.
+    if (!m_autoAdapt) {
+        sendQualityInfo();
+        return;
+    }
 
     // Estimate required bandwidth for current quality (bytes per frame * fps * clients)
     int targetFps = qMin(m_captureFps, 30);
@@ -1089,6 +1140,19 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
                 setPrivacyScreenEnabled(enabled);
                 logAuditOp(clientId, "privacy_screen", enabled ? "on" : "off");
                 LOG_INFO("Host: Privacy screen " + QString(enabled ? "enabled" : "disabled") + " by " + clientId);
+            }
+            break;
+        }
+        case MessageType::SET_QUALITY: {
+            if (payload.size() >= 2) {
+                QualityRequest req = ProtocolManager::decodeQualityRequest(payload);
+                setQualityLevel(req.level, req.gameMode);
+                logAuditOp(clientId, "set_quality",
+                           QString::number(static_cast<int>(req.level)) +
+                           (req.gameMode ? ",game" : ""));
+                LOG_INFO("Host: Quality gear set to " +
+                         QString::number(static_cast<int>(req.level)) +
+                         " by " + clientId + (req.gameMode ? " (game)" : ""));
             }
             break;
         }

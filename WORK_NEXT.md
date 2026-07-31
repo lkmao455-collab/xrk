@@ -25,7 +25,7 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 ### 阶段 A：修复半成品（成本低、收益高，先做）
 - [x] **Task 24** 剪贴板双向同步 + 自动粘贴 — 已提交 `052fd6d`
 - [x] **Task 25** 隐私屏屏蔽本地物理输入 — 已提交 `99a9060`（移除 WindowTransparentForInput，改用 Windows BlockInput(TRUE/FALSE) 在显示/隐藏时屏蔽本机物理键鼠输入；保留 WDA_EXCLUDEFROMCAPTURE 防被远端截屏；保留不抢焦以不影响远控）
-- [ ] **Task 26** 游戏/低延迟模式开关（控制器侧画质档位）
+- [x] **Task 26** 游戏/低延迟模式开关（控制器侧画质档位）
 
 ### 阶段 B：新增中等功能
 - [ ] **Task 27** 文件实时同步（目录 watch + 增量传输）
@@ -43,6 +43,18 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - 有 GUI 事件（拖拽/输入）的部分用合成事件单测覆盖逻辑，肉眼验证交给桌面端。
 
 ## 进度（完成一项更新一项）
-- 已完成：Task 24, Task 25
-- 进行中：Task 26
-- 待办：26, 27, 28, 29, 30, 31
+- 已完成：Task 24, Task 25, Task 26
+- 进行中：Task 27
+- 待办：27, 28, 29, 30, 31
+
+## Task 26 记录（画质/延迟档位）
+- 新增 `MessageType::SET_QUALITY` + `QualityRequest{level,gameMode}` 结构体及
+  `encode/decodeQualityRequest`（protocol_manager）。
+- 控制器 `RemoteController::sendQualityLevel(QualityLevel,bool)` 发送档位。
+- 主机 `Host::setQualityLevel`：AUTO/ADAPTIVE 恢复带宽自适应；其余档位锁定
+  jpegQuality/captureFps（流畅45/24 · 标准65/30 · 高清82/30 · 游戏92/60），
+  游戏档尝试切 H264 低延迟编码器（无 libx264 自动回退 JPEG）。`onQualityTimer`
+  在 `m_autoAdapt=false` 时仅上报不再自适应。
+- UI：工具栏新增「画质」下拉（自动/流畅/标准/高清/游戏），切换即下发；
+  不抢焦点；新会话重置为「自动」。
+- 单测：协议往返 + 主机档位映射（headless，无需 Host::start）。

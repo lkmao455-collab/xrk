@@ -97,6 +97,7 @@ private:
     QLabel* m_qualityLabel = nullptr;
     QPushButton* m_privacyButton = nullptr;
     QComboBox* m_monitorCombo = nullptr;
+    QComboBox* m_qualityCombo = nullptr;   // gear selector: 自动/流畅/标准/高清/游戏
     bool m_privacyEnabled = false;
 
     // Phase 4: local annotation overlay (whiteboard) + session watermark.

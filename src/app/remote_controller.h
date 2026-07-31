@@ -66,6 +66,7 @@ public:
     void setAudioEnabled(bool enabled);
     void sendPowerAction(PowerAction action);
     void sendPrivacyScreen(bool enabled);
+    void sendQualityLevel(QualityLevel level, bool gameMode = false);
     void requestMonitorList();
     void switchMonitor(int index);
     TcpConnection* connection() const { return m_connection.get(); }

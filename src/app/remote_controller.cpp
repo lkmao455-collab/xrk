@@ -380,6 +380,19 @@ void RemoteController::sendPrivacyScreen(bool enabled) {
     m_connection->send(msg);
 }
 
+void RemoteController::sendQualityLevel(QualityLevel level, bool gameMode) {
+    if (!m_active || !m_connection) return;
+
+    QualityRequest req;
+    req.level = level;
+    req.gameMode = gameMode;
+    QByteArray payload = ProtocolManager::encodeQualityRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::SET_QUALITY, payload, m_currentSessionId);
+    m_connection->send(msg);
+    LOG_INFO("Controller: requested quality gear " + QString::number(static_cast<int>(level)) +
+             (gameMode ? " (game/low-latency)" : ""));
+}
+
 void RemoteController::requestMonitorList() {
     if (!m_active || !m_connection) return;
     QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_LIST, QByteArray(), m_currentSessionId);

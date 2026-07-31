@@ -60,6 +60,9 @@ public:
     static QByteArray encodeQualityInfo(const QualityInfo& info);
     static QualityInfo decodeQualityInfo(const QByteArray& data);
 
+    static QByteArray encodeQualityRequest(const QualityRequest& req);
+    static QualityRequest decodeQualityRequest(const QByteArray& data);
+
     static QByteArray encodeSysInfo(const SysInfo& info);
     static SysInfo decodeSysInfo(const QByteArray& data);
 

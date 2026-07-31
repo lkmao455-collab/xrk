@@ -58,6 +58,28 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
                 }
             });
 
+    // Phase 7: quality/latency gear selector. "游戏" maps to ULTRA + game mode
+    // (host prefers the H264 encoder + 60fps for lower interactive latency).
+    m_qualityCombo = new QComboBox(this);
+    m_qualityCombo->setObjectName("quality-combo");
+    m_qualityCombo->setMinimumWidth(96);
+    m_qualityCombo->addItem(tr("自动"), static_cast<int>(QualityLevel::AUTO));
+    m_qualityCombo->addItem(tr("流畅"), static_cast<int>(QualityLevel::LOW));
+    m_qualityCombo->addItem(tr("标准"), static_cast<int>(QualityLevel::MEDIUM));
+    m_qualityCombo->addItem(tr("高清"), static_cast<int>(QualityLevel::HIGH));
+    m_qualityCombo->addItem(tr("游戏"), static_cast<int>(QualityLevel::ULTRA));
+    m_qualityCombo->setCurrentIndex(0);
+    connect(m_qualityCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (!m_controller || !m_active) return;
+                QualityLevel level = static_cast<QualityLevel>(
+                    m_qualityCombo->itemData(index).toInt());
+                bool game = (level == QualityLevel::ULTRA);
+                m_controller->sendQualityLevel(level, game);
+                LOG_INFO("Quality gear -> " + QString::number(static_cast<int>(level)) +
+                         (game ? " (game)" : ""));
+            });
+
     if (m_controller) {
         connect(m_controller, &RemoteController::monitorListReceived,
                 this, &RemoteDesktopWidget::onMonitorListReceived);
@@ -119,6 +141,7 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     // then 标注 / 颜色 / 清空 / 水印 / 麦克风 / 隐私屏.
     if (m_toolbarLayout) {
         m_toolbarLayout->addWidget(m_monitorCombo);
+        m_toolbarLayout->addWidget(m_qualityCombo);
         m_toolbarLayout->addWidget(m_annotateButton);
         m_toolbarLayout->addWidget(m_annotateColorButton);
         m_toolbarLayout->addWidget(m_annotateClearButton);
@@ -137,6 +160,9 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
                             m_micButton, m_privacyButton}) {
         if (b) b->setFocusPolicy(Qt::NoFocus);
     }
+    // The gear selector must also not steal keyboard focus from the remote
+    // desktop, otherwise remote keystrokes stop after changing quality.
+    if (m_qualityCombo) m_qualityCombo->setFocusPolicy(Qt::NoFocus);
 }
 
 RemoteDesktopWidget::~RemoteDesktopWidget() {
@@ -154,6 +180,7 @@ void RemoteDesktopWidget::startRemote(const QString& ip, uint16_t port, const QS
         m_currentDeviceId = ip;
         m_fpsTimer->start(1000);
         m_frameRequestTimer->start(33);
+        if (m_qualityCombo) m_qualityCombo->setCurrentIndex(0); // host defaults to AUTO
         emit remoteStarted();
     }
 }
