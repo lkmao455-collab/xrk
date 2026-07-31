@@ -45,6 +45,9 @@ private slots:
     void onAddSyncClicked();
     void onRemoveSyncClicked();
     void onSyncToggleClicked();
+    void onAddReverseSyncClicked();
+    void onRemoveReverseSyncClicked();
+    void onSyncNotifyReceived(const SyncNotify& note);
     void onTransferStarted(const QString& fileId);
     void onTransferProgress(const QString& fileId, uint64_t current, uint64_t total);
     void onTransferCompleted(const QString& fileId);
@@ -110,7 +113,17 @@ private:
     QPushButton* m_syncToggleButton = nullptr;
     QLabel* m_syncStatus = nullptr;
 
+    // Reverse sync UI
+    QListWidget* m_reverseList = nullptr;
+    QPushButton* m_addReverseButton = nullptr;
+    QPushButton* m_removeReverseButton = nullptr;
+
     void addSyncListItem(const QString& localDir, const QString& remoteDir);
+    void addReverseSyncListItem(const QString& hostDir, const QString& localDir);
+
+    // Reverse real-time sync (remote -> local). hostDir is the watched directory
+    // on the controlled machine; localDir is where changes land on this side.
+    QMap<QString, QString> m_reversePairs;  // hostDir -> localDir
 };
 
 } // namespace xrk

@@ -19,6 +19,7 @@
 #include "nat_traversal.h"
 #include "p2p_manager.h"
 #include "clipboard_manager.h"
+#include "file_sync_manager.h"
 
 namespace xrk {
 
@@ -171,6 +172,14 @@ public:
     void setQualityLevel(QualityLevel level, bool gameMode = false);
     QualityLevel qualityMode() const { return m_qualityMode; }
 
+    // Reverse real-time sync: the controller asks this host to watch a host-side
+    // directory and notify it when files change, so the controller can pull
+    // them down into a paired local directory.
+    void addReverseSync(const QString& clientId, const QString& hostDir, const QString& localDir);
+    void removeReverseSync(const QString& clientId, const QString& hostDir);
+    void removeReverseSyncForClient(const QString& clientId);
+    bool hasReverseSync(const QString& clientId, const QString& hostDir) const;
+
     // Phase 5: host-side connection consent. After a client authenticates, the
     // session does NOT start until the host user approves (grantConsent) or is
     // rejected (denyConsent).
@@ -217,6 +226,10 @@ private:
     void handleSystemInfoRequest(const QString& clientId, const QByteArray& payload);
     void onQualityTimer();
     void sendQualityInfo();
+
+    void sendSyncNotify(const QString& clientId, const QString& hostDir,
+                        const QString& hostFilePath, const QString& localDir,
+                        uint64_t size, int64_t mtime);
 
     // P2P / relay path
     void acceptExternalSocket(QTcpSocket* socket);
@@ -315,6 +328,17 @@ private:
     // P2P / relay
     NatTraversal* m_nat = nullptr;
     P2PManager* m_p2p = nullptr;
+
+    // Reverse real-time sync: one watcher (FileSyncManager) per (client, hostDir)
+    // pair. The watcher's upload callback is repurposed to emit a SYNC_NOTIFY to
+    // that client instead of transferring a file.
+    struct HostSyncPair {
+        QString clientId;
+        QString hostDir;
+        QString localDir;
+        FileSyncManager* watcher = nullptr;
+    };
+    QHash<QString, HostSyncPair> m_reverseSync;  // key: clientId + "|" + hostDir
 };
 
 } // namespace xrk

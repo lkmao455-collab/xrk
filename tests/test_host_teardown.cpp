@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <QCoreApplication>
+#include <QTemporaryDir>
 #include "host.h"
 
 namespace xrk {
@@ -53,6 +54,29 @@ TEST(HostTeardown, SetQualityLevelAppliesGear) {
     // AUTO gear -> adaptation resumes.
     host.setQualityLevel(QualityLevel::AUTO, false);
     EXPECT_EQ(host.qualityMode(), QualityLevel::AUTO);
+}
+
+// Task 27b: reverse-sync registration on the host. addReverseSync() must create
+// a watcher for the (client, hostDir) pair; the paired client disconnecting (or
+// an explicit remove) must tear it down. No Host::start() needed — the watcher
+// is a QFileSystemWatcher, not the screen-capture threads.
+TEST(HostTeardown, ReverseSyncPairRegistration) {
+    Host host;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString clientId = "client-1";
+    QString hostDir = dir.path();
+
+    host.addReverseSync(clientId, hostDir, "D:/Local/Target");
+    EXPECT_TRUE(host.hasReverseSync(clientId, hostDir));
+
+    // Re-adding the same pair replaces (still exactly one watcher).
+    host.addReverseSync(clientId, hostDir, "D:/Local/Target2");
+    EXPECT_TRUE(host.hasReverseSync(clientId, hostDir));
+
+    // Removing the client's watchers clears it.
+    host.removeReverseSyncForClient(clientId);
+    EXPECT_FALSE(host.hasReverseSync(clientId, hostDir));
 }
 
 } // namespace xrk

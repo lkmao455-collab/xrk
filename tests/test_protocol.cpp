@@ -269,3 +269,33 @@ TEST_F(ProtocolTest, QualityRequestRoundTripThroughMessage) {
     EXPECT_EQ(decoded.level, QualityLevel::HIGH);
     EXPECT_FALSE(decoded.gameMode);
 }
+
+TEST_F(ProtocolTest, EncodeSyncPair) {
+    SyncPair pair;
+    pair.hostDir = "C:\\Host\\Watch";
+    pair.localDir = "D:/Local/Target";
+
+    QByteArray encoded = ProtocolManager::encodeSyncPair(pair);
+    EXPECT_FALSE(encoded.isEmpty());
+    SyncPair decoded = ProtocolManager::decodeSyncPair(encoded);
+    EXPECT_EQ(decoded.hostDir, pair.hostDir);
+    EXPECT_EQ(decoded.localDir, pair.localDir);
+}
+
+TEST_F(ProtocolTest, EncodeSyncNotify) {
+    SyncNotify note;
+    note.hostDir = "C:\\Host\\Watch";
+    note.hostFilePath = "C:\\Host\\Watch\\sub\\file.txt";
+    note.localDir = "D:/Local/Target";
+    note.size = 1234;
+    note.mtime = 1700000000000LL;
+
+    QByteArray encoded = ProtocolManager::encodeSyncNotify(note);
+    EXPECT_FALSE(encoded.isEmpty());
+    SyncNotify decoded = ProtocolManager::decodeSyncNotify(encoded);
+    EXPECT_EQ(decoded.hostDir, note.hostDir);
+    EXPECT_EQ(decoded.hostFilePath, note.hostFilePath);
+    EXPECT_EQ(decoded.localDir, note.localDir);
+    EXPECT_EQ(decoded.size, note.size);
+    EXPECT_EQ(decoded.mtime, note.mtime);
+}

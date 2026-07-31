@@ -67,6 +67,8 @@ public:
     void sendPowerAction(PowerAction action);
     void sendPrivacyScreen(bool enabled);
     void sendQualityLevel(QualityLevel level, bool gameMode = false);
+    void sendSyncAdd(const QString& hostDir, const QString& localDir);
+    void sendSyncRemove(const QString& hostDir);
     void requestMonitorList();
     void switchMonitor(int index);
     TcpConnection* connection() const { return m_connection.get(); }
@@ -97,6 +99,7 @@ signals:
     void fileBrowserReceived(const FileBrowserResponse& response);
     void sysInfoReceived(const SysInfo& info);
     void qualityInfoReceived(const QualityInfo& info);
+    void syncNotifyReceived(const SyncNotify& note);
     void monitorListReceived(const QList<MonitorInfo>& monitors);
     void latencyUpdated(qint64 ms);
 

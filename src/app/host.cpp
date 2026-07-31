@@ -657,6 +657,81 @@ void Host::logAuditOp(const QString& clientId, const QString& operation, const Q
     }
 }
 
+QString reverseSyncKey(const QString& clientId, const QString& hostDir) {
+    return clientId + "|" + QDir::toNativeSeparators(QDir(hostDir).absolutePath());
+}
+
+void Host::addReverseSync(const QString& clientId, const QString& hostDir, const QString& localDir) {
+    QString key = reverseSyncKey(clientId, hostDir);
+    removeReverseSync(clientId, hostDir); // replace if exists
+
+    HostSyncPair pair;
+    pair.clientId = clientId;
+    pair.hostDir = QDir::toNativeSeparators(QDir(hostDir).absolutePath());
+    pair.localDir = localDir;
+    pair.watcher = new FileSyncManager(this);
+    // Repurpose the "upload" callback: instead of transferring, notify the
+    // controller (which then pulls the file down into its localDir).
+    pair.watcher->setUploadCallback(
+        [this, clientId, hostDir, localDir](const QString& hostFile, const QString&) {
+            QFileInfo fi(hostFile);
+            sendSyncNotify(clientId, hostDir, hostFile, localDir,
+                           fi.size(), fi.lastModified().toMSecsSinceEpoch());
+            return QString("sync-notify");
+        });
+    pair.watcher->setCanUpload(true);
+    pair.watcher->addPair(pair.hostDir, localDir);
+    pair.watcher->start();
+
+    m_reverseSync[key] = pair;
+    logAuditOp(clientId, "sync_add", hostDir);
+}
+
+void Host::removeReverseSync(const QString& clientId, const QString& hostDir) {
+    QString key = reverseSyncKey(clientId, hostDir);
+    auto it = m_reverseSync.find(key);
+    if (it == m_reverseSync.end()) return;
+    it.value().watcher->stop();
+    delete it.value().watcher;
+    m_reverseSync.erase(it);
+}
+
+void Host::removeReverseSyncForClient(const QString& clientId) {
+    for (auto it = m_reverseSync.begin(); it != m_reverseSync.end();) {
+        if (it.value().clientId == clientId) {
+            it.value().watcher->stop();
+            delete it.value().watcher;
+            it = m_reverseSync.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool Host::hasReverseSync(const QString& clientId, const QString& hostDir) const {
+    return m_reverseSync.contains(reverseSyncKey(clientId, hostDir));
+}
+
+void Host::sendSyncNotify(const QString& clientId, const QString& hostDir,
+                          const QString& hostFilePath, const QString& localDir,
+                          uint64_t size, int64_t mtime) {
+    if (!m_clients.contains(clientId)) return;
+    QTcpSocket* socket = m_clients.value(clientId).socket;
+    if (!socket) return;
+
+    SyncNotify note;
+    note.hostDir = QDir::toNativeSeparators(QDir(hostDir).absolutePath());
+    note.hostFilePath = QDir::toNativeSeparators(hostFilePath);
+    note.localDir = localDir;
+    note.size = size;
+    note.mtime = mtime;
+
+    QByteArray payload = ProtocolManager::encodeSyncNotify(note);
+    QByteArray message = ProtocolManager::encode(MessageType::SYNC_NOTIFY, payload);
+    socket->write(message);
+    socket->flush();
+}
+
 void Host::onQualityTimer() {
     // Measure bandwidth over last 2 seconds
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -876,6 +951,7 @@ void Host::onClientDisconnected() {
 
     if (!clientId.isEmpty()) {
         m_clients.remove(clientId);
+        removeReverseSyncForClient(clientId);  // stop any host-side watchers
         LOG_INFO("Host: Client disconnected: " + clientId);
         logAudit(clientId, "disconnected");
         emit clientDisconnected(clientId);
@@ -1153,6 +1229,24 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
                 LOG_INFO("Host: Quality gear set to " +
                          QString::number(static_cast<int>(req.level)) +
                          " by " + clientId + (req.gameMode ? " (game)" : ""));
+            }
+            break;
+        }
+        case MessageType::SYNC_ADD: {
+            if (payload.size() > 0) {
+                SyncPair pair = ProtocolManager::decodeSyncPair(payload);
+                if (!pair.hostDir.isEmpty() && !pair.localDir.isEmpty()) {
+                    addReverseSync(clientId, pair.hostDir, pair.localDir);
+                    LOG_INFO("Host: Reverse sync add " + pair.hostDir + " -> " + clientId);
+                }
+            }
+            break;
+        }
+        case MessageType::SYNC_REMOVE: {
+            if (payload.size() > 0) {
+                SyncPair pair = ProtocolManager::decodeSyncPair(payload);
+                removeReverseSync(clientId, pair.hostDir);
+                LOG_INFO("Host: Reverse sync remove " + pair.hostDir + " for " + clientId);
             }
             break;
         }

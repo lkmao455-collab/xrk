@@ -65,7 +65,10 @@ enum class MessageType : uint32_t {
     PRIVACY_SCREEN = 180,
     SET_QUALITY = 181,
     CONSENT_REQUEST = 190,
-    CONSENT_RESPONSE = 191
+    CONSENT_RESPONSE = 191,
+    SYNC_ADD = 200,        // controller -> host: start watching a host dir (reverse sync)
+    SYNC_REMOVE = 201,     // controller -> host: stop watching a host dir
+    SYNC_NOTIFY = 202      // host -> controller: a watched host file changed
 };
 
 enum class PowerAction : uint8_t {
@@ -130,6 +133,24 @@ struct QualityInfo {
 struct QualityRequest {
     QualityLevel level = QualityLevel::AUTO;
     bool gameMode = false;
+};
+
+// Reverse real-time sync: a pair (hostDir watched on the controlled machine,
+// localDir on the controller where changes should land).
+struct SyncPair {
+    QString hostDir;
+    QString localDir;
+};
+
+// Host -> Controller notification that a watched host file changed. The
+// controller downloads hostFilePath into localDir, preserving the relative
+// sub-path under hostDir.
+struct SyncNotify {
+    QString hostDir;
+    QString hostFilePath;
+    QString localDir;
+    uint64_t size = 0;
+    int64_t mtime = 0;
 };
 
 struct DeviceInfo {

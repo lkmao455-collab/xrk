@@ -219,6 +219,10 @@ FileTransferWidget::~FileTransferWidget() {
 
 void FileTransferWidget::setRemoteController(RemoteController* controller) {
     m_remoteController = controller;
+    if (m_remoteController) {
+        connect(m_remoteController, &RemoteController::syncNotifyReceived,
+                this, &FileTransferWidget::onSyncNotifyReceived);
+    }
 }
 
 void FileTransferWidget::onFileBrowserReceived(const FileBrowserResponse& response) {
@@ -262,6 +266,11 @@ void FileTransferWidget::onRemoteConnected() {
     populateDriveList();
     requestRemoteDir("C:\\");
     if (m_sync) m_sync->setCanUpload(true);
+    // Re-establish reverse-sync watches that were torn down when the host
+    // dropped this client's watchers on disconnect.
+    for (auto it = m_reversePairs.begin(); it != m_reversePairs.end(); ++it) {
+        if (m_remoteController) m_remoteController->sendSyncAdd(it.key(), it.value());
+    }
 }
 
 void FileTransferWidget::onRemoteDisconnected() {
@@ -367,6 +376,77 @@ void FileTransferWidget::onSyncToggleClicked() {
         }
         m_sync->setCanUpload(m_remoteConnected);
         m_sync->start();
+    }
+}
+
+void FileTransferWidget::addReverseSyncListItem(const QString& hostDir, const QString& localDir) {
+    if (!m_reverseList) return;
+    QListWidgetItem* item = new QListWidgetItem(m_reverseList);
+    item->setData(Qt::UserRole, hostDir);
+    QWidget* w = new QWidget();
+    QHBoxLayout* hl = new QHBoxLayout(w);
+    hl->setContentsMargins(4, 2, 4, 2);
+    QLabel* label = new QLabel("远程 " + hostDir + "\n→ 本地 " + localDir, w);
+    label->setWordWrap(true);
+    hl->addWidget(label);
+    m_reverseList->setItemWidget(item, w);
+}
+
+void FileTransferWidget::onAddReverseSyncClicked() {
+    // The controlled machine's directory is watched; changes land in the local dir.
+    QString localDir = QFileDialog::getExistingDirectory(this, "选择本地目标目录（远程变更将下载到此）");
+    if (localDir.isEmpty()) return;
+
+    bool ok = false;
+    QString hostDir = QInputDialog::getText(this, "远程目录",
+        "远程（被控端）要监控的目录：", QLineEdit::Normal, m_currentRemotePath, &ok);
+    if (!ok || hostDir.isEmpty()) return;
+
+    QString key = QDir::toNativeSeparators(QDir(hostDir).absolutePath());
+    if (m_reversePairs.contains(key)) {
+        QMessageBox::information(this, "反向同步", "该远程目录已在同步列表中。");
+        return;
+    }
+    m_reversePairs[key] = localDir;
+    addReverseSyncListItem(key, localDir);
+
+    if (m_remoteController && m_remoteConnected) {
+        m_remoteController->sendSyncAdd(hostDir, localDir);
+        if (m_syncStatus) m_syncStatus->setText("已请求反向同步：远程 " + key + " → 本地 " + localDir);
+    } else {
+        if (m_syncStatus) m_syncStatus->setText("反向同步已记录，连接后自动生效");
+    }
+}
+
+void FileTransferWidget::onRemoveReverseSyncClicked() {
+    if (!m_reverseList || !m_remoteController) return;
+    QListWidgetItem* item = m_reverseList->currentItem();
+    if (!item) return;
+    QString hostDir = item->data(Qt::UserRole).toString();
+    m_reversePairs.remove(hostDir);
+    if (m_remoteConnected) {
+        m_remoteController->sendSyncRemove(hostDir);
+    }
+    delete item;
+}
+
+void FileTransferWidget::onSyncNotifyReceived(const SyncNotify& note) {
+    QString hostDir = QDir::toNativeSeparators(QDir(note.hostDir).absolutePath());
+    if (!m_reversePairs.contains(hostDir)) {
+        LOG_DEBUG("SyncNotify for unknown pair: " + hostDir);
+        return;
+    }
+    if (!m_manager) return;
+
+    QString localDir = m_reversePairs.value(hostDir);
+    QString relative = FileSyncManager::relativePath(note.hostDir, note.hostFilePath);
+    QString target = QDir::toNativeSeparators(localDir + "/" + relative);
+    QDir().mkpath(QFileInfo(target).path());  // ensure subdirs exist locally
+
+    m_manager->downloadFile(note.hostFilePath, target, note.size);
+    if (m_syncStatus) {
+        m_syncStatus->setText("反向同步下载: " + QFileInfo(note.hostFilePath).fileName() +
+                              " → " + localDir);
     }
 }
 
@@ -728,6 +808,30 @@ void FileTransferWidget::setupUI() {
     syncLayout->addWidget(m_syncStatus);
 
     mainLayout->addWidget(syncGroup);
+
+    // ---- Reverse real-time sync (remote -> local) ----
+    QGroupBox* reverseGroup = new QGroupBox("反向同步（远程 → 本地）", this);
+    QVBoxLayout* reverseLayout = new QVBoxLayout(reverseGroup);
+    reverseLayout->setContentsMargins(6, 6, 6, 6);
+
+    QHBoxLayout* reverseBtnLayout = new QHBoxLayout();
+    m_addReverseButton = new QPushButton("添加反向同步…", this);
+    m_addReverseButton->setFixedWidth(120);
+    connect(m_addReverseButton, &QPushButton::clicked, this, &FileTransferWidget::onAddReverseSyncClicked);
+    m_removeReverseButton = new QPushButton("移除选中", this);
+    m_removeReverseButton->setFixedWidth(90);
+    connect(m_removeReverseButton, &QPushButton::clicked, this, &FileTransferWidget::onRemoveReverseSyncClicked);
+    reverseBtnLayout->addWidget(m_addReverseButton);
+    reverseBtnLayout->addWidget(m_removeReverseButton);
+    reverseBtnLayout->addStretch();
+    reverseLayout->addLayout(reverseBtnLayout);
+
+    m_reverseList = new QListWidget(this);
+    m_reverseList->setMaximumHeight(90);
+    m_reverseList->setSpacing(2);
+    reverseLayout->addWidget(m_reverseList);
+
+    mainLayout->addWidget(reverseGroup);
 
     // ---- Buttons ----
     QHBoxLayout* buttonLayout = new QHBoxLayout();

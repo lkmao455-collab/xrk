@@ -26,7 +26,7 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - [x] **Task 24** 剪贴板双向同步 + 自动粘贴 — 已提交 `052fd6d`
 - [x] **Task 25** 隐私屏屏蔽本地物理输入 — 已提交 `99a9060`（移除 WindowTransparentForInput，改用 Windows BlockInput(TRUE/FALSE) 在显示/隐藏时屏蔽本机物理键鼠输入；保留 WDA_EXCLUDEFROMCAPTURE 防被远端截屏；保留不抢焦以不影响远控）
 - [x] **Task 26** 游戏/低延迟模式开关（控制器侧画质档位）
-- [x] **Task 27** 文件实时同步（本地→远程）
+- [x] **Task 27** 文件实时同步（本地→远程 + 反向远程→本地）
 
 ### 阶段 B：新增中等功能
 - [ ] **Task 27** 文件实时同步（目录 watch + 增量传输）
@@ -60,7 +60,8 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
   不抢焦点；新会话重置为「自动」。
 - 单测：协议往返 + 主机档位映射（headless，无需 Host::start）。
 
-## Task 27 记录（文件实时同步）
+## Task 27 记录（文件实时同步，含正向与反向）
+### 正向（本地→远程）
 - 新增 `FileSyncManager`（src/app）：`QFileSystemWatcher` 递归监控本地目录，
   目录变化时按相对路径映射上传到被控端目标目录；400ms 防抖合并多次事件；
   支持多配对（本地↔远程）、开始/停止、连接断开时暂停上传。
@@ -72,8 +73,21 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
   创建父目录，否则回落到临时目录（向后兼容）。
 - UI：文件传输面板新增「实时同步（本地→远程）」分组，可添加/移除同步目录对、
   开始/停止，状态栏显示最近同步动作。上传经 FileTransferManager 在传输队列可见。
-- 范围：本期为单向（本地→远程）镜像；被控端→控制器反向同步（需主机侧监控）
-  留作后续；删除传播亦未做（仅新建/修改上传）。
 - 单测：路径映射 + 初始/增量/修改上传决策 + 断开时不上传（headless，4 用例全绿）。
+
+### 反向（远程→本地）
+- 新增 `SYNC_ADD`/`SYNC_REMOVE`/`SYNC_NOTIFY` 消息与 `SyncPair`/`SyncNotify` 编解码。
+- 主机 `Host::addReverseSync`：每对 (clientId, hostDir) 起一个 `FileSyncManager`
+  监控被控端目录，文件变化时其上传回调改为发送 `SYNC_NOTIFY` 给该客户端
+  （含 hostDir/hostFilePath/localDir/size/mtime）；客户端断开时
+  `removeReverseSyncForClient` 清理监控。
+- 控制器 `RemoteController::sendSyncAdd/sendSyncRemove`；`processMessage` 解码
+  `SYNC_NOTIFY` 并 emit `syncNotifyReceived(SyncNotify)`。
+- UI：文件传输面板新增「反向同步（远程→本地）」分组（添加/移除目录对），
+  收到 `SYNC_NOTIFY` 按相对路径下载到本地目录（自动建子目录，复用 downloadFile）；
+  重连时自动重新下发反向同步请求。
+- 范围：反向为快照式拉取（变化时下载），非持续差异比对；双向把同一目录配对
+  可能形成回环（用户应避免）。
+- 单测：SyncPair/SyncNotify 协议往返 + 主机反向配对注册/清理（headless，全绿）。
 - 注意：本机 headless 下 `Host::start()` 会卡在屏幕采集初始化，主机写路径逻辑
   靠运行态 app 验证。

@@ -393,6 +393,28 @@ void RemoteController::sendQualityLevel(QualityLevel level, bool gameMode) {
              (gameMode ? " (game/low-latency)" : ""));
 }
 
+void RemoteController::sendSyncAdd(const QString& hostDir, const QString& localDir) {
+    if (!m_active || !m_connection) return;
+    SyncPair pair;
+    pair.hostDir = hostDir;
+    pair.localDir = localDir;
+    QByteArray payload = ProtocolManager::encodeSyncPair(pair);
+    QByteArray msg = ProtocolManager::encode(MessageType::SYNC_ADD, payload, m_currentSessionId);
+    m_connection->send(msg);
+    LOG_INFO("Controller: reverse sync add " + hostDir + " -> " + localDir);
+}
+
+void RemoteController::sendSyncRemove(const QString& hostDir) {
+    if (!m_active || !m_connection) return;
+    SyncPair pair;
+    pair.hostDir = hostDir;
+    pair.localDir = QString();
+    QByteArray payload = ProtocolManager::encodeSyncPair(pair);
+    QByteArray msg = ProtocolManager::encode(MessageType::SYNC_REMOVE, payload, m_currentSessionId);
+    m_connection->send(msg);
+    LOG_INFO("Controller: reverse sync remove " + hostDir);
+}
+
 void RemoteController::requestMonitorList() {
     if (!m_active || !m_connection) return;
     QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_LIST, QByteArray(), m_currentSessionId);
@@ -534,6 +556,11 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
         case MessageType::QUALITY_INFO: {
             QualityInfo info = ProtocolManager::decodeQualityInfo(payload);
             emit qualityInfoReceived(info);
+            break;
+        }
+        case MessageType::SYNC_NOTIFY: {
+            SyncNotify note = ProtocolManager::decodeSyncNotify(payload);
+            emit syncNotifyReceived(note);
             break;
         }
         case MessageType::AUDIO_DATA: {

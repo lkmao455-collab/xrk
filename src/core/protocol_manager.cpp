@@ -845,4 +845,50 @@ QualityRequest ProtocolManager::decodeQualityRequest(const QByteArray& data) {
     return req;
 }
 
+QByteArray ProtocolManager::encodeSyncPair(const SyncPair& pair) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << pair.hostDir;
+    stream << pair.localDir;
+    return data;
+}
+
+SyncPair ProtocolManager::decodeSyncPair(const QByteArray& data) {
+    SyncPair pair;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> pair.hostDir;
+    stream >> pair.localDir;
+    return pair;
+}
+
+QByteArray ProtocolManager::encodeSyncNotify(const SyncNotify& note) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << note.hostDir;
+    stream << note.hostFilePath;
+    stream << note.localDir;
+    stream << static_cast<uint64_t>(note.size);
+    stream << static_cast<int64_t>(note.mtime);
+    return data;
+}
+
+SyncNotify ProtocolManager::decodeSyncNotify(const QByteArray& data) {
+    SyncNotify note;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> note.hostDir;
+    stream >> note.hostFilePath;
+    stream >> note.localDir;
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    stream >> size;
+    stream >> mtime;
+    note.size = size;
+    note.mtime = mtime;
+    return note;
+}
+
 } // namespace xrk

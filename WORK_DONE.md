@@ -261,6 +261,14 @@
 - [x] 文件传输面板「实时同步（本地→远程）」分组：添加/移除目录对、开始/停止、状态栏
 - [x] 单测：路径映射 + 初始/增量/修改上传决策 + 断开不上传（headless，4 用例）
 
+### 文件实时同步 - 反向（远程→本地）
+- [x] 新增消息 SYNC_ADD / SYNC_REMOVE / SYNC_NOTIFY 及 SyncPair / SyncNotify 编解码
+- [x] 主机 Host::addReverseSync：每对 (clientId, hostDir) 起 FileSyncManager 监控被控端目录，变化时改发 SYNC_NOTIFY（hostDir/hostFilePath/localDir/size/mtime）
+- [x] 主机 Host::removeReverseSyncForClient：客户端断开清理监控
+- [x] 控制器 RemoteController::sendSyncAdd/sendSyncRemove + 解码 SYNC_NOTIFY 发 syncNotifyReceived 信号
+- [x] UI 新增「反向同步（远程→本地）」分组：添加/移除目录对、按相对路径下载到本地（自动建子目录）、重连自动重发
+- [x] 单测：SyncPair/SyncNotify 协议往返 + 主机反向配对注册/清理（headless）
+
 ### 用户体验
 - [x] F11全屏切换
 - [x] Escape断开连接

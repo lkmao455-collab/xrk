@@ -63,6 +63,11 @@ public:
     static QByteArray encodeQualityRequest(const QualityRequest& req);
     static QualityRequest decodeQualityRequest(const QByteArray& data);
 
+    static QByteArray encodeSyncPair(const SyncPair& pair);
+    static SyncPair decodeSyncPair(const QByteArray& data);
+    static QByteArray encodeSyncNotify(const SyncNotify& note);
+    static SyncNotify decodeSyncNotify(const QByteArray& data);
+
     static QByteArray encodeSysInfo(const SysInfo& info);
     static SysInfo decodeSysInfo(const QByteArray& data);
 
