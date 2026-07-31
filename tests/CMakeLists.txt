@@ -15,6 +15,7 @@ if(GTest_FOUND)
         test_file_transfer_manager.cpp
         test_file_transfer_drag.cpp
         test_clipboard.cpp
+        test_file_sync.cpp
         test_security_manager.cpp
         test_p2p_relay.cpp
         test_loopback.cpp

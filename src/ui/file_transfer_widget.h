@@ -19,6 +19,7 @@ namespace xrk {
 
 class FileTransferManager;
 class RemoteController;
+class FileSyncManager;
 
 class FileTransferWidget : public QWidget {
     Q_OBJECT
@@ -41,6 +42,9 @@ private slots:
     void onUploadClicked();
     void onDownloadClicked();
     void onCancelClicked();
+    void onAddSyncClicked();
+    void onRemoveSyncClicked();
+    void onSyncToggleClicked();
     void onTransferStarted(const QString& fileId);
     void onTransferProgress(const QString& fileId, uint64_t current, uint64_t total);
     void onTransferCompleted(const QString& fileId);
@@ -96,6 +100,17 @@ private:
     QMap<QString, QWidget*> m_transferWidgets;
     QString m_currentRemotePath;
     bool m_remoteConnected = false;
+
+    // Real-time sync (Task 27): watch local folders and upload changes to a
+    // paired remote folder on the host.
+    FileSyncManager* m_sync = nullptr;
+    QListWidget* m_syncList = nullptr;
+    QPushButton* m_addSyncButton = nullptr;
+    QPushButton* m_removeSyncButton = nullptr;
+    QPushButton* m_syncToggleButton = nullptr;
+    QLabel* m_syncStatus = nullptr;
+
+    void addSyncListItem(const QString& localDir, const QString& remoteDir);
 };
 
 } // namespace xrk

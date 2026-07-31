@@ -73,6 +73,51 @@ QString FileTransferManager::uploadFile(const QString& filePath) {
     return fileId;
 }
 
+QString FileTransferManager::uploadFileTo(const QString& filePath, const QString& remotePath) {
+    QFile* file = new QFile(filePath);
+    if (!file->exists()) {
+        LOG_ERROR("File not found: " + filePath);
+        delete file;
+        return QString();
+    }
+
+    QFileInfo fileInfo(filePath);
+    QString fileId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    FileRequest request;
+    request.fileId = fileId;
+    request.fileName = fileInfo.fileName();
+    request.path = remotePath;   // host writes to this exact path (creates parent dirs)
+    request.fileSize = fileInfo.size();
+    request.offset = 0;
+    request.isUpload = true;
+
+    if (!file->open(QIODevice::ReadOnly)) {
+        LOG_ERROR("Failed to open file: " + filePath);
+        delete file;
+        return QString();
+    }
+
+    TransferInfo transfer;
+    transfer.request = request;
+    transfer.file = file;
+    transfer.elapsed.start();
+
+    m_transfers[fileId] = transfer;
+
+    QByteArray payload = ProtocolManager::encodeFileRequest(request);
+    QByteArray message = ProtocolManager::encode(MessageType::FILE_REQ, payload);
+    if (m_connection) {
+        m_connection->send(message);
+    }
+
+    emit transferStarted(fileId);
+    emit transferProgress(fileId, 0, request.fileSize);
+    LOG_INFO("File upload (to " + remotePath + ") started: " + filePath);
+
+    return fileId;
+}
+
 QString FileTransferManager::downloadFile(const QString& remotePath, const QString& localPath, uint64_t remoteSize) {
     QString fileId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 

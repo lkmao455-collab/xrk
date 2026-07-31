@@ -1405,12 +1405,19 @@ void Host::handleFileRequest(const QString& clientId, const QByteArray& payload)
     transfer.isUpload = request.isUpload;
     
     if (request.isUpload) {
-        QString savePath = QDir::tempPath() + "/" + request.fileName;
+        // When the controller supplies an explicit target path (real-time sync,
+        // or any upload-to-folder), write there; otherwise fall back to temp.
+        QString savePath = request.path.isEmpty()
+            ? QDir::tempPath() + "/" + request.fileName
+            : request.path;
         QFile* file = new QFile(savePath);
+        QDir().mkpath(QFileInfo(savePath).path());  // ensure parent dir exists
         if (file->open(QIODevice::WriteOnly)) {
             transfer.file = file;
-            LOG_INFO("Host: Receiving file upload: " + request.fileName);
+            LOG_INFO("Host: Receiving file upload: " + request.fileName +
+                     " -> " + savePath);
         } else {
+            LOG_ERROR("Host: Cannot open upload target: " + savePath);
             delete file;
             return;
         }

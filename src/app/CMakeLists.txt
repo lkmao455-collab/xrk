@@ -4,6 +4,7 @@ set(APP_SOURCES
     remote_controller.cpp
     security_manager.cpp
     file_transfer_manager.cpp
+    file_sync_manager.cpp
     host.cpp
     host_service.cpp
     clipboard_manager.cpp
@@ -24,6 +25,7 @@ set(APP_HEADERS
     remote_controller.h
     security_manager.h
     file_transfer_manager.h
+    file_sync_manager.h
     host.h
     host_service.h
     clipboard_manager.h

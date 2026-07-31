@@ -252,6 +252,15 @@
 - [x] 新会话重置为「自动」
 - [x] 单测：协议往返 + 主机档位映射（headless）
 
+### 文件实时同步（Task 27）
+- [x] FileSyncManager：QFileSystemWatcher 递归监控本地目录 + 400ms 防抖
+- [x] 相对路径映射（relativePath / remoteTargetPath）保留子目录结构
+- [x] 多配对（本地↔远程）、开始/停止、连接断开暂停上传
+- [x] FileTransferManager::uploadFileTo(filePath, remotePath) 上传到指定远程路径
+- [x] 主机 handleFileRequest 上传分支支持写入指定路径并自动建父目录（向后兼容临时目录）
+- [x] 文件传输面板「实时同步（本地→远程）」分组：添加/移除目录对、开始/停止、状态栏
+- [x] 单测：路径映射 + 初始/增量/修改上传决策 + 断开不上传（headless，4 用例）
+
 ### 用户体验
 - [x] F11全屏切换
 - [x] Escape断开连接

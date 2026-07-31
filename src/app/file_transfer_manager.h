@@ -19,6 +19,10 @@ public:
     ~FileTransferManager();
 
     QString uploadFile(const QString& filePath);
+    // Upload a local file to a specific remote (host-side) path. Used by the
+    // real-time sync feature so changed files land in the paired remote folder
+    // instead of the host's temp directory.
+    QString uploadFileTo(const QString& filePath, const QString& remotePath);
     QString downloadFile(const QString& remotePath, const QString& localPath, uint64_t remoteSize = 0);
     
     void cancelTransfer(const QString& fileId);

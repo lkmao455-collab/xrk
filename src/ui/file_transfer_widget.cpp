@@ -1,7 +1,11 @@
 #include "file_transfer_widget.h"
 #include "app/file_transfer_manager.h"
+#include "app/file_sync_manager.h"
+#include "core/logger.h"
 #include "app/remote_controller.h"
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -183,6 +187,31 @@ FileTransferWidget::FileTransferWidget(FileTransferManager* manager, QWidget* pa
         connect(m_manager, &FileTransferManager::transferCompleted, this, &FileTransferWidget::onTransferCompleted);
         connect(m_manager, &FileTransferManager::transferFailed, this, &FileTransferWidget::onTransferFailed);
     }
+
+    // Task 27: real-time file sync. The manager is decoupled from the transfer
+    // mechanism via an upload callback wired to the live FileTransferManager.
+    m_sync = new FileSyncManager(this);
+    m_sync->setUploadCallback([this](const QString& local, const QString& remote) {
+        if (!m_manager || !m_remoteConnected) {
+            LOG_WARNING("Sync skipped (not connected): " + local);
+            return QString();
+        }
+        return m_manager->uploadFileTo(local, remote);
+    });
+    connect(m_sync, &FileSyncManager::started, this, [this]() {
+        if (m_syncToggleButton) m_syncToggleButton->setText("停止同步");
+        if (m_syncStatus) m_syncStatus->setText("同步已启动");
+    });
+    connect(m_sync, &FileSyncManager::stopped, this, [this]() {
+        if (m_syncToggleButton) m_syncToggleButton->setText("开始同步");
+        if (m_syncStatus) m_syncStatus->setText("同步已停止");
+    });
+    connect(m_sync, &FileSyncManager::fileSynced, this, [this](const QString& local) {
+        if (m_syncStatus) m_syncStatus->setText("已同步: " + QFileInfo(local).fileName());
+    });
+    connect(m_sync, &FileSyncManager::syncError, this, [this](const QString& msg) {
+        if (m_syncStatus) m_syncStatus->setText(msg);
+    });
 }
 
 FileTransferWidget::~FileTransferWidget() {
@@ -232,10 +261,12 @@ void FileTransferWidget::onRemoteConnected() {
     m_downloadButton->setEnabled(true);
     populateDriveList();
     requestRemoteDir("C:\\");
+    if (m_sync) m_sync->setCanUpload(true);
 }
 
 void FileTransferWidget::onRemoteDisconnected() {
     m_remoteConnected = false;
+    if (m_sync) m_sync->setCanUpload(false);
     m_remoteDriveCombo->setEnabled(false);
     m_remotePathEdit->setEnabled(false);
     m_remoteUpButton->setEnabled(false);
@@ -283,6 +314,59 @@ void FileTransferWidget::onCancelClicked() {
     if (item && m_manager) {
         QString fileId = item->data(Qt::UserRole).toString();
         m_manager->cancelTransfer(fileId);
+    }
+}
+
+void FileTransferWidget::addSyncListItem(const QString& localDir, const QString& remoteDir) {
+    if (!m_syncList) return;
+    QListWidgetItem* item = new QListWidgetItem(m_syncList);
+    item->setData(Qt::UserRole, localDir);
+    QWidget* w = new QWidget();
+    QHBoxLayout* hl = new QHBoxLayout(w);
+    hl->setContentsMargins(4, 2, 4, 2);
+    QLabel* label = new QLabel(localDir + "\n→ " + remoteDir, w);
+    label->setWordWrap(true);
+    hl->addWidget(label);
+    m_syncList->setItemWidget(item, w);
+}
+
+void FileTransferWidget::onAddSyncClicked() {
+    QString localDir = QFileDialog::getExistingDirectory(this, "选择要同步的本地目录");
+    if (localDir.isEmpty()) return;
+
+    bool ok = false;
+    QString remoteDir = QInputDialog::getText(this, "远程目录",
+        "远程（被控端）目标目录：", QLineEdit::Normal, m_currentRemotePath, &ok);
+    if (!ok || remoteDir.isEmpty()) return;
+
+    if (m_sync && m_sync->addPair(localDir, remoteDir)) {
+        addSyncListItem(localDir, remoteDir);
+        if (m_syncStatus) m_syncStatus->setText("已添加同步：本地 " + localDir + " → 远程 " + remoteDir);
+    } else {
+        QMessageBox::information(this, "实时同步", "该本地目录已在同步列表中。");
+    }
+}
+
+void FileTransferWidget::onRemoveSyncClicked() {
+    if (!m_syncList || !m_sync) return;
+    QListWidgetItem* item = m_syncList->currentItem();
+    if (!item) return;
+    QString localDir = item->data(Qt::UserRole).toString();
+    m_sync->removePair(localDir);
+    delete item;
+}
+
+void FileTransferWidget::onSyncToggleClicked() {
+    if (!m_sync) return;
+    if (m_sync->isRunning()) {
+        m_sync->stop();
+    } else {
+        if (m_sync->pairKeys().isEmpty()) {
+            QMessageBox::information(this, "实时同步", "请先添加同步目录。");
+            return;
+        }
+        m_sync->setCanUpload(m_remoteConnected);
+        m_sync->start();
     }
 }
 
@@ -612,6 +696,38 @@ void FileTransferWidget::setupUI() {
     m_transferList->setMaximumHeight(150);
     m_transferList->setSpacing(2);
     mainLayout->addWidget(m_transferList, 1);
+
+    // ---- Real-time sync (Task 27) ----
+    QGroupBox* syncGroup = new QGroupBox("实时同步（本地 → 远程）", this);
+    QVBoxLayout* syncLayout = new QVBoxLayout(syncGroup);
+    syncLayout->setContentsMargins(6, 6, 6, 6);
+
+    QHBoxLayout* syncBtnLayout = new QHBoxLayout();
+    m_addSyncButton = new QPushButton("添加同步目录…", this);
+    m_addSyncButton->setFixedWidth(120);
+    connect(m_addSyncButton, &QPushButton::clicked, this, &FileTransferWidget::onAddSyncClicked);
+    m_removeSyncButton = new QPushButton("移除选中", this);
+    m_removeSyncButton->setFixedWidth(90);
+    connect(m_removeSyncButton, &QPushButton::clicked, this, &FileTransferWidget::onRemoveSyncClicked);
+    m_syncToggleButton = new QPushButton("开始同步", this);
+    m_syncToggleButton->setFixedWidth(90);
+    connect(m_syncToggleButton, &QPushButton::clicked, this, &FileTransferWidget::onSyncToggleClicked);
+    syncBtnLayout->addWidget(m_addSyncButton);
+    syncBtnLayout->addWidget(m_removeSyncButton);
+    syncBtnLayout->addWidget(m_syncToggleButton);
+    syncBtnLayout->addStretch();
+    syncLayout->addLayout(syncBtnLayout);
+
+    m_syncList = new QListWidget(this);
+    m_syncList->setMaximumHeight(90);
+    m_syncList->setSpacing(2);
+    syncLayout->addWidget(m_syncList);
+
+    m_syncStatus = new QLabel("未启动", this);
+    m_syncStatus->setWordWrap(true);
+    syncLayout->addWidget(m_syncStatus);
+
+    mainLayout->addWidget(syncGroup);
 
     // ---- Buttons ----
     QHBoxLayout* buttonLayout = new QHBoxLayout();
