@@ -1,4 +1,5 @@
 #include "privacy_screen.h"
+#include "core/logger.h"
 #include <QScreen>
 #include <QGuiApplication>
 #include <QVBoxLayout>
@@ -36,6 +37,12 @@ void PrivacyScreen::show() {
     if (HWND hwnd = reinterpret_cast<HWND>(m_overlay->winId())) {
         SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
     }
+    // Block all local physical keyboard/mouse input to the console so nobody
+    // at the controlled machine can operate it while a remote session is
+    // active. BlockInput is automatically released if the process exits.
+    if (!BlockInput(TRUE)) {
+        LOG_WARNING("PrivacyScreen: BlockInput failed");
+    }
 #endif
 
     m_overlay->raise();
@@ -45,6 +52,11 @@ void PrivacyScreen::show() {
 void PrivacyScreen::hide() {
     if (!m_visible) return;
     
+#ifdef Q_OS_WIN
+    // Restore local input before hiding the overlay.
+    BlockInput(FALSE);
+#endif
+
     if (m_overlay) {
         m_overlay->hide();
     }
@@ -56,9 +68,12 @@ bool PrivacyScreen::isVisible() const {
 }
 
 void PrivacyScreen::setupOverlay() {
+    // NOTE: deliberately NOT WindowTransparentForInput — the overlay must
+    // consume input (combined with BlockInput below) so the local console is
+    // locked, not pass input through to the desktop behind it.
     m_overlay = new QWidget(nullptr,
         Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint |
-        Qt::Tool | Qt::BypassWindowManagerHint | Qt::WindowTransparentForInput |
+        Qt::Tool | Qt::BypassWindowManagerHint |
         Qt::WindowDoesNotAcceptFocus);
 
     m_overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
