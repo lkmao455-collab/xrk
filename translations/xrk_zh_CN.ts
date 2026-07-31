@@ -1,0 +1,623 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE TS>
+<TS version="2.1" language="zh_CN">
+<context>
+    <name>MainWindow</name>
+    <message>
+        <source>XRK - 局域网远程控制</source>
+        <translation>XRK - 局域网远程控制</translation>
+    </message>
+    <message>
+        <source>文件(&amp;F)</source>
+        <translation>文件(&amp;F)</translation>
+    </message>
+    <message>
+        <source>帮助(&amp;H)</source>
+        <translation>帮助(&amp;H)</translation>
+    </message>
+    <message>
+        <source>启动服务</source>
+        <translation>启动服务</translation>
+    </message>
+    <message>
+        <source>停止服务</source>
+        <translation>停止服务</translation>
+    </message>
+    <message>
+        <source>屏幕截图</source>
+        <translation>屏幕截图</translation>
+    </message>
+    <message>
+        <source>开始录制</source>
+        <translation>开始录制</translation>
+    </message>
+    <message>
+        <source>停止录制</source>
+        <translation>停止录制</translation>
+    </message>
+    <message>
+        <source>开启摄像头</source>
+        <translation>开启摄像头</translation>
+    </message>
+    <message>
+        <source>音频传输</source>
+        <translation>音频传输</translation>
+    </message>
+    <message>
+        <source>设置</source>
+        <translation>设置</translation>
+    </message>
+    <message>
+        <source>关于</source>
+        <translation>关于</translation>
+    </message>
+    <message>
+        <source>退出</source>
+        <translation>退出</translation>
+    </message>
+    <message>
+        <source>远程桌面</source>
+        <translation>远程桌面</translation>
+    </message>
+    <message>
+        <source>文件传输</source>
+        <translation>文件传输</translation>
+    </message>
+    <message>
+        <source>远程终端</source>
+        <translation>远程终端</translation>
+    </message>
+    <message>
+        <source>聊天</source>
+        <translation>聊天</translation>
+    </message>
+    <message>
+        <source>系统信息</source>
+        <translation>系统信息</translation>
+    </message>
+    <message>
+        <source>工具</source>
+        <translation>工具</translation>
+    </message>
+    <message>
+        <source>远程电源</source>
+        <translation>远程电源</translation>
+    </message>
+    <message>
+        <source>关机</source>
+        <translation>关机</translation>
+    </message>
+    <message>
+        <source>重启</source>
+        <translation>重启</translation>
+    </message>
+    <message>
+        <source>注销</source>
+        <translation>注销</translation>
+    </message>
+    <message>
+        <source>睡眠</source>
+        <translation>睡眠</translation>
+    </message>
+    <message>
+        <source>休眠</source>
+        <translation>休眠</translation>
+    </message>
+    <message>
+        <source>就绪 - 请启动服务或连接到其他设备</source>
+        <translation>就绪 - 请启动服务或连接到其他设备</translation>
+    </message>
+    <message>
+        <source>远程连接已建立</source>
+        <translation>远程连接已建立</translation>
+    </message>
+    <message>
+        <source>远程连接已断开</source>
+        <translation>远程连接已断开</translation>
+    </message>
+    <message>
+        <source>服务已启动...</source>
+        <translation>服务已启动...</translation>
+    </message>
+    <message>
+        <source>服务已停止</source>
+        <translation>服务已停止</translation>
+    </message>
+    <message>
+        <source>正在录制...</source>
+        <translation>正在录制...</translation>
+    </message>
+    <message>
+        <source>录制已停止</source>
+        <translation>录制已停止</translation>
+    </message>
+    <message>
+        <source>截图已保存: %1</source>
+        <translation>截图已保存: %1</translation>
+    </message>
+    <message>
+        <source>错误</source>
+        <translation>错误</translation>
+    </message>
+    <message>
+        <source>确认</source>
+        <translation>确认</translation>
+    </message>
+    <message>
+        <source>关于 XRK</source>
+        <translation>关于 XRK</translation>
+    </message>
+    <message>
+        <source>录制失败</source>
+        <translation>录制失败</translation>
+    </message>
+    <message>
+        <source>连接认证</source>
+        <translation>连接认证</translation>
+    </message>
+    <message>
+        <source>请输入访问密码:</source>
+        <translation>请输入访问密码:</translation>
+    </message>
+    <message>
+        <source>被控端连接</source>
+        <translation>被控端连接</translation>
+    </message>
+    <message>
+        <source>被控端断开</source>
+        <translation>被控端断开</translation>
+    </message>
+    <message>
+        <source>已切换至摄像头模式</source>
+        <translation>已切换至摄像头模式</translation>
+    </message>
+    <message>
+        <source>已切换至屏幕模式</source>
+        <translation>已切换至屏幕模式</translation>
+    </message>
+    <message>
+        <source>音频传输已开启</source>
+        <translation>音频传输已开启</translation>
+    </message>
+    <message>
+        <source>音频传输已关闭</source>
+        <translation>音频传输已关闭</translation>
+    </message>
+    <message>
+        <source>中继服务器连接成功</source>
+        <translation>中继服务器连接成功</translation>
+    </message>
+    <message>
+        <source>中继服务器已断开</source>
+        <translation>中继服务器已断开</translation>
+    </message>
+</context>
+<context>
+    <name>DeviceListWidget</name>
+    <message>
+        <source>地址簿:</source>
+        <translation>地址簿:</translation>
+    </message>
+    <message>
+        <source>手动连接:</source>
+        <translation>手动连接:</translation>
+    </message>
+    <message>
+        <source>连接历史:</source>
+        <translation>连接历史:</translation>
+    </message>
+    <message>
+        <source>发现的设备:</source>
+        <translation>发现的设备:</translation>
+    </message>
+    <message>
+        <source>远程唤醒 (WOL):</source>
+        <translation>远程唤醒 (WOL):</translation>
+    </message>
+    <message>
+        <source>添加</source>
+        <translation>添加</translation>
+    </message>
+    <message>
+        <source>编辑</source>
+        <translation>编辑</translation>
+    </message>
+    <message>
+        <source>删除</source>
+        <translation>删除</translation>
+    </message>
+    <message>
+        <source>连接</source>
+        <translation>连接</translation>
+    </message>
+    <message>
+        <source>连接到IP</source>
+        <translation>连接到IP</translation>
+    </message>
+    <message>
+        <source>识别码连接</source>
+        <translation>识别码连接</translation>
+    </message>
+    <message>
+        <source>刷新设备</source>
+        <translation>刷新设备</translation>
+    </message>
+    <message>
+        <source>连接选中</source>
+        <translation>连接选中</translation>
+    </message>
+    <message>
+        <source>清空历史</source>
+        <translation>清空历史</translation>
+    </message>
+    <message>
+        <source>唤醒</source>
+        <translation>唤醒</translation>
+    </message>
+    <message>
+        <source>搜索地址簿...</source>
+        <translation>搜索地址簿...</translation>
+    </message>
+    <message>
+        <source>IP地址 (如: 192.168.1.100)</source>
+        <translation>IP地址 (如: 192.168.1.100)</translation>
+    </message>
+    <message>
+        <source>识别码 (如: 123456789)</source>
+        <translation>识别码 (如: 123456789)</translation>
+    </message>
+    <message>
+        <source>MAC地址 (如: AA:BB:CC:DD:EE:FF)</source>
+        <translation>MAC地址 (如: AA:BB:CC:DD:EE:FF)</translation>
+    </message>
+    <message>
+        <source>全部</source>
+        <translation>全部</translation>
+    </message>
+    <message>
+        <source>无效MAC</source>
+        <translation>无效MAC</translation>
+    </message>
+    <message>
+        <source>请输入有效的MAC地址\n格式: AA:BB:CC:DD:EE:FF</source>
+        <translation>请输入有效的MAC地址\n格式: AA:BB:CC:DD:EE:FF</translation>
+    </message>
+    <message>
+        <source>WOL</source>
+        <translation>WOL</translation>
+    </message>
+    <message>
+        <source>唤醒包已发送到 %1</source>
+        <translation>唤醒包已发送到 %1</translation>
+    </message>
+    <message>
+        <source>发送失败</source>
+        <translation>发送失败</translation>
+    </message>
+    <message>
+        <source>无法发送唤醒包，请检查网络连接</source>
+        <translation>无法发送唤醒包，请检查网络连接</translation>
+    </message>
+    <message>
+        <source>删除设备</source>
+        <translation>删除设备</translation>
+    </message>
+    <message>
+        <source>确定要从地址簿删除 "%1"?</source>
+        <translation>确定要从地址簿删除 "%1"?</translation>
+    </message>
+    <message>
+        <source>端口: </source>
+        <translation>端口: </translation>
+    </message>
+</context>
+<context>
+    <name>SettingsWidget</name>
+    <message>
+        <source>设置</source>
+        <translation>设置</translation>
+    </message>
+    <message>
+        <source>基本设置</source>
+        <translation>基本设置</translation>
+    </message>
+    <message>
+        <source>设备名称:</source>
+        <translation>设备名称:</translation>
+    </message>
+    <message>
+        <source>监听端口:</source>
+        <translation>监听端口:</translation>
+    </message>
+    <message>
+        <source>自动发现设备</source>
+        <translation>自动发现设备</translation>
+    </message>
+    <message>
+        <source>启用加密</source>
+        <translation>启用加密</translation>
+    </message>
+    <message>
+        <source>远程控制时锁屏</source>
+        <translation>远程控制时锁屏</translation>
+    </message>
+    <message>
+        <source>真彩 4:4:4 (更高色彩保真度)</source>
+        <translation>真彩 4:4:4 (更高色彩保真度)</translation>
+    </message>
+    <message>
+        <source>采集帧率:</source>
+        <translation>采集帧率:</translation>
+    </message>
+    <message>
+        <source>中继服务器 (跨互联网连接)</source>
+        <translation>中继服务器 (跨互联网连接)</translation>
+    </message>
+    <message>
+        <source>启用中继</source>
+        <translation>启用中继</translation>
+    </message>
+    <message>
+        <source>服务器地址:</source>
+        <translation>服务器地址:</translation>
+    </message>
+    <message>
+        <source>中继服务器地址 (IP 或域名)</source>
+        <translation>中继服务器地址 (IP 或域名)</translation>
+    </message>
+    <message>
+        <source>端口:</source>
+        <translation>端口:</translation>
+    </message>
+    <message>
+        <source>确定</source>
+        <translation>确定</translation>
+    </message>
+    <message>
+        <source>取消</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <source>语言:</source>
+        <translation>语言:</translation>
+    </message>
+</context>
+<context>
+    <name>RemoteDesktopWidget</name>
+    <message>
+        <source>等待连接...</source>
+        <translation>等待连接...</translation>
+    </message>
+    <message>
+        <source>下载文件...</source>
+        <translation>下载文件...</translation>
+    </message>
+    <message>
+        <source>画质: 自动</source>
+        <translation>画质: 自动</translation>
+    </message>
+    <message>
+        <source>超高</source>
+        <translation>超高</translation>
+    </message>
+    <message>
+        <source>高</source>
+        <translation>高</translation>
+    </message>
+    <message>
+        <source>中</source>
+        <translation>中</translation>
+    </message>
+    <message>
+        <source>低</source>
+        <translation>低</translation>
+    </message>
+</context>
+<context>
+    <name>FileTransferWidget</name>
+    <message>
+        <source>本地文件</source>
+        <translation>本地文件</translation>
+    </message>
+    <message>
+        <source>远程文件</source>
+        <translation>远程文件</translation>
+    </message>
+    <message>
+        <source>传输队列</source>
+        <translation>传输队列</translation>
+    </message>
+    <message>
+        <source>上传</source>
+        <translation>上传</translation>
+    </message>
+    <message>
+        <source>下载</source>
+        <translation>下载</translation>
+    </message>
+    <message>
+        <source>取消</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <source>刷新</source>
+        <translation>刷新</translation>
+    </message>
+    <message>
+        <source>名称</source>
+        <translation>名称</translation>
+    </message>
+    <message>
+        <source>类型</source>
+        <translation>类型</translation>
+    </message>
+    <message>
+        <source>大小</source>
+        <translation>大小</translation>
+    </message>
+    <message>
+        <source>修改时间</source>
+        <translation>修改时间</translation>
+    </message>
+    <message>
+        <source>文件夹</source>
+        <translation>文件夹</translation>
+    </message>
+    <message>
+        <source>文件</source>
+        <translation>文件</translation>
+    </message>
+    <message>
+        <source>远程路径...</source>
+        <translation>远程路径...</translation>
+    </message>
+    <message>
+        <source>完成</source>
+        <translation>完成</translation>
+    </message>
+    <message>
+        <source>选择要上传的文件</source>
+        <translation>选择要上传的文件</translation>
+    </message>
+    <message>
+        <source>保存到目录</source>
+        <translation>保存到目录</translation>
+    </message>
+</context>
+<context>
+    <name>TerminalWidget</name>
+    <message>
+        <source>Send</source>
+        <translation>发送</translation>
+    </message>
+    <message>
+        <source>Enter command...</source>
+        <translation>输入命令...</translation>
+    </message>
+    <message>
+        <source>Terminal not connected</source>
+        <translation>终端未连接</translation>
+    </message>
+</context>
+<context>
+    <name>ChatWidget</name>
+    <message>
+        <source>Send</source>
+        <translation>发送</translation>
+    </message>
+    <message>
+        <source>Type a message...</source>
+        <translation>输入消息...</translation>
+    </message>
+    <message>
+        <source>Not connected</source>
+        <translation>未连接</translation>
+    </message>
+</context>
+<context>
+    <name>SystemInfoWidget</name>
+    <message>
+        <source>内存</source>
+        <translation>内存</translation>
+    </message>
+    <message>
+        <source>磁盘 (系统盘)</source>
+        <translation>磁盘 (系统盘)</translation>
+    </message>
+    <message>
+        <source>系统信息</source>
+        <translation>系统信息</translation>
+    </message>
+    <message>
+        <source>操作系统:</source>
+        <translation>操作系统:</translation>
+    </message>
+    <message>
+        <source>运行时间:</source>
+        <translation>运行时间:</translation>
+    </message>
+    <message>
+        <source>进程数:</source>
+        <translation>进程数:</translation>
+    </message>
+    <message>
+        <source>网络流量:</source>
+        <translation>网络流量:</translation>
+    </message>
+    <message>
+        <source>%1天 %2时 %3分</source>
+        <translation>%1天 %2时 %3分</translation>
+    </message>
+    <message>
+        <source>%1 个进程</source>
+        <translation>%1 个进程</translation>
+    </message>
+</context>
+<context>
+    <name>AddressBookDialog</name>
+    <message>
+        <source>地址簿 - 添加设备</source>
+        <translation>地址簿 - 添加设备</translation>
+    </message>
+    <message>
+        <source>编辑设备 - %1</source>
+        <translation>编辑设备 - %1</translation>
+    </message>
+    <message>
+        <source>名称:</source>
+        <translation>名称:</translation>
+    </message>
+    <message>
+        <source>地址:</source>
+        <translation>地址:</translation>
+    </message>
+    <message>
+        <source>端口:</source>
+        <translation>端口:</translation>
+    </message>
+    <message>
+        <source>MAC:</source>
+        <translation>MAC:</translation>
+    </message>
+    <message>
+        <source>分组:</source>
+        <translation>分组:</translation>
+    </message>
+    <message>
+        <source>识别码:</source>
+        <translation>识别码:</translation>
+    </message>
+    <message>
+        <source>备注:</source>
+        <translation>备注:</translation>
+    </message>
+    <message>
+        <source>设为收藏</source>
+        <translation>设为收藏</translation>
+    </message>
+    <message>
+        <source>设备别名 (如: 办公室电脑)</source>
+        <translation>设备别名 (如: 办公室电脑)</translation>
+    </message>
+    <message>
+        <source>IP地址</source>
+        <translation>IP地址</translation>
+    </message>
+    <message>
+        <source>MAC (用于WOL唤醒)</source>
+        <translation>MAC (用于WOL唤醒)</translation>
+    </message>
+    <message>
+        <source>分组 (如: 办公室/家庭/服务器)</source>
+        <translation>分组 (如: 办公室/家庭/服务器)</translation>
+    </message>
+    <message>
+        <source>识别码 (可选)</source>
+        <translation>识别码 (可选)</translation>
+    </message>
+    <message>
+        <source>备注...</source>
+        <translation>备注...</translation>
+    </message>
+</context>
+</TS>

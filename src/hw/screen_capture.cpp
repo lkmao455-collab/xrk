@@ -1,0 +1,845 @@
+#include "screen_capture.h"
+#include "core/logger.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
+#endif
+
+#ifdef __linux__
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <cstring>
+#endif
+
+#ifdef __APPLE__
+#include <CoreGraphics/CoreGraphics.h>
+#include <ApplicationServices/ApplicationServices.h>
+#endif
+
+namespace xrk {
+
+#ifdef _WIN32
+struct ScreenCapture::DxgiContext {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGIOutputDuplication> duplication;
+    ComPtr<ID3D11Texture2D> stagingTexture;
+    int width = 0;
+    int height = 0;
+    bool valid = false;
+};
+#else
+struct ScreenCapture::DxgiContext { int dummy; };
+#endif
+
+#ifdef __linux__
+struct ScreenCapture::LinuxContext {
+    Display* display = nullptr;
+    Window rootWindow = 0;
+    XShmSegmentInfo shmInfo;
+    XImage* xImage = nullptr;
+    int screenWidth = 0;
+    int screenHeight = 0;
+    bool valid = false;
+};
+#else
+struct ScreenCapture::LinuxContext { int dummy; };
+#endif
+
+#ifdef __APPLE__
+struct ScreenCapture::MacContext {
+    QList<CGDirectDisplayID> displays;
+    bool valid = false;
+};
+#else
+struct ScreenCapture::MacContext { int dummy; };
+#endif
+
+ScreenCapture::ScreenCapture(QObject* parent) : QObject(parent) {
+#ifdef _WIN32
+    m_dxgiContext = std::make_unique<DxgiContext>();
+#endif
+#ifdef __linux__
+    m_linuxContext = std::make_unique<LinuxContext>();
+#endif
+#ifdef __APPLE__
+    m_macContext = std::make_unique<MacContext>();
+#endif
+}
+
+ScreenCapture::~ScreenCapture() {
+    shutdown();
+}
+
+bool ScreenCapture::initialize() {
+    if (m_initialized) {
+        return true;
+    }
+
+#ifdef _WIN32
+    if (initializeDxgi()) {
+        m_useDxgi = true;
+        m_initialized = true;
+        LOG_INFO("ScreenCapture initialized (DXGI mode)");
+        return true;
+    }
+    LOG_WARNING("DXGI failed, falling back to GDI");
+#endif
+
+#ifdef _WIN32
+    if (initializeGdi()) {
+        m_useDxgi = false;
+        m_initialized = true;
+        LOG_INFO("ScreenCapture initialized (GDI mode)");
+        return true;
+    }
+#endif
+
+#ifdef __linux__
+    if (initializeLinux()) {
+        m_initialized = true;
+        LOG_INFO("ScreenCapture initialized (Linux XShm mode)");
+        return true;
+    }
+#endif
+
+#ifdef __APPLE__
+    if (initializeMac()) {
+        m_initialized = true;
+        LOG_INFO("ScreenCapture initialized (macOS CoreGraphics mode)");
+        return true;
+    }
+#endif
+
+    LOG_ERROR("ScreenCapture initialization failed");
+    return false;
+}
+
+void ScreenCapture::shutdown() {
+    if (!m_initialized) {
+        return;
+    }
+
+#ifdef _WIN32
+    if (m_useDxgi) {
+        shutdownDxgi();
+    }
+#endif
+#ifdef __linux__
+    shutdownLinux();
+#endif
+#ifdef __APPLE__
+    shutdownMac();
+#endif
+
+    m_initialized = false;
+    LOG_INFO("ScreenCapture shutdown");
+}
+
+QImage ScreenCapture::captureFrame() {
+    if (!m_initialized) {
+        return QImage();
+    }
+
+#ifdef _WIN32
+    if (m_useDxgi && !m_dxgiFallback) {
+        QImage frame = captureDxgiFrame();
+        if (!frame.isNull()) {
+            m_dxFailCount = 0;
+            return frame;
+        }
+        // Track consecutive failures; after 10, permanently switch to GDI
+        if (++m_dxFailCount >= 10) {
+            m_dxgiFallback = true;
+            LOG_WARNING("DXGI capture failed " + QString::number(m_dxFailCount) + " times, switching to GDI permanently");
+        }
+        // Also try GDI for this frame so the user sees something
+        return captureGdiFrame();
+    }
+    return captureGdiFrame();
+#elif defined(__linux__)
+    return captureLinuxFrame();
+#elif defined(__APPLE__)
+    return captureMacFrame();
+#else
+    return QImage();
+#endif
+}
+
+bool ScreenCapture::isInitialized() const {
+    return m_initialized;
+}
+
+void ScreenCapture::setCaptureRect(const QRect& rect) {
+    m_captureRect = rect;
+}
+
+QRect ScreenCapture::captureRect() const {
+    return m_captureRect;
+}
+
+void ScreenCapture::setTargetFps(int fps) {
+    m_targetFps = qBound(1, fps, 60);
+}
+
+int ScreenCapture::targetFps() const {
+    return m_targetFps;
+}
+
+#ifdef _WIN32
+bool ScreenCapture::initializeDxgi() {
+    HRESULT hr;
+
+    D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0
+    };
+    D3D_FEATURE_LEVEL featureLevel;
+
+    hr = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        0,
+        featureLevels,
+        1,
+        D3D11_SDK_VERSION,
+        m_dxgiContext->device.GetAddressOf(),
+        &featureLevel,
+        m_dxgiContext->context.GetAddressOf()
+    );
+
+    if (FAILED(hr)) {
+        LOG_ERROR("DXGI: Failed to create D3D11 device");
+        return false;
+    }
+
+    m_monitors.clear();
+
+    ComPtr<IDXGIDevice> dxgiDevice;
+    hr = m_dxgiContext->device.As(&dxgiDevice);
+    if (FAILED(hr)) {
+        LOG_ERROR("DXGI: Failed to get IDXGIDevice");
+        return false;
+    }
+
+    ComPtr<IDXGIAdapter> adapter;
+    hr = dxgiDevice->GetAdapter(adapter.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG_ERROR("DXGI: Failed to get adapter");
+        return false;
+    }
+
+    IDXGIOutput* outputRaw = nullptr;
+    for (UINT i = 0; adapter->EnumOutputs(i, &outputRaw) != DXGI_ERROR_NOT_FOUND; ++i) {
+        ComPtr<IDXGIOutput> output;
+        output.Attach(outputRaw);
+
+        DXGI_OUTPUT_DESC outputDesc;
+        hr = output->GetDesc(&outputDesc);
+        if (FAILED(hr)) {
+            continue;
+        }
+
+        MonitorInfo info;
+        info.index = static_cast<int>(i);
+        info.name = QString::fromWCharArray(outputDesc.DeviceName);
+        info.x = outputDesc.DesktopCoordinates.left;
+        info.y = outputDesc.DesktopCoordinates.top;
+        info.width = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
+        info.height = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
+        info.isPrimary = (outputDesc.DesktopCoordinates.left == 0 && outputDesc.DesktopCoordinates.top == 0);
+
+        m_monitors.append(info);
+
+        if (i == static_cast<UINT>(m_monitorIndex) || m_monitors.size() == 1) {
+            m_dxgiContext->width = info.width;
+            m_dxgiContext->height = info.height;
+
+            ComPtr<IDXGIOutput1> output1;
+            hr = output.As(&output1);
+            if (FAILED(hr)) {
+                continue;
+            }
+
+            hr = output1->DuplicateOutput(
+                m_dxgiContext->device.Get(),
+                m_dxgiContext->duplication.GetAddressOf()
+            );
+
+            if (FAILED(hr)) {
+                LOG_ERROR("DXGI: DuplicateOutput failed for monitor " + QString::number(i));
+                continue;
+            }
+
+            m_dxgiContext->valid = true;
+            LOG_INFO("DXGI initialized for monitor " + QString::number(i) + ": " + 
+                     QString::number(info.width) + "x" + QString::number(info.height));
+        }
+    }
+
+    if (m_monitors.isEmpty()) {
+        LOG_ERROR("DXGI: No monitors found");
+        return false;
+    }
+
+    if (m_monitorIndex >= m_monitors.size()) {
+        m_monitorIndex = 0;
+    }
+
+    if (!m_dxgiContext->valid && !m_monitors.isEmpty()) {
+        m_monitorIndex = 0;
+        return initializeDxgi();
+    }
+
+    return m_dxgiContext->valid;
+}
+
+void ScreenCapture::shutdownDxgi() {
+    if (m_dxgiContext) {
+        m_dxgiContext->stagingTexture.Reset();
+        m_dxgiContext->duplication.Reset();
+        m_dxgiContext->context.Reset();
+        m_dxgiContext->device.Reset();
+        m_dxgiContext->valid = false;
+    }
+    m_monitors.clear();
+}
+
+QImage ScreenCapture::captureDxgiFrame() {
+    if (!m_dxgiContext || !m_dxgiContext->valid) {
+        return QImage();
+    }
+
+    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+    ComPtr<IDXGIResource> resource;
+
+    HRESULT hr = m_dxgiContext->duplication->AcquireNextFrame(
+        100,
+        &frameInfo,
+        resource.GetAddressOf()
+    );
+
+    if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+        return QImage();
+    }
+
+    if (FAILED(hr)) {
+        m_dxgiContext->duplication->ReleaseFrame();
+        return QImage();
+    }
+
+    ComPtr<ID3D11Texture2D> desktopTexture;
+    hr = resource.As(&desktopTexture);
+    if (FAILED(hr)) {
+        m_dxgiContext->duplication->ReleaseFrame();
+        return QImage();
+    }
+
+    D3D11_TEXTURE2D_DESC desc;
+    desktopTexture->GetDesc(&desc);
+
+    if (!m_dxgiContext->stagingTexture) {
+        D3D11_TEXTURE2D_DESC stagingDesc{};
+        stagingDesc.Width = desc.Width;
+        stagingDesc.Height = desc.Height;
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        hr = m_dxgiContext->device->CreateTexture2D(
+            &stagingDesc,
+            nullptr,
+            m_dxgiContext->stagingTexture.GetAddressOf()
+        );
+
+        if (FAILED(hr)) {
+            m_dxgiContext->duplication->ReleaseFrame();
+            return QImage();
+        }
+        LOG_INFO("DXGI: Staging texture created: " + QString::number(desc.Width) + "x" + QString::number(desc.Height));
+    }
+
+    m_dxgiContext->context->CopyResource(m_dxgiContext->stagingTexture.Get(), desktopTexture.Get());
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    hr = m_dxgiContext->context->Map(
+        m_dxgiContext->stagingTexture.Get(),
+        0,
+        D3D11_MAP_READ,
+        0,
+        &mapped
+    );
+
+    if (FAILED(hr)) {
+        m_dxgiContext->duplication->ReleaseFrame();
+        return QImage();
+    }
+
+    D3D11_TEXTURE2D_DESC stagingDesc;
+    m_dxgiContext->stagingTexture->GetDesc(&stagingDesc);
+
+    QImage image(stagingDesc.Width, stagingDesc.Height, QImage::Format_RGB32);
+
+    const uchar* src = static_cast<const uchar*>(mapped.pData);
+    uchar* dst = image.bits();
+    int srcPitch = mapped.RowPitch;
+    int dstPitch = image.bytesPerLine();
+    int rowBytes = stagingDesc.Width * 4;
+
+    for (int y = 0; y < stagingDesc.Height; ++y) {
+        const uint* srcRow = reinterpret_cast<const uint*>(src + y * srcPitch);
+        uint* dstRow = reinterpret_cast<uint*>(dst + y * dstPitch);
+        for (int x = 0; x < stagingDesc.Width; ++x) {
+            uint bgra = srcRow[x];
+            uchar b = bgra & 0xFF;
+            uchar g = (bgra >> 8) & 0xFF;
+            uchar r = (bgra >> 16) & 0xFF;
+            dstRow[x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    m_dxgiContext->context->Unmap(m_dxgiContext->stagingTexture.Get(), 0);
+    m_dxgiContext->duplication->ReleaseFrame();
+
+    emit frameCaptured(image);
+    return image;
+}
+
+QImage ScreenCapture::captureFrame(int monitorIndex) {
+    if (!m_initialized) {
+        return QImage();
+    }
+
+    if (monitorIndex != m_monitorIndex && monitorIndex >= 0 && monitorIndex < m_monitors.size()) {
+        setMonitorIndex(monitorIndex);
+    }
+
+    return captureFrame();
+}
+
+QList<MonitorInfo> ScreenCapture::getMonitorList() const {
+    return m_monitors;
+}
+
+int ScreenCapture::monitorCount() const {
+    return m_monitors.size();
+}
+
+void ScreenCapture::setMonitorIndex(int index) {
+    if (index < 0 || index >= m_monitors.size()) {
+        return;
+    }
+
+    if (index == m_monitorIndex) {
+        return;
+    }
+
+    m_monitorIndex = index;
+    shutdown();
+    initialize();
+    LOG_INFO("Switched to monitor " + QString::number(index));
+}
+
+int ScreenCapture::monitorIndex() const {
+    return m_monitorIndex;
+}
+
+namespace {
+
+struct MonitorEnumData {
+    QList<xrk::MonitorInfo>* monitors;
+};
+
+BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdc, LPRECT lprect, LPARAM lParam) {
+    Q_UNUSED(hdc);
+    Q_UNUSED(lprect);
+    MonitorEnumData* data = reinterpret_cast<MonitorEnumData*>(lParam);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(hMonitor, &mi);
+    
+    xrk::MonitorInfo info;
+    info.index = data->monitors->size();
+    info.name = QString::fromWCharArray(mi.szDevice);
+    info.x = mi.rcMonitor.left;
+    info.y = mi.rcMonitor.top;
+    info.width = mi.rcMonitor.right - mi.rcMonitor.left;
+    info.height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    info.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    
+    data->monitors->append(info);
+    return TRUE;
+}
+
+} // anonymous namespace
+
+bool ScreenCapture::initializeGdi() {
+    m_monitors.clear();
+    
+    MonitorEnumData data = {&m_monitors};
+    EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(&data));
+    
+    if (m_monitors.isEmpty()) {
+        MonitorInfo info;
+        info.index = 0;
+        info.name = "Primary";
+        info.x = 0;
+        info.y = 0;
+        info.width = GetSystemMetrics(SM_CXSCREEN);
+        info.height = GetSystemMetrics(SM_CYSCREEN);
+        info.isPrimary = true;
+        m_monitors.append(info);
+    }
+    
+    LOG_INFO("GDI: Found " + QString::number(m_monitors.size()) + " monitors");
+    return true;
+}
+
+QImage ScreenCapture::captureGdiFrame() {
+    if (m_monitorIndex >= m_monitors.size()) {
+        m_monitorIndex = 0;
+    }
+    
+    const MonitorInfo& monitor = m_monitors[m_monitorIndex];
+    
+    HDC hScreenDC = CreateDCW(nullptr, monitor.name.toStdWString().c_str(), nullptr, nullptr);
+    if (!hScreenDC) {
+        hScreenDC = GetDC(nullptr);
+    }
+    
+    if (!hScreenDC) return QImage();
+
+    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+    if (!hMemoryDC) {
+        ReleaseDC(nullptr, hScreenDC);
+        return QImage();
+    }
+
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, monitor.width, monitor.height);
+    if (!hBitmap) {
+        DeleteDC(hMemoryDC);
+        ReleaseDC(nullptr, hScreenDC);
+        return QImage();
+    }
+
+    HGDIOBJ hOldBitmap = SelectObject(hMemoryDC, hBitmap);
+
+    BitBlt(hMemoryDC, 0, 0, monitor.width, monitor.height, hScreenDC, 0, 0, SRCCOPY);
+
+    BITMAPINFOHEADER bi{};
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = monitor.width;
+    bi.biHeight = -monitor.height;
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
+
+    QImage image(monitor.width, monitor.height, QImage::Format_RGB32);
+    GetDIBits(hMemoryDC, hBitmap, 0, monitor.height, image.bits(), reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
+
+    SelectObject(hMemoryDC, hOldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hMemoryDC);
+    ReleaseDC(nullptr, hScreenDC);
+
+    emit frameCaptured(image);
+    return image;
+}
+
+QImage ScreenCapture::captureGdiFrame(int monitorIndex) {
+    if (monitorIndex != m_monitorIndex) {
+        setMonitorIndex(monitorIndex);
+    }
+    return captureGdiFrame();
+}
+
+QImage ScreenCapture::captureDxgiFrame(int monitorIndex) {
+    if (monitorIndex != m_monitorIndex) {
+        setMonitorIndex(monitorIndex);
+    }
+    return captureDxgiFrame();
+}
+
+// ==================== Linux (X11/XShm) ====================
+
+#elif defined(__linux__)
+
+bool ScreenCapture::initializeLinux() {
+    Display* display = XOpenDisplay(nullptr);
+    if (!display) {
+        LOG_ERROR("Linux: Cannot open X display");
+        return false;
+    }
+
+    m_linuxContext->display = display;
+    m_linuxContext->rootWindow = DefaultRootWindow(display);
+
+    int screen = DefaultScreen(display);
+    m_linuxContext->screenWidth = DisplayWidth(display, screen);
+    m_linuxContext->screenHeight = DisplayHeight(display, screen);
+
+    int major, minor;
+    if (!XShmQueryVersion(display, &major, &minor)) {
+        LOG_WARNING("Linux: XShm not available, using XGetImage (slower)");
+    }
+
+    XImage* img = XShmCreateImage(display, DefaultVisual(display, screen),
+                                   DefaultDepth(display, screen), ZPixmap,
+                                   nullptr, &m_linuxContext->shmInfo,
+                                   m_linuxContext->screenWidth,
+                                   m_linuxContext->screenHeight);
+
+    if (!img) {
+        LOG_ERROR("Linux: XShmCreateImage failed");
+        XCloseDisplay(display);
+        m_linuxContext->display = nullptr;
+        return false;
+    }
+
+    m_linuxContext->shmInfo.shmid = shmget(IPC_PRIVATE, img->bytes_per_line * img->height,
+                                            IPC_CREAT | 0777);
+    if (m_linuxContext->shmInfo.shmid < 0) {
+        LOG_ERROR("Linux: shmget failed");
+        XDestroyImage(img);
+        XCloseDisplay(display);
+        m_linuxContext->display = nullptr;
+        return false;
+    }
+
+    m_linuxContext->shmInfo.shmaddr = static_cast<char*>(shmat(m_linuxContext->shmInfo.shmid, nullptr, 0));
+    m_linuxContext->shmInfo.readOnly = False;
+
+    if (m_linuxContext->shmInfo.shmaddr == reinterpret_cast<char*>(-1)) {
+        LOG_ERROR("Linux: shmat failed");
+        shmctl(m_linuxContext->shmInfo.shmid, IPC_RMID, nullptr);
+        XDestroyImage(img);
+        XCloseDisplay(display);
+        m_linuxContext->display = nullptr;
+        return false;
+    }
+
+    img->data = m_linuxContext->shmInfo.shmaddr;
+    m_linuxContext->xImage = img;
+
+    if (!XShmAttach(display, &m_linuxContext->shmInfo)) {
+        LOG_ERROR("Linux: XShmAttach failed");
+        shmdt(m_linuxContext->shmInfo.shmaddr);
+        shmctl(m_linuxContext->shmInfo.shmid, IPC_RMID, nullptr);
+        XDestroyImage(img);
+        XCloseDisplay(display);
+        m_linuxContext->display = nullptr;
+        return false;
+    }
+
+    m_linuxContext->valid = true;
+
+    MonitorInfo info;
+    info.index = 0;
+    info.name = "Primary";
+    info.x = 0;
+    info.y = 0;
+    info.width = m_linuxContext->screenWidth;
+    info.height = m_linuxContext->screenHeight;
+    info.isPrimary = true;
+    m_monitors.append(info);
+
+    LOG_INFO("Linux: XShm initialized: " + QString::number(info.width) + "x" + QString::number(info.height));
+    return true;
+}
+
+void ScreenCapture::shutdownLinux() {
+    if (m_linuxContext && m_linuxContext->display) {
+        if (m_linuxContext->xImage) {
+            XShmDetach(m_linuxContext->display, &m_linuxContext->shmInfo);
+            XDestroyImage(m_linuxContext->xImage);
+            m_linuxContext->xImage = nullptr;
+        }
+        if (m_linuxContext->shmInfo.shmaddr) {
+            shmdt(m_linuxContext->shmInfo.shmaddr);
+            shmctl(m_linuxContext->shmInfo.shmid, IPC_RMID, nullptr);
+            m_linuxContext->shmInfo.shmaddr = nullptr;
+        }
+        XCloseDisplay(m_linuxContext->display);
+        m_linuxContext->display = nullptr;
+        m_linuxContext->valid = false;
+    }
+    m_monitors.clear();
+}
+
+QImage ScreenCapture::captureLinuxFrame() {
+    if (!m_linuxContext || !m_linuxContext->valid) {
+        return QImage();
+    }
+
+    if (!XShmGetImage(m_linuxContext->display, m_linuxContext->rootWindow,
+                       m_linuxContext->xImage, 0, 0, AllPlanes)) {
+        return QImage();
+    }
+
+    int width = m_linuxContext->screenWidth;
+    int height = m_linuxContext->screenHeight;
+
+    QImage image(width, height, QImage::Format_RGB32);
+
+    int bytesPerLine = m_linuxContext->xImage->bytes_per_line;
+    const uchar* src = reinterpret_cast<const uchar*>(m_linuxContext->xImage->data);
+    uchar* dst = image.bits();
+    int dstPitch = image.bytesPerLine();
+
+    for (int y = 0; y < height; ++y) {
+        const uchar* srcRow = src + y * bytesPerLine;
+        uchar* dstRow = dst + y * dstPitch;
+        std::memcpy(dstRow, srcRow, width * 4);
+    }
+
+    return image;
+}
+
+QImage ScreenCapture::captureLinuxFrame(int monitorIndex) {
+    Q_UNUSED(monitorIndex);
+    return captureLinuxFrame();
+}
+
+// ==================== macOS (CoreGraphics) ====================
+
+#elif defined(__APPLE__)
+
+bool ScreenCapture::initializeMac() {
+    CGDisplayCount count;
+    CGDirectDisplayID displayIDs[16];
+    CGGetActiveDisplayList(16, displayIDs, &count);
+
+    if (count == 0) {
+        LOG_ERROR("macOS: No active displays found");
+        return false;
+    }
+
+    m_macContext->displays.clear();
+    for (CGDisplayCount i = 0; i < count && i < 16; ++i) {
+        m_macContext->displays.append(displayIDs[i]);
+
+        CGRect bounds = CGDisplayBounds(displayIDs[i]);
+
+        MonitorInfo info;
+        info.index = static_cast<int>(i);
+        info.name = QString("Display %1").arg(i);
+        info.x = static_cast<int>(bounds.origin.x);
+        info.y = static_cast<int>(bounds.origin.y);
+        info.width = static_cast<int>(bounds.size.width);
+        info.height = static_cast<int>(bounds.size.height);
+        info.isPrimary = (displayIDs[i] == CGMainDisplayID());
+        m_monitors.append(info);
+    }
+
+    m_macContext->valid = true;
+    LOG_INFO("macOS: Found " + QString::number(count) + " displays");
+    return true;
+}
+
+void ScreenCapture::shutdownMac() {
+    m_macContext->displays.clear();
+    m_macContext->valid = false;
+    m_monitors.clear();
+}
+
+QImage ScreenCapture::captureMacFrame() {
+    if (!m_macContext || !m_macContext->valid || m_macContext->displays.isEmpty()) {
+        return QImage();
+    }
+
+    int idx = qBound(0, m_monitorIndex, m_macContext->displays.size() - 1);
+    CGDirectDisplayID displayId = m_macContext->displays[idx];
+
+    CGImageRef cgImage = CGDisplayCreateImage(displayId);
+    if (!cgImage) {
+        return QImage();
+    }
+
+    size_t w = CGImageGetWidth(cgImage);
+    size_t h = CGImageGetHeight(cgImage);
+    QImage image(static_cast<int>(w), static_cast<int>(h), QImage::Format_RGB32);
+    image.fill(0);
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(image.bits(), w, h, 8, image.bytesPerLine(),
+                                             colorSpace, kCGImageAlphaPremultipliedFirst);
+
+    if (ctx) {
+        CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cgImage);
+        CGContextRelease(ctx);
+    }
+
+    CGColorSpaceRelease(colorSpace);
+    CGImageRelease(cgImage);
+
+    return image;
+}
+
+QImage ScreenCapture::captureMacFrame(int monitorIndex) {
+    if (monitorIndex >= 0 && monitorIndex < m_macContext->displays.size()) {
+        CGDirectDisplayID displayId = m_macContext->displays[monitorIndex];
+        CGImageRef cgImage = CGDisplayCreateImage(displayId);
+        if (!cgImage) return QImage();
+
+        size_t w = CGImageGetWidth(cgImage);
+        size_t h = CGImageGetHeight(cgImage);
+        QImage image(static_cast<int>(w), static_cast<int>(h), QImage::Format_RGB32);
+        image.fill(0);
+
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(image.bits(), w, h, 8, image.bytesPerLine(),
+                                                 colorSpace, kCGImageAlphaPremultipliedFirst);
+        if (ctx) {
+            CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cgImage);
+            CGContextRelease(ctx);
+        }
+        CGColorSpaceRelease(colorSpace);
+        CGImageRelease(cgImage);
+        return image;
+    }
+    return captureMacFrame();
+}
+
+// ==================== Platform stubs ====================
+
+#else
+
+bool ScreenCapture::initializeDxgi() { return false; }
+void ScreenCapture::shutdownDxgi() {}
+QImage ScreenCapture::captureDxgiFrame() { return QImage(); }
+QImage ScreenCapture::captureDxgiFrame(int) { return QImage(); }
+bool ScreenCapture::initializeGdi() {
+    MonitorInfo info;
+    info.index = 0; info.name = "Primary";
+    info.x = 0; info.y = 0;
+    info.width = 1920; info.height = 1080;
+    info.isPrimary = true;
+    m_monitors.append(info);
+    return true;
+}
+QImage ScreenCapture::captureGdiFrame() { return QImage(); }
+QImage ScreenCapture::captureGdiFrame(int) { return QImage(); }
+bool ScreenCapture::initializeLinux() { return false; }
+void ScreenCapture::shutdownLinux() {}
+QImage ScreenCapture::captureLinuxFrame() { return QImage(); }
+QImage ScreenCapture::captureLinuxFrame(int) { return QImage(); }
+bool ScreenCapture::initializeMac() { return false; }
+void ScreenCapture::shutdownMac() {}
+QImage ScreenCapture::captureMacFrame() { return QImage(); }
+QImage ScreenCapture::captureMacFrame(int) { return QImage(); }
+
+#endif
+
+} // namespace xrk

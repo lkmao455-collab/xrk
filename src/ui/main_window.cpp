@@ -1,0 +1,800 @@
+#include "main_window.h"
+#include "device_list_widget.h"
+#include "remote_desktop_widget.h"
+#include "file_transfer_widget.h"
+#include "terminal_widget.h"
+#include "chat_widget.h"
+#include "system_info_widget.h"
+#include "settings_widget.h"
+#include "core/network_manager.h"
+#include "core/device_discovery.h"
+#include "app/device_manager.h"
+#include "app/session_manager.h"
+#include "app/remote_controller.h"
+#include "app/host.h"
+#include "app/file_transfer_manager.h"
+#include "app/clipboard_manager.h"
+#include "app/clipboard_history.h"
+#include "app/relay_server.h"
+#include "app/nat_traversal.h"
+#include "core/audit_logger.h"
+#include "core/translation_manager.h"
+#include "core/logger.h"
+#include "clipboard_history_widget.h"
+#include <QMenuBar>
+#include <QStatusBar>
+#include <QSplitter>
+#include <QMessageBox>
+#include <QInputDialog>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QStackedWidget>
+#include <QPushButton>
+#include <QFileDialog>
+#include <QDateTime>
+#include <QSettings>
+#include <QApplication>
+#include <QStyle>
+#include <QMenu>
+#include <QFileInfo>
+#include <QHostInfo>
+
+namespace xrk {
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    m_network = std::make_unique<NetworkManager>();
+    m_deviceDiscovery = std::make_unique<DeviceDiscovery>(m_network.get());
+    m_deviceManager = std::make_unique<DeviceManager>(m_deviceDiscovery.get());
+    m_sessionManager = std::make_unique<SessionManager>();
+    m_remoteController = std::make_unique<RemoteController>(m_network.get(), m_sessionManager.get());
+    m_host = std::make_unique<Host>();
+    m_fileTransferManager = std::make_unique<FileTransferManager>(nullptr);
+    m_clipboardManager = std::make_unique<ClipboardManager>(nullptr);
+    m_relayServer = std::make_unique<RelayServer>();
+    m_natTraversal = std::make_unique<NatTraversal>();
+    m_auditLogger = std::make_unique<AuditLogger>();
+    m_clipboardHistory = std::make_unique<ClipboardHistory>();
+    m_clipboardHistory->load();
+
+    setupUI();
+    createActions();
+    setupMenuBar();
+    setupStatusBar();
+    setupConnections();
+
+    m_network->initialize(DEFAULT_PORT, /*startTcpServer=*/false);
+    m_deviceDiscovery->startDiscovery();
+
+    setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
+    resize(1200, 800);
+    switchToPage(PAGE_HOME);
+}
+
+MainWindow::~MainWindow() {
+    if (m_host) {
+        m_host->stop();
+    }
+    if (m_network) {
+        m_network->shutdown();
+    }
+}
+
+// ────────── Sidebar Navigation ──────────
+
+static QPushButton* createNavButton(const QString& iconPath, const QString& tooltip, QWidget* parent) {
+    auto* btn = new QPushButton(parent);
+    btn->setObjectName("navButton");
+    btn->setToolTip(tooltip);
+    btn->setCheckable(true);
+    btn->setFixedSize(40, 40);
+    btn->setIcon(QIcon(iconPath));
+    btn->setIconSize(QSize(20, 20));
+    return btn;
+}
+
+void MainWindow::switchToPage(int index) {
+    if (index < 0 || index >= PAGE_COUNT) return;
+    m_currentPage = index;
+    m_contentStack->setCurrentIndex(index);
+    updateNavButtons();
+}
+
+void MainWindow::updateNavButtons() {
+    for (int i = 0; i < PAGE_COUNT; ++i) {
+        if (m_navButtons[i]) {
+            m_navButtons[i]->setChecked(i == m_currentPage);
+        }
+    }
+}
+
+// ────────── UI Setup ──────────
+
+void MainWindow::setupUI() {
+    auto* centralWidget = new QWidget(this);
+    auto* mainLayout = new QHBoxLayout(centralWidget);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+
+    // --- Icon Sidebar ---
+    m_navSidebar = new QWidget();
+    m_navSidebar->setObjectName("navSidebar");
+    m_navSidebar->setFixedWidth(52);
+    auto* navLayout = new QVBoxLayout(m_navSidebar);
+    navLayout->setContentsMargins(4, 8, 4, 8);
+    navLayout->setSpacing(2);
+
+    m_navButtons[PAGE_HOME]     = createNavButton(":/icons/home.svg",     "\u5bb6\u9875",     this);
+    m_navButtons[PAGE_DESKTOP]  = createNavButton(":/icons/desktop.svg",  "\u8fdc\u7a0b\u684c\u9762", this);
+    m_navButtons[PAGE_FILES]    = createNavButton(":/icons/files.svg",    "\u6587\u4ef6\u4f20\u8f93", this);
+    m_navButtons[PAGE_TERMINAL] = createNavButton(":/icons/terminal.svg", "\u8fdc\u7a0b\u7ec8\u7aef", this);
+    m_navButtons[PAGE_CHAT]     = createNavButton(":/icons/chat.svg",     "\u804a\u5929",     this);
+    m_navButtons[PAGE_MONITOR]  = createNavButton(":/icons/monitor.svg",  "\u7cfb\u7edf\u4fe1\u606f", this);
+    m_navButtons[PAGE_CLIPBOARD]= createNavButton(":/icons/clipboard.svg","\u526a\u8d34\u677f\u5386\u53f2", this);
+
+    for (int i = 0; i < PAGE_COUNT; ++i) {
+        navLayout->addWidget(m_navButtons[i]);
+        int page = i;
+        connect(m_navButtons[i], &QPushButton::clicked, this, [this, page]() {
+            switchToPage(page);
+        });
+    }
+
+    navLayout->addStretch();
+
+    // Settings button at bottom of sidebar
+    auto* settingsBtn = createNavButton(":/icons/settings.svg", "\u8bbe\u7f6e", this);
+    connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+    navLayout->addWidget(settingsBtn);
+
+    mainLayout->addWidget(m_navSidebar);
+
+    // --- Content Stack ---
+    m_contentStack = new QStackedWidget();
+
+    // Page 0: Home (device list + connect)
+    m_deviceListWidget = new DeviceListWidget(m_deviceManager.get());
+    m_contentStack->addWidget(m_deviceListWidget);
+
+    // Page 1: Remote Desktop
+    m_remoteDesktopWidget = new RemoteDesktopWidget(m_remoteController.get());
+    m_contentStack->addWidget(m_remoteDesktopWidget);
+
+    // Page 2: File Transfer
+    m_fileTransferWidget = new FileTransferWidget(m_fileTransferManager.get(), m_remoteDesktopWidget);
+    m_contentStack->addWidget(m_fileTransferWidget);
+
+    // Page 3: Terminal
+    m_terminalWidget = new TerminalWidget();
+    m_contentStack->addWidget(m_terminalWidget);
+
+    // Page 4: Chat
+    m_chatWidget = new ChatWidget();
+    m_contentStack->addWidget(m_chatWidget);
+
+    // Page 5: System Info
+    m_sysInfoWidget = new SystemInfoWidget();
+    m_contentStack->addWidget(m_sysInfoWidget);
+
+    // Page 6: Clipboard History
+    m_clipboardHistoryWidget = new ClipboardHistoryWidget(m_clipboardHistory.get());
+    m_contentStack->addWidget(m_clipboardHistoryWidget);
+
+    mainLayout->addWidget(m_contentStack, 1);
+
+    setCentralWidget(centralWidget);
+}
+
+// ────────── Menu Bar ──────────
+
+void MainWindow::setupMenuBar() {
+    QMenuBar* menuBar = this->menuBar();
+
+    QMenu* fileMenu = menuBar->addMenu("\u6587\u4ef6(&F)");
+    fileMenu->addAction(m_toggleHostAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_settingsAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_exitAction);
+
+    QMenu* remoteMenu = menuBar->addMenu("\u8fdc\u7a0b\u64cd\u4f5c");
+    remoteMenu->addAction(m_screenshotAction);
+    remoteMenu->addAction(m_recordAction);
+    remoteMenu->addAction(m_cameraAction);
+    remoteMenu->addAction(m_audioAction);
+
+    QMenu* powerMenu = menuBar->addMenu("\u8fdc\u7a0b\u7535\u6e90");
+    QAction* shutdownAct = powerMenu->addAction("\u5173\u673a");
+    connect(shutdownAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::SHUTDOWN); });
+    QAction* restartAct = powerMenu->addAction("\u91cd\u542f");
+    connect(restartAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::RESTART); });
+    QAction* logoutAct = powerMenu->addAction("\u6ce8\u9500");
+    connect(logoutAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::LOGOUT); });
+    powerMenu->addSeparator();
+    QAction* sleepAct = powerMenu->addAction("\u7761\u7720");
+    connect(sleepAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::SLEEP); });
+    QAction* hibernateAct = powerMenu->addAction("\u4f11\u7720");
+    connect(hibernateAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::HIBERNATE); });
+    QAction* lockAct = powerMenu->addAction("\u9501\u5c4f");
+    connect(lockAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::LOCK); });
+
+    QMenu* helpMenu = menuBar->addMenu("\u5e2e\u52a9(&H)");
+    helpMenu->addAction(m_aboutAction);
+}
+
+// ────────── Status Bar ──────────
+
+void MainWindow::setupStatusBar() {
+    statusBar()->showMessage("\u5c31\u7eea - \u8bf7\u542f\u52a8\u670d\u52a1\u6216\u8fde\u63a5\u5230\u5176\u4ed6\u8bbe\u5907");
+
+    m_trayIcon = new QSystemTrayIcon(qApp->style()->standardIcon(QStyle::SP_ComputerIcon), this);
+    m_trayIcon->setToolTip("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
+    m_trayIcon->show();
+}
+
+// ────────── Event Handlers ──────────
+
+void MainWindow::onDeviceSelected(const QString& deviceId) {
+    LOG_DEBUG("Device selected: " + deviceId);
+}
+
+void MainWindow::onRemoteStarted() {
+    statusBar()->showMessage("\u8fdc\u7a0b\u8fde\u63a5\u5df2\u5efa\u7acb");
+    m_terminalWidget->setConnected(true);
+    m_remoteController->sendTerminalStart("cmd");
+    m_screenshotAction->setEnabled(true);
+    m_recordAction->setEnabled(true);
+    m_cameraAction->setEnabled(true);
+    m_sysInfoWidget->setRemoteController(m_remoteController.get());
+    m_sysInfoWidget->setConnected(true);
+
+    m_fileTransferManager->setConnection(m_remoteController->connection());
+    m_clipboardManager->setConnection(m_remoteController->connection());
+    m_clipboardManager->setHistory(m_clipboardHistory.get());
+    m_clipboardManager->startMonitoring();
+    m_fileTransferWidget->setRemoteController(m_remoteController.get());
+    m_fileTransferWidget->onRemoteConnected();
+
+    // Switch to desktop view when connected
+    switchToPage(PAGE_DESKTOP);
+}
+
+void MainWindow::onRemoteStopped() {
+    statusBar()->showMessage("\u8fdc\u7a0b\u8fde\u63a5\u5df2\u65ad\u5f00");
+    m_terminalWidget->setConnected(false);
+    m_screenshotAction->setEnabled(false);
+    m_recordAction->setEnabled(false);
+    m_cameraAction->setEnabled(false);
+    if (m_recordingActive) {
+        m_recordingActive = false;
+        m_recordAction->setText("\u5f00\u59cb\u5f55\u5236");
+    }
+    if (m_cameraActive) {
+        m_cameraActive = false;
+        m_cameraAction->setChecked(false);
+    }
+    m_sysInfoWidget->setConnected(false);
+}
+
+void MainWindow::onSettingsClicked() {
+    SettingsWidget settings(this);
+    if (settings.exec() == QDialog::Accepted) {
+        if (m_host) {
+            m_host->setCaptureFps(settings.fps());
+            m_host->setPrivacyScreenEnabled(settings.privacyScreenEnabled());
+            m_host->setEncoderTrueColor(settings.trueColorEnabled());
+        }
+        if (m_relayServer->isRunning()) {
+            m_relayServer->stop();
+        }
+        if (settings.relayEnabled() && !settings.relayHost().isEmpty()) {
+            m_natTraversal->setRelayServer(settings.relayHost(), settings.relayPort());
+            if (m_hostMode) {
+                QString deviceId = "host_" + QHostInfo::localHostName();
+                m_natTraversal->setDeviceId(deviceId);
+                m_natTraversal->connectToRelay();
+            }
+        }
+        configureRelay();
+
+        QString newLang = settings.selectedLanguage();
+        if (!newLang.isEmpty() && newLang != TranslationManager::instance().currentLanguage()) {
+            TranslationManager::instance().setLanguage(newLang);
+            QMessageBox::information(this, tr("\u8bed\u8a00"), tr("\u8bed\u8a00\u5c06\u5728\u91cd\u542f\u540e\u5b8c\u5168\u751f\u6548"));
+        }
+    }
+}
+
+void MainWindow::onAboutClicked() {
+    QMessageBox::about(this, "\u5173\u4e8e XRK",
+        "XRK \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236\u8f6f\u4ef6 v1.0.0\n\n"
+        "\u4f7f\u7528\u65b9\u6cd5:\n"
+        "1. \u88ab\u63a7\u7aef: \u70b9\u51fb\"\u542f\u52a8\u670d\u52a1\"\u6309\u94ae\n"
+        "2. \u4e3b\u63a7\u7aef: \u8f93\u5165\u88ab\u63a7\u7aefIP\u5730\u5740\uff0c\u70b9\u51fb\"\u8fde\u63a5\u5230IP\"");
+}
+
+void MainWindow::onToggleHost() {
+    if (m_hostMode) {
+        m_host->stop();
+        m_hostMode = false;
+        m_relayServer->stop();
+        m_natTraversal->disconnectFromRelay();
+        m_toggleHostAction->setText("\u542f\u52a8\u670d\u52a1");
+        m_recordAction->setEnabled(false);
+        if (m_recordingActive) {
+            m_recordingActive = false;
+            m_recordAction->setText("\u5f00\u59cb\u5f55\u5236");
+        }
+        statusBar()->showMessage("\u670d\u52a1\u5df2\u505c\u6b62");
+        setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
+        LOG_INFO("Host mode stopped");
+    } else {
+        QSettings settings;
+        int savedFps = settings.value("performance/capture_fps", 60).toInt();
+        bool privacy = settings.value("security/privacy_screen", false).toBool();
+        bool trueColor = settings.value("video/true_color", false).toBool();
+
+        m_host->setCaptureFps(savedFps);
+        m_host->setPrivacyScreenEnabled(privacy);
+        m_host->setEncoderTrueColor(trueColor);
+
+        if (m_host->start(DEFAULT_PORT)) {
+            m_hostMode = true;
+            m_toggleHostAction->setText("\u505c\u6b62\u670d\u52a1");
+            m_recordAction->setEnabled(true);
+            m_cameraAction->setEnabled(true);
+            statusBar()->showMessage("\u670d\u52a1\u5df2\u542f\u52a8 - \u8bc6\u522b\u7801: " + m_host->accessCode());
+            setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236 [\u670d\u52a1\u6a21\u5f0f - " + m_host->accessCode() + "]");
+
+            bool relayEnabled = settings.value("relay/enabled", false).toBool();
+            QString relayHost = settings.value("relay/host", "").toString();
+            uint16_t relayPort = settings.value("relay/port", 9997).toUInt();
+            if (relayEnabled && !relayHost.isEmpty()) {
+                m_relayMode = true;
+                QString deviceId = "host_" + QHostInfo::localHostName();
+                m_natTraversal->setDeviceId(deviceId);
+                m_natTraversal->setRelayServer(relayHost, relayPort);
+                m_natTraversal->connectToRelay();
+                configureRelay();
+                statusBar()->showMessage("\u670d\u52a1\u5df2\u542f\u52a8 - \u5df2\u8fde\u63a5\u4e2d\u7ee7: " + relayHost +
+                                         "  \u8bc6\u522b\u7801(\u8bbe\u5907ID): " + deviceId);
+            }
+
+            LOG_INFO("Host mode started");
+        } else {
+            QMessageBox::warning(this, "\u9519\u8bef", "\u65e0\u6cd5\u542f\u52a8\u670d\u52a1\uff0c\u8bf7\u68c0\u67e5\u7aef\u53e3\u662f\u5426\u88ab\u5360\u7528");
+        }
+    }
+}
+
+void MainWindow::onConnectToIp(const QString& ip, uint16_t port) {
+    if (m_hostMode) {
+        QMessageBox::warning(this, "\u9519\u8bef", "\u5f53\u524d\u5904\u4e8e\u670d\u52a1\u6a21\u5f0f\uff0c\u8bf7\u5148\u505c\u6b62\u670d\u52a1");
+        return;
+    }
+
+    QString password;
+    if (m_host->isPasswordRequired()) {
+        bool ok;
+        password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
+            "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+        if (!ok) {
+            return;
+        }
+    }
+
+    m_remoteDesktopWidget->startRemote(ip, port, password);
+}
+
+void MainWindow::onConnectToCode(const QString& code) {
+    if (m_hostMode) {
+        QMessageBox::warning(this, "\u9519\u8bef", "\u5f53\u524d\u5904\u4e8e\u670d\u52a1\u6a21\u5f0f\uff0c\u8bf7\u5148\u505c\u6b62\u670d\u52a1");
+        return;
+    }
+
+    auto devices = m_deviceManager->getDevices();
+    for (const DeviceInfo& info : devices) {
+        if (info.accessCode == code) {
+            m_remoteDesktopWidget->startRemote(info.ipAddress, info.port);
+            statusBar()->showMessage("\u901a\u8fc7\u8bc6\u522b\u7801\u8fde\u63a5: " + info.ipAddress);
+            return;
+        }
+    }
+
+    QSettings settings;
+    bool relayEnabled = settings.value("relay/enabled", false).toBool();
+    if (relayEnabled) {
+        configureRelay();
+        QString password;
+        if (m_host->isPasswordRequired()) {
+            bool ok;
+            password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
+                "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+            if (!ok) return;
+        }
+        m_remoteController->startRemoteByDevice(code, password);
+        statusBar()->showMessage("\u901a\u8fc7\u4e2d\u7ee7\u8fde\u63a5: " + code + " (P2P\u6253\u6d1e\u4e2d...)");
+        return;
+    }
+
+    statusBar()->showMessage("\u672a\u627e\u5230\u8bc6\u522b\u7801 " + code + " \u5bf9\u5e94\u7684\u8bbe\u5907");
+}
+
+void MainWindow::configureRelay() {
+    QSettings settings;
+    bool enabled = settings.value("relay/enabled", false).toBool();
+    QString host = settings.value("relay/host", "").toString();
+    uint16_t port = static_cast<uint16_t>(settings.value("relay/port", 9997).toUInt());
+    QString token = settings.value("relay/token", "").toString();
+
+    if (enabled && !host.isEmpty()) {
+        QString ctrlId = "ctrl_" + QHostInfo::localHostName();
+        m_remoteController->configureRelay(host, port, token, ctrlId);
+        if (m_hostMode) {
+            m_host->setNatTraversal(m_natTraversal.get());
+        }
+    } else {
+        m_remoteController->configureRelay("", 0, "", "");
+    }
+}
+
+void MainWindow::onTransportEstablished(TransportType transport) {
+    QString label;
+    switch (transport) {
+        case TransportType::P2P: label = "P2P\u76f4\u8fde"; break;
+        case TransportType::Relay: label = "\u4e2d\u7ee7\u8f6c\u53d1"; break;
+        case TransportType::Lan: label = "\u5c40\u57df\u7f51"; break;
+        default: label = "\u672a\u77e5"; break;
+    }
+    statusBar()->showMessage("\u5df2\u8fde\u63a5 (" + label + ")");
+}
+
+void MainWindow::onHostClientConnected(const QString& clientId) {
+    statusBar()->showMessage("\u5ba2\u6237\u7aef\u5df2\u8fde\u63a5: " + clientId);
+    if (m_trayIcon) {
+        m_trayIcon->showMessage("\u88ab\u63a7\u7aef\u8fde\u63a5", "\u5ba2\u6237\u7aef\u5df2\u8fde\u63a5: " + clientId,
+            QSystemTrayIcon::Information, 3000);
+    }
+    QApplication::beep();
+}
+
+void MainWindow::onHostClientDisconnected(const QString& clientId) {
+    statusBar()->showMessage("\u5ba2\u6237\u7aef\u5df2\u65ad\u5f00: " + clientId);
+    if (m_trayIcon) {
+        m_trayIcon->showMessage("\u88ab\u63a7\u7aef\u65ad\u5f00", "\u5ba2\u6237\u7a7f\u5df2\u65ad\u5f00: " + clientId,
+            QSystemTrayIcon::Information, 3000);
+    }
+    // Phase 5: if the consent dialog is still open for this client, dismiss it.
+    if (m_consentDialog && m_consentDialog->property("clientId").toString() == clientId) {
+        m_consentDialog->close();
+    }
+}
+
+void MainWindow::onConsentRequested(const QString& clientId, const QString& peerAddress) {
+    // Show a modal approval dialog on the host. The session does not start
+    // until the user chooses Allow (grantConsent) or Deny (denyConsent).
+    QDialog* dlg = new QDialog(this);
+    dlg->setWindowTitle(tr("连接授权请求"));
+    dlg->setModal(true);
+    dlg->setProperty("clientId", clientId);
+    m_consentDialog = dlg;
+
+    QVBoxLayout* layout = new QVBoxLayout(dlg);
+    QLabel* label = new QLabel(
+        tr("有控制端请求控制本机：\n\n来源：%1\n\n是否允许本次远程控制？").arg(peerAddress));
+    label->setWordWrap(true);
+    layout->addWidget(label);
+
+    QDialogButtonBox* buttons = new QDialogButtonBox(dlg);
+    QPushButton* allowBtn = buttons->addButton(tr("允许"), QDialogButtonBox::AcceptRole);
+    QPushButton* denyBtn = buttons->addButton(tr("拒绝"), QDialogButtonBox::RejectRole);
+    connect(allowBtn, &QPushButton::clicked, dlg, [dlg]() { dlg->accept(); });
+    connect(denyBtn, &QPushButton::clicked, dlg, [dlg]() { dlg->reject(); });
+    layout->addWidget(buttons);
+
+    connect(dlg, &QDialog::finished, this, [this, dlg, clientId](int result) {
+        if (m_consentDialog == dlg) m_consentDialog = nullptr;
+        if (result == QDialog::Accepted) {
+            m_host->grantConsent(clientId);
+            statusBar()->showMessage(tr("已允许控制端：") + clientId);
+        } else {
+            m_host->denyConsent(clientId);
+            statusBar()->showMessage(tr("已拒绝控制端：") + clientId);
+        }
+    });
+
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
+}
+
+// ────────── Connections ──────────
+
+void MainWindow::setupConnections() {
+    connect(m_deviceListWidget, &DeviceListWidget::deviceDoubleClicked,
+            this, &MainWindow::onDeviceSelected);
+
+    connect(m_deviceListWidget, &DeviceListWidget::connectToIp,
+            this, &MainWindow::onConnectToIp);
+
+    connect(m_deviceListWidget, &DeviceListWidget::connectToCode,
+            this, &MainWindow::onConnectToCode);
+
+    connect(m_remoteController.get(), &RemoteController::remoteStarted,
+            this, &MainWindow::onRemoteStarted);
+
+    connect(m_remoteController.get(), &RemoteController::remoteStopped,
+            this, &MainWindow::onRemoteStopped);
+
+    connect(m_remoteController.get(), &RemoteController::remoteStopped,
+            this, [this]() {
+        m_fileTransferWidget->onRemoteDisconnected();
+    });
+
+    connect(m_host.get(), &Host::clientConnected,
+            this, &MainWindow::onHostClientConnected);
+
+    connect(m_host.get(), &Host::consentRequested,
+            this, &MainWindow::onConsentRequested);
+
+    connect(m_host.get(), &Host::clientDisconnected,
+            this, &MainWindow::onHostClientDisconnected);
+
+    connect(m_host.get(), &Host::clientAuthenticated,
+            this, [this](const QString& clientId) {
+        if (m_auditLogger) {
+            m_auditLogger->logAuth(clientId, true);
+        }
+    });
+
+    connect(m_host.get(), &Host::clientAuthFailed,
+            this, [this](const QString& clientId) {
+        if (m_auditLogger) {
+            m_auditLogger->logAuth(clientId, false);
+        }
+    });
+
+    connect(m_sessionManager.get(), &SessionManager::sessionCreated,
+            this, [this](const QString& sessionId, const QString& deviceId) {
+        if (m_auditLogger) {
+            m_auditLogger->logSession(sessionId, deviceId, "created");
+        }
+    });
+
+    connect(m_sessionManager.get(), &SessionManager::sessionClosed,
+            this, [this](const QString& sessionId) {
+        if (m_auditLogger) {
+            m_auditLogger->logSession(sessionId, QString(), "closed");
+        }
+    });
+
+    connect(m_remoteController.get(), &RemoteController::terminalOutputReceived,
+            this, [this](const QString& text) {
+        m_terminalWidget->appendOutput(text);
+    });
+
+    connect(m_terminalWidget, &TerminalWidget::inputCommand,
+            this, [this](const QString& cmd) {
+        m_remoteController->sendTerminalInput(cmd);
+    });
+
+    connect(m_remoteController.get(), &RemoteController::screenshotReceived,
+            this, [this](const QImage& image) {
+        QString fileName = QString("screenshot_%1.png")
+            .arg(QDateTime::currentMSecsSinceEpoch());
+        QString filePath = QFileDialog::getSaveFileName(this, "\u4fdd\u5b58\u622a\u56fe", fileName, "PNG\u56fe\u7247 (*.png)");
+        if (!filePath.isEmpty()) {
+            image.save(filePath, "PNG");
+            statusBar()->showMessage("\u622a\u56fe\u5df2\u4fdd\u5b58: " + filePath);
+        }
+    });
+
+    connect(m_remoteController.get(), &RemoteController::chatMessageReceived,
+            this, [this](const QString& sender, const QString& message) {
+        m_chatWidget->appendMessage(sender, message);
+    });
+
+    connect(m_chatWidget, &ChatWidget::sendMessage,
+            this, [this](const QString& msg) {
+        m_remoteController->sendChatMessage(msg);
+    });
+
+    connect(m_remoteController.get(), &RemoteController::recordingStarted,
+            this, [this]() {
+        statusBar()->showMessage("\u8fdc\u7a0b\u5f55\u5236\u5df2\u5f00\u59cb");
+    });
+
+    connect(m_remoteController.get(), &RemoteController::recordingError,
+            this, [this](const QString& error) {
+        m_recordingActive = false;
+        m_recordAction->setText("\u5f00\u59cb\u5f55\u5236");
+        QMessageBox::warning(this, "\u5f55\u5236\u5931\u8d25", error);
+    });
+
+    connect(m_remoteDesktopWidget, &RemoteDesktopWidget::filesDropped,
+            this, [this](const QStringList& paths) {
+        for (const QString& path : paths) {
+            QString fileId = m_fileTransferManager->uploadFile(path);
+            if (!fileId.isEmpty()) {
+                statusBar()->showMessage("\u6b63\u5728\u4e0a\u4f20: " + path);
+                switchToPage(PAGE_FILES);
+            }
+        }
+    });
+
+    connect(m_remoteDesktopWidget, &RemoteDesktopWidget::downloadFileRequested,
+            this, [this]() {
+        QString remotePath = QInputDialog::getText(this, "\u4e0b\u8f7d\u6587\u4ef6",
+            "\u8f93\u5165\u8fdc\u7a0b\u6587\u4ef6\u8def\u5f84:", QLineEdit::Normal, "C:\\");
+        if (remotePath.isEmpty()) return;
+
+        QString localDir = QFileDialog::getExistingDirectory(this, "\u9009\u62e9\u4fdd\u5b58\u76ee\u5f55");
+        if (localDir.isEmpty()) return;
+
+        QFileInfo fi(remotePath);
+        QString localPath = localDir + "/" + fi.fileName();
+
+        if (m_hostMode) {
+            QFile::copy(remotePath, localPath);
+            statusBar()->showMessage("\u5df2\u4e0b\u8f7d: " + localPath);
+        } else {
+            QString fileId = m_fileTransferManager->downloadFile(remotePath, localPath);
+            if (!fileId.isEmpty()) {
+                statusBar()->showMessage("\u6b63\u5728\u4e0b\u8f7d: " + remotePath);
+                switchToPage(PAGE_FILES);
+            }
+        }
+    });
+
+    connect(m_remoteController.get(), &RemoteController::fileBrowserReceived,
+            this, [this](const FileBrowserResponse& resp) {
+        m_fileTransferWidget->onFileBrowserReceived(resp);
+    });
+
+    connect(m_remoteController.get(), &RemoteController::sysInfoReceived,
+            this, [this](const SysInfo& info) {
+        m_sysInfoWidget->updateInfo(info);
+    });
+
+    connect(m_natTraversal.get(), &NatTraversal::relayConnected,
+            this, [this]() {
+        statusBar()->showMessage("\u4e2d\u7ee7\u670d\u52a1\u5668\u8fde\u63a5\u6210\u529f");
+    });
+
+    connect(m_natTraversal.get(), &NatTraversal::relayDisconnected,
+            this, [this]() {
+        statusBar()->showMessage("\u4e2d\u7ee7\u670d\u52a1\u5668\u5df2\u65ad\u5f00");
+    });
+
+    connect(m_natTraversal.get(), &NatTraversal::relayError,
+            this, [this](const QString& msg) {
+        statusBar()->showMessage("\u4e2d\u7ee7\u9519\u8bef: " + msg);
+    });
+
+    connect(m_remoteController.get(), &RemoteController::transportEstablished,
+            this, &MainWindow::onTransportEstablished);
+}
+
+// ────────── Toolbar Actions (kept for menu) ──────────
+
+void MainWindow::onScreenshotClicked() {
+    m_remoteController->requestScreenshot();
+    statusBar()->showMessage("\u6b63\u5728\u8bf7\u6c42\u8fdc\u7a0b\u622a\u56fe...");
+}
+
+void MainWindow::onRecordToggle() {
+    if (m_recordingActive) {
+        if (m_hostMode) {
+            m_host->stopRecording();
+        } else {
+            m_remoteController->stopRecording();
+        }
+        m_recordingActive = false;
+        m_recordAction->setText("\u5f00\u59cb\u5f55\u5236");
+        statusBar()->showMessage("\u5f55\u5236\u5df2\u505c\u6b62");
+    } else {
+        QString defaultName = QString("record_%1.avi")
+            .arg(QDateTime::currentMSecsSinceEpoch());
+        QString filePath = QFileDialog::getSaveFileName(this, "\u4fdd\u5b58\u5f55\u5236", defaultName, "AVI\u89c6\u9891 (*.avi)");
+        if (filePath.isEmpty()) return;
+
+        if (m_hostMode) {
+            if (m_host->startRecording(filePath)) {
+                m_recordingActive = true;
+                m_recordAction->setText("\u505c\u6b62\u5f55\u5236");
+                statusBar()->showMessage("\u6b63\u5728\u5f55\u5236: " + filePath);
+            } else {
+                QMessageBox::warning(this, "\u5f55\u5236\u5931\u8d25", "\u65e0\u6cd5\u5f00\u59cb\u5f55\u5236\uff0c\u8bf7\u68c0\u67e5\u6444\u50cf\u5934\u6216\u6587\u4ef6\u8def\u5f84");
+            }
+        } else {
+            m_remoteController->startRecording(filePath, 15);
+            m_recordingActive = true;
+            m_recordAction->setText("\u505c\u6b62\u5f55\u5236");
+            statusBar()->showMessage("\u6b63\u5728\u8bf7\u6c42\u8fdc\u7a0b\u5f55\u5236...");
+        }
+    }
+}
+
+void MainWindow::onCameraToggle() {
+    bool enabled = m_cameraAction->isChecked();
+    if (m_hostMode) {
+        m_host->setCameraMode(enabled);
+    } else {
+        m_remoteController->setCameraMode(enabled);
+    }
+    m_cameraActive = enabled;
+    statusBar()->showMessage(enabled ? "\u5df2\u5207\u6362\u81f3\u6444\u50cf\u5934\u6a21\u5f0f" : "\u5df2\u5207\u6362\u81f3\u5c4f\u5e55\u6a21\u5f0f");
+}
+
+void MainWindow::onAudioToggle() {
+    bool enabled = m_audioAction->isChecked();
+    if (m_hostMode) {
+        m_host->setAudioEnabled(enabled);
+    } else {
+        m_remoteController->setAudioEnabled(enabled);
+    }
+    statusBar()->showMessage(enabled ? "\u97f3\u9891\u4f20\u8f93\u5df2\u5f00\u542f" : "\u97f3\u9891\u4f20\u8f93\u5df2\u5173\u95ed");
+}
+
+void MainWindow::onPowerAction(PowerAction action) {
+    QString actionName;
+    switch (action) {
+        case PowerAction::SHUTDOWN: actionName = "\u5173\u673a"; break;
+        case PowerAction::RESTART: actionName = "\u91cd\u542f"; break;
+        case PowerAction::LOGOUT: actionName = "\u6ce8\u9500"; break;
+        case PowerAction::SLEEP: actionName = "\u7761\u7720"; break;
+        case PowerAction::HIBERNATE: actionName = "\u4f11\u7720"; break;
+        case PowerAction::LOCK: actionName = "\u9501\u5c4f"; break;
+    }
+
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "\u786e\u8ba4",
+        "\u786e\u5b9a\u8981\u8fdc\u7a0b" + actionName + "\u5417\uff1f\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u64a4\u9500\uff01",
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply == QMessageBox::Yes) {
+        if (m_hostMode) {
+            m_host->executePowerAction(action);
+        } else {
+            m_remoteController->sendPowerAction(action);
+        }
+        statusBar()->showMessage("\u5df2\u53d1\u9001" + actionName + "\u547d\u4ee4");
+    }
+}
+
+// ────────── Actions ──────────
+
+void MainWindow::createActions() {
+    m_toggleHostAction = new QAction("\u542f\u52a8\u670d\u52a1", this);
+    connect(m_toggleHostAction, &QAction::triggered, this, &MainWindow::onToggleHost);
+
+    m_screenshotAction = new QAction("\u5c4f\u5e55\u622a\u56fe", this);
+    m_screenshotAction->setEnabled(false);
+    connect(m_screenshotAction, &QAction::triggered, this, &MainWindow::onScreenshotClicked);
+
+    m_recordAction = new QAction("\u5f00\u59cb\u5f55\u5236", this);
+    m_recordAction->setEnabled(false);
+    connect(m_recordAction, &QAction::triggered, this, &MainWindow::onRecordToggle);
+
+    m_cameraAction = new QAction("\u5f00\u542f\u6444\u50cf\u5934", this);
+    m_cameraAction->setEnabled(false);
+    m_cameraAction->setCheckable(true);
+    connect(m_cameraAction, &QAction::triggered, this, &MainWindow::onCameraToggle);
+
+    m_audioAction = new QAction("\u97f3\u9891\u4f20\u8f93", this);
+    m_audioAction->setCheckable(true);
+    m_audioAction->setChecked(true);
+    connect(m_audioAction, &QAction::triggered, this, &MainWindow::onAudioToggle);
+
+    m_settingsAction = new QAction("\u8bbe\u7f6e", this);
+    connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);
+
+    m_aboutAction = new QAction("\u5173\u4e8e", this);
+    connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAboutClicked);
+
+    m_exitAction = new QAction("\u9000\u51fa", this);
+    connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
+}
+
+} // namespace xrk

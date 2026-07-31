@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset="0.55" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6eef7"/>
+    </linearGradient>
+    <linearGradient id="desktop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eaf3ff"/>
+      <stop offset="1" stop-color="#cfe2fb"/>
+    </linearGradient>
+    <linearGradient id="cursor" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#aab7c6"/>
+      <stop offset="1" stop-color="#64748b"/>
+    </linearGradient>
+    <clipPath id="tileClip">
+      <rect x="40" y="40" width="944" height="944" rx="200" ry="200"/>
+    </clipPath>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0b1220" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Tile -->
+  <g clip-path="url(#tileClip)">
+    <rect x="40" y="40" width="944" height="944" rx="200" ry="200" fill="url(#bg)"/>
+    <!-- gloss highlight -->
+    <ellipse cx="512" cy="150" rx="380" ry="180" fill="#ffffff" opacity="0.12"/>
+    <ellipse cx="300" cy="900" rx="300" ry="140" fill="#0b1220" opacity="0.12"/>
+
+    <!-- Monitor -->
+    <g filter="url(#soft)">
+      <rect x="277" y="250" width="470" height="360" rx="44" fill="url(#screen)"/>
+      <rect x="295" y="268" width="434" height="324" rx="26" fill="url(#desktop)"/>
+      <!-- a couple of faux window bars on the desktop -->
+      <rect x="321" y="294" width="235" height="26" rx="13" fill="#ffffff" opacity="0.85"/>
+      <rect x="321" y="336" width="150" height="20" rx="10" fill="#ffffff" opacity="0.7"/>
+      <!-- stand -->
+      <rect x="476.0" y="608" width="72" height="64" fill="#cbd5e1"/>
+      <rect x="412.0" y="668" width="200" height="34" rx="17" fill="url(#base)"/>
+    </g>
+
+    <!-- Broadcast signal -->
+    <circle cx="783" cy="430.0" r="20" fill="#ffffff"/>
+  <path d="M 825.4,369.4 A 74 74 0 0 1 825.4,490.6" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" opacity="0.83"/>
+  <path d="M 854.1,328.4 A 124 124 0 0 1 854.1,531.6" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" opacity="0.71"/>
+  <path d="M 882.8,287.5 A 174 174 0 0 1 882.8,572.5" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" opacity="0.59"/>
+
+    <!-- Remote cursor -->
+    <polygon points="470.0,372.0 470.0,511.2 507.7,477.9 535.2,531.5 558.5,522.8 532.4,472.1 575.9,472.1" fill="url(#cursor)" stroke="#ffffff" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+</svg>

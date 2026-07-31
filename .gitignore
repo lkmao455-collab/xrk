@@ -1,0 +1,24 @@
+# Build output
+build/
+
+# Third-party binary dependencies (ffmpeg dev libs, etc.)
+third_party/
+
+# Deployment / release bundle (Qt + ffmpeg DLLs, packaged exe)
+deploy/
+
+# Third-party source dependencies (e.g. googletest)
+extern/
+
+# Logs and archives
+*.log
+*.7z
+*.zip
+
+# Stray / scratch files
+nul
+WORK_DONE.md
+WORK_NEXT.md
+svc_*.log
+test_*.log
+teardown_out.txt

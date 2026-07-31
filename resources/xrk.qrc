@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>theme.qss</file>
+        <file>icons/xrk_window.png</file>
+        <file>icons/home.svg</file>
+        <file>icons/desktop.svg</file>
+        <file>icons/files.svg</file>
+        <file>icons/terminal.svg</file>
+        <file>icons/chat.svg</file>
+        <file>icons/monitor.svg</file>
+        <file>icons/clipboard.svg</file>
+        <file>icons/settings.svg</file>
+    </qresource>
+</RCC>
