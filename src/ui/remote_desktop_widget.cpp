@@ -15,6 +15,8 @@
 #include <QAction>
 #include <QPushButton>
 #include <QComboBox>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QColorDialog>
 
 namespace xrk {
@@ -84,6 +86,7 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     m_annotateColorButton->adjustSize();
     connect(m_annotateColorButton, &QPushButton::clicked,
             this, &RemoteDesktopWidget::onAnnotateColorClicked);
+    updateColorButtonSwatch();
 
     m_annotateClearButton = new QPushButton(tr("清空"), this);
     m_annotateClearButton->setObjectName("annotate-clear-button");
@@ -109,6 +112,20 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     if (m_controller) {
         connect(m_controller, &RemoteController::microphoneStateChanged,
                 m_micButton, &QPushButton::setChecked);
+    }
+
+    // Assemble the top toolbar so these action buttons live on a toolbar
+    // instead of floating over the remote desktop. Order: monitor selector,
+    // then 标注 / 颜色 / 清空 / 水印 / 麦克风 / 隐私屏.
+    if (m_toolbarLayout) {
+        m_toolbarLayout->addWidget(m_monitorCombo);
+        m_toolbarLayout->addWidget(m_annotateButton);
+        m_toolbarLayout->addWidget(m_annotateColorButton);
+        m_toolbarLayout->addWidget(m_annotateClearButton);
+        m_toolbarLayout->addWidget(m_watermarkButton);
+        m_toolbarLayout->addWidget(m_micButton);
+        m_toolbarLayout->addWidget(m_privacyButton);
+        m_toolbarLayout->addStretch(1);
     }
 }
 
@@ -154,33 +171,38 @@ bool RemoteDesktopWidget::isRemoteActive() const {
 
 void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
-    
+
+    // The top toolbar occupies the strip [0, top); the remote desktop is drawn
+    // only in the area below it so the action buttons never overlap the frame.
+    int top = m_toolbar ? m_toolbar->height() : 0;
+    QRect display(0, top, width(), height() - top);
+
     QPainter painter(this);
-    
+
     if (m_currentFrame.isNull()) {
-        painter.fillRect(rect(), Qt::black);
+        painter.fillRect(display, Qt::black);
         painter.setPen(Qt::white);
-        painter.drawText(rect(), Qt::AlignCenter, "等待连接...");
+        painter.drawText(display, Qt::AlignCenter, "等待连接...");
         return;
     }
-    
-    QImage scaled = m_currentFrame.scaled(size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QRect targetRect = QRect((width() - scaled.width()) / 2, 
-                             (height() - scaled.height()) / 2,
-                             scaled.width(), scaled.height());
+
+    QImage scaled = m_currentFrame.scaled(display.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QRect targetRect(display.x() + (display.width() - scaled.width()) / 2,
+                     display.y() + (display.height() - scaled.height()) / 2,
+                     scaled.width(), scaled.height());
     m_frameTargetRect = targetRect;
     painter.drawImage(targetRect, scaled);
-    
+
     painter.setPen(Qt::green);
-    painter.drawText(10, 20, QString("FPS: %1").arg(m_currentFps));
+    painter.drawText(display.x() + 10, display.y() + 20, QString("FPS: %1").arg(m_currentFps));
 
     // Show decoded frame count and frame dimensions for diagnostics
     painter.setPen(Qt::cyan);
-    painter.drawText(10, 40, QString("Frames: %1 | %2x%3")
-        .arg(m_frameCount)
-        .arg(m_currentFrame.width())
-        .arg(m_currentFrame.height()));
-    painter.drawText(10, 38, QString("Frames: %1").arg(m_frameCount));
+    painter.drawText(display.x() + 10, display.y() + 40,
+        QString("Frames: %1 | %2x%3")
+            .arg(m_frameCount)
+            .arg(m_currentFrame.width())
+            .arg(m_currentFrame.height()));
 
     // Phase 4: draw local annotation strokes (in remote/frame coordinates).
     if (!m_strokes.isEmpty() || !m_currentStroke.isEmpty()) {
@@ -213,8 +235,8 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
         QFontMetrics fm(wmFont);
         int w = fm.horizontalAdvance(wm) + 12;
         int h = fm.height() + 6;
-        int wx = width() - w - 10;
-        int wy = height() - h - 10;
+        int wx = display.right() - w - 10;
+        int wy = display.bottom() - h - 10;
         painter.fillRect(wx, wy, w, h, QColor(0, 0, 0, 140));
         painter.setPen(Qt::white);
         painter.drawText(wx + 6, wy + fm.ascent() + 3, wm);
@@ -222,45 +244,14 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
 
     if (m_qualityLabel) {
         m_qualityLabel->adjustSize();
-        m_qualityLabel->move(width() - m_qualityLabel->width() - 8, 8);
+        m_qualityLabel->move(width() - m_qualityLabel->width() - 8, top + 8);
         m_qualityLabel->raise();
     }
 
-    if (m_privacyButton) {
-        m_privacyButton->adjustSize();
-        if (m_qualityLabel) {
-            m_privacyButton->move(width() - m_qualityLabel->width() - m_privacyButton->width() - 16, 8);
-        } else {
-            m_privacyButton->move(width() - m_privacyButton->width() - 8, 8);
-        }
-        m_privacyButton->raise();
-    }
-
-    // Reposition overlay toolbar row (top-left): monitor combo, then annotation group.
-    int toolbarX = 8;
-    int toolbarY = 8;
-    if (m_monitorCombo && m_monitorCombo->isVisible()) {
-        m_monitorCombo->move(toolbarX, toolbarY);
-        m_monitorCombo->raise();
-        toolbarX += m_monitorCombo->width() + 6;
-    }
-    auto placeOverlay = [&](QWidget* w) {
-        if (!w) return;
-        w->adjustSize();
-        w->move(toolbarX, toolbarY);
-        w->raise();
-        toolbarX += w->width() + 6;
-    };
-    placeOverlay(m_annotateButton);
-    placeOverlay(m_annotateColorButton);
-    placeOverlay(m_annotateClearButton);
-    placeOverlay(m_watermarkButton);
-    placeOverlay(m_micButton);
-
     if (m_consentLabel && m_consentLabel->isVisible()) {
         m_consentLabel->adjustSize();
-        m_consentLabel->move((width() - m_consentLabel->width()) / 2,
-                             (height() - m_consentLabel->height()) / 2);
+        m_consentLabel->move(display.center().x() - m_consentLabel->width() / 2,
+                             display.center().y() - m_consentLabel->height() / 2);
         m_consentLabel->raise();
     }
 }
@@ -483,10 +474,20 @@ void RemoteDesktopWidget::onAnnotationToggled(bool checked) {
     update();
 }
 
+void RemoteDesktopWidget::updateColorButtonSwatch() {
+    if (!m_annotateColorButton) return;
+    QString fg = (m_annotationColor.lightness() > 128) ? "#000000" : "#ffffff";
+    m_annotateColorButton->setStyleSheet(
+        QString("QPushButton{background-color:%1;color:%2;border:1px solid #0c1222;"
+                "border-radius:8px;padding:6px 12px;min-width:48px;}")
+            .arg(m_annotationColor.name(), fg));
+}
+
 void RemoteDesktopWidget::onAnnotateColorClicked() {
     QColor c = QColorDialog::getColor(m_annotationColor, this, tr("选择标注颜色"));
     if (c.isValid()) {
         m_annotationColor = c;
+        updateColorButtonSwatch();
     }
 }
 
@@ -533,6 +534,20 @@ void RemoteDesktopWidget::setupUI() {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     setAcceptDrops(true);
+
+    // Host a top toolbar; the remaining area below it is the painting surface.
+    auto* vlay = new QVBoxLayout(this);
+    vlay->setContentsMargins(0, 0, 0, 0);
+    vlay->setSpacing(0);
+
+    m_toolbar = new QWidget(this);
+    m_toolbar->setObjectName("remote-toolbar");
+    m_toolbarLayout = new QHBoxLayout(m_toolbar);
+    m_toolbarLayout->setContentsMargins(6, 4, 6, 4);
+    m_toolbarLayout->setSpacing(6);
+
+    vlay->addWidget(m_toolbar);
+    vlay->addStretch(1);
 }
 
 void RemoteDesktopWidget::setupFpsTimer() {
@@ -583,7 +598,10 @@ QPoint RemoteDesktopWidget::mapToRemote(const QPoint& localPos) {
         return localPos;
     }
     
-    QSize widgetSize = size();
+    // Account for the top toolbar strip so remote coordinates map onto the
+    // frame area drawn below it.
+    int top = m_toolbar ? m_toolbar->height() : 0;
+    QSize widgetSize(width(), height() - top);
     QSize frameSize = m_currentFrame.size();
     
     double scaleX = static_cast<double>(frameSize.width()) / widgetSize.width();
@@ -595,7 +613,7 @@ QPoint RemoteDesktopWidget::mapToRemote(const QPoint& localPos) {
     int offsetY = (widgetSize.height() - scaledSize.height()) / 2;
     
     int remoteX = static_cast<int>((localPos.x() - offsetX) * scale);
-    int remoteY = static_cast<int>((localPos.y() - offsetY) * scale);
+    int remoteY = static_cast<int>((localPos.y() - top - offsetY) * scale);
     
     remoteX = qBound(0, remoteX, frameSize.width() - 1);
     remoteY = qBound(0, remoteY, frameSize.height() - 1);

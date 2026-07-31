@@ -6,6 +6,7 @@
 #include <QShortcut>
 #include <QPushButton>
 #include <QComboBox>
+#include <QHBoxLayout>
 #include <QColor>
 #include <QVector>
 #include <memory>
@@ -76,6 +77,7 @@ private:
     QPoint mapToRemote(const QPoint& localPos);
     QPoint remoteToWidget(const QPoint& remotePos) const;
     void updateQualityLabel();
+    void updateColorButtonSwatch();
 
     RemoteController* m_controller = nullptr;
     QLabel* m_displayLabel = nullptr;
@@ -114,6 +116,11 @@ private:
     bool m_watermarkEnabled = false;
     QRect m_frameTargetRect;               // where the frame is drawn (widget coords)
     QLabel* m_consentLabel = nullptr;      // "waiting for host approval" overlay
+
+    // Top toolbar that hosts the action buttons (annotation / color / clear /
+    // watermark / mic / privacy) so they no longer overlap the remote desktop.
+    QWidget* m_toolbar = nullptr;
+    QHBoxLayout* m_toolbarLayout = nullptr;
 };
 
 } // namespace xrk

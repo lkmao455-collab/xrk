@@ -527,6 +527,62 @@ QToolBar::separator {
     margin: 4px 8px;
 }
 
+/* ---- Remote Desktop Action Toolbar ---- */
+#remote-toolbar {
+    background-color: #16213e;
+    border-bottom: 1px solid #2a2a4a;
+}
+
+#remote-toolbar QPushButton {
+    /* unselected (default) raised 3D look */
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2b3656, stop:0.5 #1d2742, stop:1 #141c30);
+    border: 1px solid #0c1222;
+    border-top-color: #47547a;
+    border-left-color: #3a4566;
+    border-bottom-color: #0a0f1c;
+    border-right-color: #1a2238;
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: #e0e0e0;
+    min-width: 48px;
+}
+
+#remote-toolbar QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #38456b, stop:0.5 #26345a, stop:1 #1a2440);
+    border-top-color: #5a6a9a;
+    border-bottom-color: #0a0f1c;
+    color: #ffffff;
+}
+
+#remote-toolbar QPushButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #0c1222, stop:0.5 #16203a, stop:1 #1d2a4c);
+    border-top-color: #0a0f1c;
+    border-bottom-color: #3a4566;
+}
+
+/* selected (toggled on) = accent highlight so the active state is obvious */
+#remote-toolbar QPushButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #1b4fc0, stop:0.5 #2b6cff, stop:1 #1a3f9e);
+    border: 1px solid #4f8bff;
+    border-top-color: #1b4fc0;
+    border-bottom-color: #7aa6ff;
+    color: #ffffff;
+}
+
+/* privacy screen toggled on = red "blocking" highlight */
+#remote-toolbar #privacy-button:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #b3243f, stop:0.5 #e94560, stop:1 #a51d36);
+    border: 1px solid #ff6b81;
+    border-top-color: #a51d36;
+    border-bottom-color: #ff8a9b;
+    color: #ffffff;
+}
+
 /* ---- Tooltip ---- */
 QToolTip {
     background-color: #2a2a4a;
