@@ -13,6 +13,7 @@ if(GTest_FOUND)
         test_session_manager.cpp
         test_device_manager.cpp
         test_file_transfer_manager.cpp
+        test_file_transfer_drag.cpp
         test_security_manager.cpp
         test_p2p_relay.cpp
         test_loopback.cpp
@@ -33,6 +34,7 @@ if(GTest_FOUND)
     add_executable(xrk_tests ${XRK_TEST_SOURCES} "${CMAKE_SOURCE_DIR}/resources/xrk.qrc")
     
     target_link_libraries(xrk_tests PRIVATE 
+        xrk_ui
         xrk_core 
         xrk_app 
         GTest::gtest
