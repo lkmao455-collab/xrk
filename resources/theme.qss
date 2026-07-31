@@ -602,6 +602,17 @@ QToolTip {
     border-radius: 6px;
 }
 
+#drop-hint[dropping="true"] {
+    color: #9cc0ff;
+    border: 1px dashed #2b6cff;
+    background-color: #16233f;
+}
+
+#local-tree[dropping="true"] {
+    border: 2px solid #2b6cff;
+    background-color: #16223f;
+}
+
 /* ---- Dialog ---- */
 QDialog {
     background-color: #1a1a2e;

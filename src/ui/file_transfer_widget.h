@@ -78,6 +78,7 @@ private:
     // Local browser
     QTreeView* m_localTree = nullptr;
     QFileSystemModel* m_localModel = nullptr;
+    QLabel* m_dropHint = nullptr;
 
     // Remote browser
     QLineEdit* m_remotePathEdit = nullptr;

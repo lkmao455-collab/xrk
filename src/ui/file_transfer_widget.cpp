@@ -13,6 +13,7 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QDragLeaveEvent>
 #include <QMimeData>
 #include <QList>
 
@@ -53,12 +54,26 @@ public:
 
 signals:
     void remoteDropped(const QMimeData* mime, const QModelIndex& index);
+    void dragActiveChanged(bool active);
+
+private:
+    void setActive(bool active) {
+        if (m_active == active) return;
+        m_active = active;
+        setProperty("dropping", active);
+        style()->unpolish(this);
+        style()->polish(this);
+        emit dragActiveChanged(active);
+    }
+
+    bool m_active = false;
 
 protected:
     void dragEnterEvent(QDragEnterEvent* e) override {
         if (e->mimeData()->hasFormat("application/x-xrk-remote-path")) {
             e->setDropAction(Qt::CopyAction);
             e->accept();
+            setActive(true);
         } else {
             e->ignore();
         }
@@ -68,9 +83,15 @@ protected:
         if (e->mimeData()->hasFormat("application/x-xrk-remote-path")) {
             e->setDropAction(Qt::CopyAction);
             e->accept();
+            setActive(true);
         } else {
             e->ignore();
         }
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent* e) override {
+        setActive(false);
+        QTreeView::dragLeaveEvent(e);
     }
 
     void dropEvent(QDropEvent* e) override {
@@ -81,6 +102,7 @@ protected:
         } else {
             e->ignore();
         }
+        setActive(false);
     }
 };
 
@@ -420,6 +442,7 @@ void FileTransferWidget::setupUI() {
     m_localModel->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot);
 
     m_localTree = new LocalDropTree(this);
+    m_localTree->setObjectName("local-tree");
     m_localTree->setModel(m_localModel);
     m_localTree->setRootIndex(m_localModel->index(QDir::rootPath()));
     m_localTree->setSortingEnabled(true);
@@ -439,6 +462,17 @@ void FileTransferWidget::setupUI() {
     dropHint->setWordWrap(true);
     dropHint->setAlignment(Qt::AlignCenter);
     localLayout->addWidget(dropHint);
+    m_dropHint = dropHint;
+
+    auto* dropTree = qobject_cast<LocalDropTree*>(m_localTree);
+    connect(dropTree, &LocalDropTree::dragActiveChanged, this, [this](bool active) {
+        if (m_dropHint) {
+            m_dropHint->setProperty("dropping", active);
+            m_dropHint->style()->unpolish(m_dropHint);
+            m_dropHint->style()->polish(m_dropHint);
+            m_dropHint->setText(active ? "松开鼠标即可下载到该目录" : "将远程文件或目录拖拽到此处即可下载");
+        }
+    });
 
     // ---- Remote panel ----
     QWidget* remotePanel = new QWidget();
