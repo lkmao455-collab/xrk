@@ -19,7 +19,7 @@ public:
     ~FileTransferManager();
 
     QString uploadFile(const QString& filePath);
-    QString downloadFile(const QString& remotePath, const QString& localPath);
+    QString downloadFile(const QString& remotePath, const QString& localPath, uint64_t remoteSize = 0);
     
     void cancelTransfer(const QString& fileId);
     void pauseTransfer(const QString& fileId);

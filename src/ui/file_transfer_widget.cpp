@@ -10,8 +10,79 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QStyle>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QList>
 
 namespace xrk {
+
+// Remote table acts as a drag source, carrying a custom MIME with the full
+// remote path, name and isDir flag so the local tree can initiate a download.
+class RemoteDragTable : public QTableWidget {
+    Q_OBJECT
+public:
+    explicit RemoteDragTable(int rows, int cols, QWidget* parent = nullptr)
+        : QTableWidget(rows, cols, parent) {}
+
+protected:
+    QMimeData* mimeData(const QList<QTableWidgetItem*>& items) const override {
+        QMimeData* mime = QTableWidget::mimeData(items);
+        if (!mime) mime = new QMimeData();
+        if (items.isEmpty()) return mime;
+
+        QTableWidgetItem* item = items.first();
+        QString remotePath = item->data(Qt::UserRole).toString();
+        QString name = item->text();
+        QTableWidgetItem* typeItem = this->item(item->row(), 1);
+        bool isDir = typeItem && typeItem->text() == "文件夹";
+
+        QString payload = remotePath + "\n" + name + "\n" + (isDir ? "1" : "0");
+        mime->setData("application/x-xrk-remote-path", payload.toUtf8());
+        mime->setText(remotePath);
+        return mime;
+    }
+};
+
+// Local tree acts as a drop target for the custom remote-path MIME.
+class LocalDropTree : public QTreeView {
+    Q_OBJECT
+public:
+    explicit LocalDropTree(QWidget* parent = nullptr) : QTreeView(parent) {}
+
+signals:
+    void remoteDropped(const QMimeData* mime, const QModelIndex& index);
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* e) override {
+        if (e->mimeData()->hasFormat("application/x-xrk-remote-path")) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        } else {
+            e->ignore();
+        }
+    }
+
+    void dragMoveEvent(QDragMoveEvent* e) override {
+        if (e->mimeData()->hasFormat("application/x-xrk-remote-path")) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        } else {
+            e->ignore();
+        }
+    }
+
+    void dropEvent(QDropEvent* e) override {
+        if (e->mimeData()->hasFormat("application/x-xrk-remote-path")) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+            emit remoteDropped(e->mimeData(), indexAt(e->pos()));
+        } else {
+            e->ignore();
+        }
+    }
+};
 
 FileTransferWidget::FileTransferWidget(FileTransferManager* manager, QWidget* parent)
     : QWidget(parent), m_manager(manager) {
@@ -33,6 +104,28 @@ void FileTransferWidget::setRemoteController(RemoteController* controller) {
 }
 
 void FileTransferWidget::onFileBrowserReceived(const FileBrowserResponse& response) {
+    // Directory download scan responses are intercepted and never touch the UI.
+    if (m_activeScans.contains(response.path)) {
+        if (response.success) {
+            QString localBase = m_dirScanMap.value(response.path);
+            for (const auto& entry : response.entries) {
+                QString childLocal = localBase + "/" + entry.name;
+                if (entry.isDir) {
+                    QDir().mkpath(childLocal);
+                    m_activeScans.insert(entry.path);
+                    m_dirScanMap[entry.path] = childLocal;
+                    m_dirScanQueue.append({entry.path, childLocal});
+                } else if (m_manager) {
+                    m_manager->downloadFile(entry.path, childLocal, entry.fileSize);
+                }
+            }
+        }
+        m_activeScans.remove(response.path);
+        m_dirScanMap.remove(response.path);
+        scanNextDir();
+        return;
+    }
+
     if (!response.success) {
         return;
     }
@@ -85,12 +178,14 @@ void FileTransferWidget::onDownloadClicked() {
         return;
     }
 
+    uint64_t size = nameItem->data(Qt::UserRole + 1).toULongLong();
+
     QString localDir = QFileDialog::getExistingDirectory(this, "保存到目录");
     if (localDir.isEmpty()) return;
 
     QString localPath = localDir + "/" + name;
     if (m_manager) {
-        m_manager->downloadFile(fullPath, localPath);
+        m_manager->downloadFile(fullPath, localPath, size);
     }
 }
 
@@ -100,6 +195,60 @@ void FileTransferWidget::onCancelClicked() {
         QString fileId = item->data(Qt::UserRole).toString();
         m_manager->cancelTransfer(fileId);
     }
+}
+
+void FileTransferWidget::onRemoteDropped(const QMimeData* mime, const QModelIndex& index) {
+    if (!mime || !mime->hasFormat("application/x-xrk-remote-path")) return;
+
+    QByteArray data = mime->data("application/x-xrk-remote-path");
+    QList<QByteArray> parts = data.split('\n');
+    if (parts.size() < 3) return;
+
+    QString remotePath = QString::fromUtf8(parts[0]).trimmed();
+    QString name = QString::fromUtf8(parts[1]).trimmed();
+    bool isDir = (parts[2].trimmed() == "1");
+    if (remotePath.isEmpty() || name.isEmpty()) return;
+
+    QString localDir;
+    if (!index.isValid()) {
+        localDir = m_localModel->rootPath();
+    } else if (m_localModel->isDir(index)) {
+        localDir = m_localModel->filePath(index);
+    } else {
+        localDir = m_localModel->filePath(m_localModel->parent(index));
+    }
+
+    downloadRemoteItem(remotePath, name, isDir, 0, localDir);
+}
+
+void FileTransferWidget::downloadRemoteItem(const QString& remotePath, const QString& name,
+                                            bool isDir, uint64_t size, const QString& localDir) {
+    if (!m_manager) return;
+    QDir().mkpath(localDir);
+    if (isDir) {
+        startDirectoryDownload(remotePath, localDir + "/" + name);
+    } else {
+        m_manager->downloadFile(remotePath, localDir + "/" + name, size);
+    }
+}
+
+void FileTransferWidget::startDirectoryDownload(const QString& remotePath, const QString& localPath) {
+    QDir().mkpath(localPath);
+    if (m_activeScans.contains(remotePath)) return;
+
+    bool wasEmpty = m_dirScanQueue.isEmpty();
+    m_activeScans.insert(remotePath);
+    m_dirScanMap[remotePath] = localPath;
+    m_dirScanQueue.append({remotePath, localPath});
+    if (wasEmpty) {
+        scanNextDir();
+    }
+}
+
+void FileTransferWidget::scanNextDir() {
+    if (m_dirScanQueue.isEmpty()) return;
+    PendingDir pd = m_dirScanQueue.takeFirst();
+    requestRemoteDir(pd.remotePath);
 }
 
 void FileTransferWidget::onTransferStarted(const QString& fileId) {
@@ -212,6 +361,7 @@ void FileTransferWidget::populateRemoteTable(const FileBrowserResponse& resp) {
 
         QTableWidgetItem* nameItem = new QTableWidgetItem(entry.name);
         nameItem->setData(Qt::UserRole, entry.path);
+        nameItem->setData(Qt::UserRole + 1, QVariant::fromValue(entry.fileSize));
         if (entry.isDir) {
             nameItem->setIcon(QApplication::style()->standardIcon(QStyle::SP_DirIcon));
         } else {
@@ -269,14 +419,19 @@ void FileTransferWidget::setupUI() {
     m_localModel->setRootPath(QDir::rootPath());
     m_localModel->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot);
 
-    m_localTree = new QTreeView(this);
+    m_localTree = new LocalDropTree(this);
     m_localTree->setModel(m_localModel);
     m_localTree->setRootIndex(m_localModel->index(QDir::rootPath()));
     m_localTree->setSortingEnabled(true);
     m_localTree->setAnimated(true);
     m_localTree->setColumnWidth(0, 180);
     m_localTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_localTree->setDragDropMode(QAbstractItemView::DropOnly);
+    m_localTree->setAcceptDrops(true);
+    m_localTree->setDropIndicatorShown(true);
     connect(m_localTree, &QTreeView::doubleClicked, this, &FileTransferWidget::onLocalDoubleClicked);
+    connect(qobject_cast<LocalDropTree*>(m_localTree), &LocalDropTree::remoteDropped,
+            this, &FileTransferWidget::onRemoteDropped);
     localLayout->addWidget(m_localTree);
 
     // ---- Remote panel ----
@@ -315,7 +470,7 @@ void FileTransferWidget::setupUI() {
 
     remoteLayout->addLayout(remoteToolbar);
 
-    m_remoteTable = new QTableWidget(0, 4, this);
+    m_remoteTable = new RemoteDragTable(0, 4, this);
     m_remoteTable->setHorizontalHeaderLabels({"名称", "类型", "大小", "修改时间"});
     m_remoteTable->horizontalHeader()->setStretchLastSection(true);
     m_remoteTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -324,6 +479,8 @@ void FileTransferWidget::setupUI() {
     m_remoteTable->verticalHeader()->setVisible(false);
     m_remoteTable->setShowGrid(false);
     m_remoteTable->setAlternatingRowColors(true);
+    m_remoteTable->setDragEnabled(true);
+    m_remoteTable->setDragDropMode(QAbstractItemView::DragOnly);
     connect(m_remoteTable, &QTableWidget::cellDoubleClicked, this, &FileTransferWidget::onRemoteDoubleClicked);
     remoteLayout->addWidget(m_remoteTable);
 
@@ -390,3 +547,5 @@ QWidget* FileTransferWidget::createTransferItem(const QString& fileId, const QSt
 }
 
 } // namespace xrk
+
+#include "file_transfer_widget.moc"

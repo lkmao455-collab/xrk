@@ -73,15 +73,16 @@ QString FileTransferManager::uploadFile(const QString& filePath) {
     return fileId;
 }
 
-QString FileTransferManager::downloadFile(const QString& remotePath, const QString& localPath) {
+QString FileTransferManager::downloadFile(const QString& remotePath, const QString& localPath, uint64_t remoteSize) {
     QString fileId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    
+
     QFileInfo fileInfo(remotePath);
-    
+
     FileRequest request;
     request.fileId = fileId;
     request.fileName = fileInfo.fileName();
-    request.fileSize = 0;
+    request.path = remotePath;
+    request.fileSize = remoteSize;
     request.offset = 0;
     request.isUpload = false;
     
@@ -215,15 +216,27 @@ void FileTransferManager::processFileData(const QByteArray& data) {
     if (!transfer.file || !transfer.file->isOpen()) {
         return;
     }
-    
+
+    // Empty data payload is the host's end-of-transfer marker.
+    if (fileData.data.isEmpty()) {
+        transfer.file->close();
+        delete transfer.file;
+        transfer.file = nullptr;
+        m_transfers.remove(fileData.fileId);
+        emit transferProgress(fileData.fileId, transfer.request.fileSize, transfer.request.fileSize);
+        emit transferCompleted(fileData.fileId);
+        LOG_INFO("File download completed: " + fileData.fileId);
+        return;
+    }
+
     transfer.file->seek(fileData.offset);
     transfer.file->write(fileData.data);
-    
+
     transfer.bytesSent += fileData.data.size();
     transfer.request.offset = fileData.offset + fileData.data.size();
-    
+
     emit transferProgress(fileData.fileId, transfer.bytesSent, transfer.request.fileSize);
-    
+
     if (transfer.bytesSent >= transfer.request.fileSize && transfer.request.fileSize > 0) {
         transfer.file->close();
         delete transfer.file;

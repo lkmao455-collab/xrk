@@ -12,6 +12,7 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QMap>
+#include <QSet>
 #include "core/types.h"
 
 namespace xrk {
@@ -50,6 +51,7 @@ private slots:
     void onRemoteGoUp();
     void onRefreshRemote();
     void onRemoteDriveChanged(int index);
+    void onRemoteDropped(const QMimeData* mime, const QModelIndex& index);
 
 private:
     void setupUI();
@@ -58,8 +60,20 @@ private:
     void populateRemoteTable(const FileBrowserResponse& resp);
     void populateDriveList();
 
+    // Drag-and-drop download (remote -> local)
+    void downloadRemoteItem(const QString& remotePath, const QString& name,
+                            bool isDir, uint64_t size, const QString& localDir);
+    void startDirectoryDownload(const QString& remotePath, const QString& localPath);
+    void scanNextDir();
+
     FileTransferManager* m_manager = nullptr;
     RemoteController* m_remoteController = nullptr;
+
+    // Directory download state (async remote enumeration)
+    struct PendingDir { QString remotePath; QString localPath; };
+    QList<PendingDir> m_dirScanQueue;
+    QSet<QString> m_activeScans;
+    QMap<QString, QString> m_dirScanMap;
 
     // Local browser
     QTreeView* m_localTree = nullptr;

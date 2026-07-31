@@ -217,7 +217,11 @@ QByteArray ProtocolManager::encodeFileRequest(const FileRequest& request) {
     QByteArray fileNameBytes = request.fileName.toUtf8();
     stream << static_cast<uint32_t>(fileNameBytes.size());
     stream.writeRawData(fileNameBytes.constData(), fileNameBytes.size());
-    
+
+    QByteArray pathBytes = request.path.toUtf8();
+    stream << static_cast<uint32_t>(pathBytes.size());
+    stream.writeRawData(pathBytes.constData(), pathBytes.size());
+
     stream << request.fileSize;
     stream << request.offset;
     stream << static_cast<quint8>(request.isUpload ? 1 : 0);
@@ -241,7 +245,12 @@ FileRequest ProtocolManager::decodeFileRequest(const QByteArray& data) {
     QByteArray fileNameBytes = data.mid(stream.device()->pos(), len);
     stream.skipRawData(len);
     request.fileName = QString::fromUtf8(fileNameBytes);
-    
+
+    stream >> len;
+    QByteArray pathBytes = data.mid(stream.device()->pos(), len);
+    stream.skipRawData(len);
+    request.path = QString::fromUtf8(pathBytes);
+
     stream >> request.fileSize;
     stream >> request.offset;
     

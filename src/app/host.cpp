@@ -1317,7 +1317,9 @@ void Host::handleFileRequest(const QString& clientId, const QByteArray& payload)
             return;
         }
     } else {
-        QFile* file = new QFile(request.fileName);
+        // Open the full remote path; fall back to basename for legacy requests.
+        QString hostPath = request.path.isEmpty() ? request.fileName : request.path;
+        QFile* file = new QFile(hostPath);
         if (file->exists() && file->open(QIODevice::ReadOnly)) {
             transfer.file = file;
             transfer.fileSize = file->size();
@@ -1344,6 +1346,16 @@ void Host::handleFileRequest(const QString& clientId, const QByteArray& payload)
             file->close();
             delete file;
             LOG_INFO("Host: File download completed: " + request.fileName);
+
+            // Send an empty FILE_DATA chunk as an end-of-transfer marker so the
+            // controller knows when the download is finished (size may be unknown).
+            FileData eof;
+            eof.fileId = request.fileId;
+            eof.offset = offset;
+            eof.data = QByteArray();
+            QByteArray eofMsg = ProtocolManager::encode(
+                MessageType::FILE_DATA, ProtocolManager::encodeFileData(eof));
+            client.socket->write(eofMsg);
             return;
         } else {
             LOG_ERROR("Host: File not found: " + request.fileName);

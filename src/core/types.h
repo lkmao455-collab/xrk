@@ -184,6 +184,7 @@ struct SessionInfo {
 struct FileRequest {
     QString fileId;
     QString fileName;
+    QString path;        // Full remote path (used for download); empty for basename-only use
     uint64_t fileSize = 0;
     uint64_t offset = 0;
     bool isUpload = true;
