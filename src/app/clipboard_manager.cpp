@@ -52,6 +52,10 @@ bool ClipboardManager::isEnabled() const {
 }
 
 void ClipboardManager::sendClipboardData(const ClipboardData& data) {
+    if (m_broadcast) {
+        m_broadcast(data);
+        return;
+    }
     if (!m_connection || !m_connection->isConnected()) {
         return;
     }
@@ -61,13 +65,25 @@ void ClipboardManager::sendClipboardData(const ClipboardData& data) {
     m_connection->send(message);
 }
 
+void ClipboardManager::setBroadcastCallback(std::function<void(const ClipboardData&)> cb) {
+    m_broadcast = std::move(cb);
+}
+
+void ClipboardManager::applyRemoteClipboard(const QByteArray& data, const QString& mimeType) {
+    m_applyingRemote = true;
+    setClipboardContent(data, mimeType);
+    m_lastClipboardData = data;
+    m_lastMimeType = mimeType;
+    m_applyingRemote = false;
+}
+
 void ClipboardManager::onClipboardChanged() {
     if (!m_enabled) return;
     
     QString mimeType;
     QByteArray content = getClipboardContent(mimeType);
     
-    if (content.isEmpty() || content == m_lastClipboardData) {
+    if (content.isEmpty() || content == m_lastClipboardData || m_applyingRemote) {
         return;
     }
     
@@ -88,7 +104,7 @@ void ClipboardManager::onClipboardChanged() {
 }
 
 void ClipboardManager::onCheckTimer() {
-    if (!m_enabled || !m_clipboard) return;
+    if (!m_enabled || !m_clipboard || m_applyingRemote) return;
     
     QString mimeType;
     QByteArray content = getClipboardContent(mimeType);
@@ -125,7 +141,7 @@ void ClipboardManager::setConnection(TcpConnection* connection) {
                 if (type == MessageType::CLIPBOARD_DATA) {
                     ClipboardData clipData = ProtocolManager::decodeClipboardData(payload);
                     emit clipboardDataReceived(clipData);
-                    setClipboardContent(clipData.data, clipData.mimeType);
+                    applyRemoteClipboard(clipData.data, clipData.mimeType);
 
                     if (m_history) {
                         m_history->addEntry(clipData.mimeType, clipData.data);

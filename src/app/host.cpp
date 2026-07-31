@@ -455,6 +455,27 @@ bool Host::start(uint16_t port) {
         m_auditLogger = new AuditLogger(QString(), this);
     }
 
+    // Host-side clipboard monitor (requires a GUI app; in service/headless
+    // mode QApplication clipboard is unavailable, so skip it). This enables
+    // host -> controller clipboard sync by broadcasting local changes to all
+    // authenticated clients.
+    if (auto* app = (qApp ? qobject_cast<QApplication*>(qApp) : nullptr)) {
+        m_clipboardManager = new ClipboardManager(nullptr, this);
+        m_clipboardManager->setBroadcastCallback([this](const ClipboardData& data) {
+            if (data.data.isEmpty()) return;
+            QByteArray payload = ProtocolManager::encodeClipboardData(data);
+            QByteArray message = ProtocolManager::encode(MessageType::CLIPBOARD_DATA, payload);
+            for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+                if (it.value().authenticated && it.value().socket) {
+                    it.value().socket->write(message);
+                    it.value().socket->flush();
+                }
+            }
+        });
+        m_clipboardManager->startMonitoring();
+        Q_UNUSED(app);
+    }
+
     m_running = true;
     LOG_INFO("Host started on port " + QString::number(port) + " (multi-threaded)" + (m_password.isEmpty() ? " (no auth)" : " (auth required)"));
     return true;
@@ -473,6 +494,12 @@ void Host::stop() {
         m_privacyScreen->hide();
         delete m_privacyScreen;
         m_privacyScreen = nullptr;
+    }
+
+    if (m_clipboardManager) {
+        m_clipboardManager->stopMonitoring();
+        delete m_clipboardManager;
+        m_clipboardManager = nullptr;
     }
 
     if (m_discoveryTimer) {
@@ -1019,10 +1046,17 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
         }
         case MessageType::CLIPBOARD_DATA: {
             ClipboardData clipData = ProtocolManager::decodeClipboardData(payload);
-            // Guard for headless/service mode where no QApplication exists.
-            if (auto* app = (qApp ? qobject_cast<QApplication*>(qApp) : nullptr)) {
-                app->clipboard()->setText(QString::fromUtf8(clipData.data));
+            // Reflect the sender's clipboard onto this host's own clipboard
+            // (without re-broadcasting it back out, which would loop). Only
+            // when running under a GUI app.
+            if (m_clipboardManager) {
+                m_clipboardManager->applyRemoteClipboard(clipData.data, clipData.mimeType);
+            } else if (auto* app = (qApp ? qobject_cast<QApplication*>(qApp) : nullptr)) {
+                if (clipData.mimeType == "text/plain") {
+                    app->clipboard()->setText(QString::fromUtf8(clipData.data));
+                }
             }
+            // Relay to all OTHER authenticated clients (multi-controller fan-out).
             QByteArray respPayload = ProtocolManager::encodeClipboardData(clipData);
             QByteArray resp = ProtocolManager::encode(MessageType::CLIPBOARD_DATA, respPayload);
             for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {

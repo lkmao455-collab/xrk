@@ -14,6 +14,7 @@ if(GTest_FOUND)
         test_device_manager.cpp
         test_file_transfer_manager.cpp
         test_file_transfer_drag.cpp
+        test_clipboard.cpp
         test_security_manager.cpp
         test_p2p_relay.cpp
         test_loopback.cpp
@@ -37,6 +38,7 @@ if(GTest_FOUND)
         xrk_ui
         xrk_core 
         xrk_app 
+        Qt6::Test
         GTest::gtest
     )
     

@@ -18,6 +18,7 @@
 #include "hw/video_encoder.h"
 #include "nat_traversal.h"
 #include "p2p_manager.h"
+#include "clipboard_manager.h"
 
 namespace xrk {
 
@@ -271,6 +272,10 @@ private:
     
     PrivacyScreen* m_privacyScreen = nullptr;
     bool m_privacyScreenEnabled = false;
+
+    // Host-side clipboard monitor; broadcasts local clipboard changes to all
+    // authenticated clients (enables host -> controller sync).
+    ClipboardManager* m_clipboardManager = nullptr;
 
     bool m_audioEnabled = true;
 
