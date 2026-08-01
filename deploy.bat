@@ -27,14 +27,23 @@ if not exist "%EXE_PATH%" (
 echo [INFO] Using Qt: %QT_DIR%
 echo [INFO] Deploying: %EXE_PATH% -> %DEPLOY_DIR%
 
+REM Stop any running instance so the deployed exe isn't locked. A locked
+REM xrk.exe makes rmdir/windeployqt/copy silently fail to replace it on some
+REM runs, which is why the exe sometimes wasn't copied. This is forgiving:
+REM it's fine if no instance is running.
+taskkill /f /im xrk.exe >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Stopped a running xrk.exe instance to free the deploy target
+    timeout /t 1 >nul
+)
+
 REM Clean deploy directory - handle both file and directory
 if exist "%DEPLOY_DIR%" (
     echo [INFO] Cleaning previous deploy...
-    if exist "%DEPLOY_DIR%\*" (
-        rmdir /s /q "%DEPLOY_DIR%"
-    ) else (
-        del /f /q "%DEPLOY_DIR%"
-    )
+    rmdir /s /q "%DEPLOY_DIR%" 2>nul
+)
+if exist "%DEPLOY_DIR%" (
+    del /f /q "%DEPLOY_DIR%" 2>nul
 )
 mkdir "%DEPLOY_DIR%" 2>nul
 
@@ -101,6 +110,26 @@ if exist "%BUILD_DIR%\translations" (
 
 echo [INFO] Copying main executable...
 copy /y "%EXE_PATH%" "%DEPLOY_DIR%\xrk.exe"
+if not exist "%DEPLOY_DIR%\xrk.exe" (
+    echo [ERROR] Failed to copy xrk.exe to deploy directory
+    pause
+    exit /b 1
+)
+REM Safety check: binary-compare the deployed exe against the freshly built
+REM one. A mismatch (e.g. a still-locked file from a previous run) is retried
+REM once before failing, so the deploy never ships a stale/corrupt exe.
+fc /b "%EXE_PATH%" "%DEPLOY_DIR%\xrk.exe" >nul
+if errorlevel 1 (
+    echo [WARN] Deployed xrk.exe differs from source; retrying copy...
+    copy /y /b "%EXE_PATH%" "%DEPLOY_DIR%\xrk.exe" >nul
+    fc /b "%EXE_PATH%" "%DEPLOY_DIR%\xrk.exe" >nul
+    if errorlevel 1 (
+        echo [ERROR] xrk.exe copy verification failed
+        pause
+        exit /b 1
+    )
+)
+echo [OK] xrk.exe verified
 
 echo.
 echo ========================================
