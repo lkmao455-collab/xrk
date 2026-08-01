@@ -1,5 +1,6 @@
 set(UI_SOURCES
     main_window.cpp
+    simple_home_widget.cpp
     device_list_widget.cpp
     remote_desktop_widget.cpp
     file_transfer_widget.cpp
@@ -13,6 +14,7 @@ set(UI_SOURCES
 
 set(UI_HEADERS
     main_window.h
+    simple_home_widget.h
     device_list_widget.h
     remote_desktop_widget.h
     file_transfer_widget.h

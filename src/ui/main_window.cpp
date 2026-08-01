@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "simple_home_widget.h"
 #include "device_list_widget.h"
 #include "remote_desktop_widget.h"
 #include "file_transfer_widget.h"
@@ -68,12 +69,24 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_network->initialize(DEFAULT_PORT, /*startTcpServer=*/false);
     m_deviceDiscovery->startDiscovery();
 
-    setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
-    resize(1200, 800);
+    setWindowTitle("XRK");
+    resize(680, 520);
+    setMinimumSize(500, 400);
+
+    // Restore window state
+    QSettings windowSettings("XRK", "Window");
+    if (windowSettings.contains("geometry")) {
+        restoreGeometry(windowSettings.value("geometry").toByteArray());
+    }
+
     switchToPage(PAGE_HOME);
 }
 
 MainWindow::~MainWindow() {
+    // Save window state
+    QSettings windowSettings("XRK", "Window");
+    windowSettings.setValue("geometry", saveGeometry());
+
     if (m_host) {
         m_host->stop();
     }
@@ -118,10 +131,11 @@ void MainWindow::setupUI() {
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
-    // --- Icon Sidebar ---
+    // --- Icon Sidebar (hidden by default, shown after connection) ---
     m_navSidebar = new QWidget();
     m_navSidebar->setObjectName("navSidebar");
-    m_navSidebar->setFixedWidth(52);
+    m_navSidebar->setFixedWidth(0);
+    m_navSidebar->setVisible(false);
     auto* navLayout = new QVBoxLayout(m_navSidebar);
     navLayout->setContentsMargins(4, 8, 4, 8);
     navLayout->setSpacing(2);
@@ -154,9 +168,13 @@ void MainWindow::setupUI() {
     // --- Content Stack ---
     m_contentStack = new QStackedWidget();
 
-    // Page 0: Home (device list + connect)
-    m_deviceListWidget = new DeviceListWidget(m_deviceManager.get());
-    m_contentStack->addWidget(m_deviceListWidget);
+    // Page 0: Simple Home (极简首页)
+    auto* simpleHome = new SimpleHomeWidget(m_deviceManager.get());
+    connect(simpleHome, &SimpleHomeWidget::connectToIp, this, &MainWindow::onConnectToIp);
+    connect(simpleHome, &SimpleHomeWidget::connectToCode, this, &MainWindow::onConnectToCode);
+    connect(simpleHome, &SimpleHomeWidget::startHostService, this, &MainWindow::onToggleHost);
+    connect(simpleHome, &SimpleHomeWidget::openSettings, this, &MainWindow::onSettingsClicked);
+    m_contentStack->addWidget(simpleHome);
 
     // Page 1: Remote Desktop
     m_remoteDesktopWidget = new RemoteDesktopWidget(m_remoteController.get());
@@ -264,6 +282,10 @@ void MainWindow::onRemoteStarted() {
     m_fileTransferWidget->setRemoteController(m_remoteController.get());
     m_fileTransferWidget->onRemoteConnected();
 
+    // Show sidebar navigation after connection
+    m_navSidebar->setVisible(true);
+    m_navSidebar->setFixedWidth(52);
+
     // Switch to desktop view when connected
     switchToPage(PAGE_DESKTOP);
 }
@@ -283,6 +305,11 @@ void MainWindow::onRemoteStopped() {
         m_cameraAction->setChecked(false);
     }
     m_sysInfoWidget->setConnected(false);
+
+    // Hide sidebar and return to home when disconnected
+    m_navSidebar->setVisible(false);
+    m_navSidebar->setFixedWidth(0);
+    switchToPage(PAGE_HOME);
 }
 
 void MainWindow::onSettingsClicked() {
