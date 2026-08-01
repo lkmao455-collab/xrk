@@ -45,12 +45,23 @@ SimpleHomeWidget::SimpleHomeWidget(DeviceManager* manager, QWidget* parent)
 void SimpleHomeWidget::paintEvent(QPaintEvent* event) {
     QWidget::paintEvent(event);
     
-    Theme theme = ThemeManager::instance().currentTheme();
-    if (theme.hasBackground) {
-        QPixmap bg(theme.backgroundPixmap);
+    ThemeManager& tm = ThemeManager::instance();
+    
+    // 优先使用自定义背景
+    QString bgPath;
+    if (tm.hasCustomBackground()) {
+        bgPath = tm.customBackgroundPath();
+    } else {
+        Theme theme = tm.currentTheme();
+        if (theme.hasBackground) {
+            bgPath = theme.backgroundPixmap;
+        }
+    }
+    
+    if (!bgPath.isEmpty()) {
+        QPixmap bg(bgPath);
         if (!bg.isNull()) {
             QPainter painter(this);
-            // 拉伸背景图像以填充整个窗口
             painter.drawPixmap(rect(), bg);
         }
     }

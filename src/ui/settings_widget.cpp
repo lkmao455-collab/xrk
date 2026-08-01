@@ -5,6 +5,7 @@
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QGroupBox>
+#include <QFileDialog>
 
 namespace xrk {
 
@@ -41,6 +42,12 @@ void SettingsWidget::loadSettings() {
     if (themeIdx >= 0) {
         m_themeCombo->setCurrentIndex(themeIdx);
     }
+
+    // Load custom background
+    QString customBg = ThemeManager::instance().customBackgroundPath();
+    if (!customBg.isEmpty()) {
+        m_customBgEdit->setText(customBg);
+    }
 }
 
 void SettingsWidget::saveSettings() {
@@ -61,6 +68,14 @@ void SettingsWidget::saveSettings() {
     QString themeId = m_themeCombo->currentData().toString();
     ThemeManager::instance().applyTheme(themeId);
     settings.setValue("theme/current", themeId);
+    
+    // Save custom background
+    QString customBgPath = m_customBgEdit->text().trimmed();
+    if (!customBgPath.isEmpty()) {
+        ThemeManager::instance().setCustomBackground(customBgPath);
+    } else {
+        ThemeManager::instance().clearCustomBackground();
+    }
 }
 
 uint16_t SettingsWidget::port() const {
@@ -118,6 +133,22 @@ void SettingsWidget::onOkClicked() {
 
 void SettingsWidget::onCancelClicked() {
     reject();
+}
+
+void SettingsWidget::onBrowseBackground() {
+    QString filePath = QFileDialog::getOpenFileName(this, 
+        tr("选择背景图片"), 
+        QString(),
+        tr("图片文件 (*.png *.jpg *.jpeg *.bmp *.gif)"));
+    
+    if (!filePath.isEmpty()) {
+        m_customBgEdit->setText(filePath);
+    }
+}
+
+void SettingsWidget::onClearBackground() {
+    m_customBgEdit->clear();
+    ThemeManager::instance().clearCustomBackground();
 }
 
 void SettingsWidget::setupUI() {
@@ -191,6 +222,26 @@ void SettingsWidget::setupUI() {
     formLayout->addRow(tr("主题:"), m_themeCombo);
 
     mainLayout->addLayout(formLayout);
+
+    // Custom background
+    QGroupBox* bgGroup = new QGroupBox(tr("自定义背景图片"), this);
+    QVBoxLayout* bgLayout = new QVBoxLayout(bgGroup);
+    
+    QHBoxLayout* bgPathLayout = new QHBoxLayout();
+    m_customBgEdit = new QLineEdit(this);
+    m_customBgEdit->setPlaceholderText(tr("选择自定义背景图片..."));
+    bgPathLayout->addWidget(m_customBgEdit);
+    
+    m_browseBgButton = new QPushButton(tr("浏览"), this);
+    connect(m_browseBgButton, &QPushButton::clicked, this, &SettingsWidget::onBrowseBackground);
+    bgPathLayout->addWidget(m_browseBgButton);
+    
+    m_clearBgButton = new QPushButton(tr("清除"), this);
+    connect(m_clearBgButton, &QPushButton::clicked, this, &SettingsWidget::onClearBackground);
+    bgPathLayout->addWidget(m_clearBgButton);
+    
+    bgLayout->addLayout(bgPathLayout);
+    mainLayout->addWidget(bgGroup);
 
     // Relay server settings
     QGroupBox* relayGroup = new QGroupBox(tr("中继服务器 (跨互联网连接)"), this);

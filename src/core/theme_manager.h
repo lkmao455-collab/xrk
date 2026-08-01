@@ -36,6 +36,12 @@ public:
     QString currentThemeId() const;
     QList<Theme> availableThemes() const;
 
+    // 自定义背景
+    void setCustomBackground(const QString& imagePath);
+    void clearCustomBackground();
+    QString customBackgroundPath() const;
+    bool hasCustomBackground() const;
+
     // 生成QSS样式表
     QString generateQSS() const;
 

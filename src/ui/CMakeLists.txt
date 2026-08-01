@@ -10,6 +10,7 @@ set(UI_SOURCES
     system_info_widget.cpp
     address_book_dialog.cpp
     clipboard_history_widget.cpp
+    media_test_dialog.cpp
 )
 
 set(UI_HEADERS
@@ -24,10 +25,11 @@ set(UI_HEADERS
     system_info_widget.h
     address_book_dialog.h
     clipboard_history_widget.h
+    media_test_dialog.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})
 
 target_include_directories(xrk_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(xrk_ui PUBLIC xrk_app Qt6::Widgets)
+target_link_libraries(xrk_ui PUBLIC xrk_app Qt6::Widgets Qt6::MultimediaWidgets)

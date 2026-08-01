@@ -9,7 +9,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Core Gui Multimedia Test)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Core Gui Multimedia MultimediaWidgets Test)
 
 enable_testing()
 find_package(GTest QUIET)

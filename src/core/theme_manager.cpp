@@ -182,6 +182,26 @@ QList<Theme> ThemeManager::availableThemes() const {
     return m_themes.values();
 }
 
+void ThemeManager::setCustomBackground(const QString& imagePath) {
+    if (QFile::exists(imagePath)) {
+        m_settings.setValue("customBackground", imagePath);
+        emit themeChanged(m_currentThemeId);
+    }
+}
+
+void ThemeManager::clearCustomBackground() {
+    m_settings.remove("customBackground");
+    emit themeChanged(m_currentThemeId);
+}
+
+QString ThemeManager::customBackgroundPath() const {
+    return m_settings.value("customBackground", "").toString();
+}
+
+bool ThemeManager::hasCustomBackground() const {
+    return QFile::exists(customBackgroundPath());
+}
+
 QString ThemeManager::generateQSS() const {
     Theme theme = currentTheme();
     QString qss;

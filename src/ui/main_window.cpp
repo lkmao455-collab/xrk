@@ -22,6 +22,7 @@
 #include "core/translation_manager.h"
 #include "core/logger.h"
 #include "clipboard_history_widget.h"
+#include "media_test_dialog.h"
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QSplitter>
@@ -240,6 +241,7 @@ void MainWindow::setupMenuBar() {
     connect(lockAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::LOCK); });
 
     QMenu* helpMenu = menuBar->addMenu("\u5e2e\u52a9(&H)");
+    helpMenu->addAction(m_mediaTestAction);
     helpMenu->addAction(m_aboutAction);
 }
 
@@ -347,6 +349,11 @@ void MainWindow::onAboutClicked() {
         "\u4f7f\u7528\u65b9\u6cd5:\n"
         "1. \u88ab\u63a7\u7aef: \u70b9\u51fb\"\u542f\u52a8\u670d\u52a1\"\u6309\u94ae\n"
         "2. \u4e3b\u63a7\u7aef: \u8f93\u5165\u88ab\u63a7\u7aefIP\u5730\u5740\uff0c\u70b9\u51fb\"\u8fde\u63a5\u5230IP\"");
+}
+
+void MainWindow::onMediaTestClicked() {
+    MediaTestDialog dlg(this);
+    dlg.exec();
 }
 
 void MainWindow::onLockScreenClicked() {
@@ -849,6 +856,9 @@ void MainWindow::createActions() {
 
     m_exitAction = new QAction("\u9000\u51fa", this);
     connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
+
+    m_mediaTestAction = new QAction("\u9ea6\u514b\u98ce\u4e0e\u6444\u50cf\u5934\u6d4b\u8bd5", this);
+    connect(m_mediaTestAction, &QAction::triggered, this, &MainWindow::onMediaTestClicked);
 }
 
 } // namespace xrk

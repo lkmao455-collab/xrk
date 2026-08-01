@@ -38,6 +38,8 @@ public:
 private slots:
     void onOkClicked();
     void onCancelClicked();
+    void onBrowseBackground();
+    void onClearBackground();
 
 private:
     void setupUI();
@@ -57,6 +59,10 @@ private:
 
     QComboBox* m_languageCombo = nullptr;
     QComboBox* m_themeCombo = nullptr;
+    
+    QLineEdit* m_customBgEdit = nullptr;
+    QPushButton* m_browseBgButton = nullptr;
+    QPushButton* m_clearBgButton = nullptr;
 
     QPushButton* m_okButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
