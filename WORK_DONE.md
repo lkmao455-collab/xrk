@@ -343,3 +343,4 @@
 | WOL远程唤醒 | ✅ 魔术包广播, MAC地址输入, 一键唤醒 |
 | 隐私屏 | ✅ 远控时全屏黑屏遮挡, DXGI排除+输入穿透+即时生效 |
 | Controller卡顿修复 | ✅ Decode Worker线程修复, worker context模式防止主线程阻塞 |
+| 企业级设备管理 | ✅ DeviceRegistry设备注册表, RelayServer协议扩展, 设备在线状态跟踪 |
