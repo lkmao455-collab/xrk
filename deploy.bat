@@ -37,15 +37,12 @@ if not errorlevel 1 (
     timeout /t 1 >nul
 )
 
-REM Clean deploy directory - retry a few times in case a lingering handle
-REM (e.g. a just-killed xrk.exe) briefly keeps the folder from being removed.
-for /l %%n in (1,1,3) do (
-    if exist "%DEPLOY_DIR%" (
-        echo [INFO] Cleaning previous deploy (attempt %%n)...
-        rmdir /s /q "%DEPLOY_DIR%" 2>nul
-        if exist "%DEPLOY_DIR%" del /f /q "%DEPLOY_DIR%" 2>nul
-        if exist "%DEPLOY_DIR%" timeout /t 1 >nul
-    )
+REM Clean deploy directory
+if exist "%DEPLOY_DIR%" (
+    echo [INFO] Cleaning previous deploy...
+    rmdir /s /q "%DEPLOY_DIR%" 2>nul
+    timeout /t 1 >nul
+    if exist "%DEPLOY_DIR%" rmdir /s /q "%DEPLOY_DIR%" 2>nul
 )
 mkdir "%DEPLOY_DIR%" 2>nul
 
