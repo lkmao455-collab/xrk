@@ -112,7 +112,7 @@ private:
         PAGE_COUNT
     };
 
-    DeviceListWidget* m_deviceListWidget = nullptr;
+    DeviceListWidget* m_deviceListWidget = nullptr; // Legacy - no longer used
     RemoteDesktopWidget* m_remoteDesktopWidget = nullptr;
     FileTransferWidget* m_fileTransferWidget = nullptr;
     TerminalWidget* m_terminalWidget = nullptr;

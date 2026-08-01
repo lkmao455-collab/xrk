@@ -27,6 +27,8 @@ if(GTest_FOUND)
         test_encryption.cpp
         test_svg_icons.cpp
         test_device_registry.cpp
+        test_camera_basic.cpp
+        test_microphone_basic.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)

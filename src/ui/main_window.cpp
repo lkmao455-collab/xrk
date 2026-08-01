@@ -601,14 +601,8 @@ void MainWindow::onConsentRequested(const QString& clientId, const QString& peer
 // ────────── Connections ──────────
 
 void MainWindow::setupConnections() {
-    connect(m_deviceListWidget, &DeviceListWidget::deviceDoubleClicked,
-            this, &MainWindow::onDeviceSelected);
-
-    connect(m_deviceListWidget, &DeviceListWidget::connectToIp,
-            this, &MainWindow::onConnectToIp);
-
-    connect(m_deviceListWidget, &DeviceListWidget::connectToCode,
-            this, &MainWindow::onConnectToCode);
+    // DeviceListWidget is no longer used in the UI (replaced by SimpleHomeWidget)
+    // These connections are removed to avoid nullptr errors
 
     connect(m_remoteController.get(), &RemoteController::remoteStarted,
             this, &MainWindow::onRemoteStarted);
