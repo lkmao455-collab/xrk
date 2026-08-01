@@ -79,4 +79,27 @@ TEST(HostTeardown, ReverseSyncPairRegistration) {
     EXPECT_FALSE(host.hasReverseSync(clientId, hostDir));
 }
 
+// Task 28-interim: trusted (auto-allowed) controller IPs. A remembered IP is
+// reported as trusted and survives remove/clear. No Host::start() needed.
+TEST(HostTeardown, TrustedIpStore) {
+    Host host;
+    host.clearTrustedIps();  // isolate from any persisted state
+
+    const QString ip = "192.168.1.42";
+    EXPECT_FALSE(host.isTrustedIp(ip));
+
+    host.addTrustedIp(ip);
+    EXPECT_TRUE(host.isTrustedIp(ip));
+    // Adding the same IP twice stays idempotent.
+    host.addTrustedIp(ip);
+    EXPECT_EQ(host.trustedIps().count(ip), 1);
+
+    host.removeTrustedIp(ip);
+    EXPECT_FALSE(host.isTrustedIp(ip));
+
+    host.addTrustedIp("10.0.0.5");
+    host.clearTrustedIps();
+    EXPECT_TRUE(host.trustedIps().isEmpty());
+}
+
 } // namespace xrk

@@ -674,9 +674,6 @@ QPoint RemoteDesktopWidget::remoteToWidget(const QPoint& remotePos) const {
 void RemoteDesktopWidget::setupShortcuts() {
     m_fullscreenShortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
     connect(m_fullscreenShortcut, &QShortcut::activated, this, &RemoteDesktopWidget::toggleFullscreen);
-    
-    m_disconnectShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-    connect(m_disconnectShortcut, &QShortcut::activated, this, &RemoteDesktopWidget::stopRemote);
 }
 
 void RemoteDesktopWidget::toggleFullscreen() {

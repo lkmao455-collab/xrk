@@ -90,7 +90,6 @@ private:
     bool m_fullscreen = false;
     QString m_currentDeviceId;
     QShortcut* m_fullscreenShortcut = nullptr;
-    QShortcut* m_disconnectShortcut = nullptr;
     std::unique_ptr<VideoDecoder> m_h264Decoder;
     QualityInfo m_currentQuality;
     qint64 m_roundTripMs = 0;

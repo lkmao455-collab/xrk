@@ -56,6 +56,7 @@ private slots:
     void onCameraToggle();
     void onAudioToggle();
     void onPowerAction(PowerAction action);
+    void onLockScreenClicked();
 
 private:
     void setupUI();
@@ -120,6 +121,7 @@ private:
     QAction* m_recordAction = nullptr;
     QAction* m_cameraAction = nullptr;
     QAction* m_audioAction = nullptr;
+    QAction* m_lockScreenAction = nullptr;
     bool m_recordingActive = false;
     bool m_cameraActive = false;
     QSystemTrayIcon* m_trayIcon = nullptr;

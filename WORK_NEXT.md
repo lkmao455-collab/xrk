@@ -44,8 +44,8 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - 有 GUI 事件（拖拽/输入）的部分用合成事件单测覆盖逻辑，肉眼验证交给桌面端。
 
 ## 进度（完成一项更新一项）
-- 已完成：Task 24, Task 25, Task 26, Task 27
-- 进行中：Task 28
+- 已完成：Task 24, Task 25, Task 26, Task 27（+ 本地锁屏按钮 / 信任IP免确认 / 移除Esc断连 三项追加）
+- 进行中：Task 28（企业设备目录，被上述临时需求插队，暂缓）
 - 待办：28, 29, 30, 31
 
 ## Task 26 记录（画质/延迟档位）
@@ -91,3 +91,28 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - 单测：SyncPair/SyncNotify 协议往返 + 主机反向配对注册/清理（headless，全绿）。
 - 注意：本机 headless 下 `Host::start()` 会卡在屏幕采集初始化，主机写路径逻辑
   靠运行态 app 验证。
+
+## 追加功能记录（非路线图原项，按用户临时要求）
+
+### 本地锁屏按钮（用户临时要求）
+- `PrivacyScreen::showLocal(seconds)`：显示全屏遮罩 + `BlockInput(TRUE)` 屏蔽本地键鼠，
+  内部 1s 倒计时，到时自动 `hide()` 释放输入；避免 BlockInput 造成的永久锁死
+  （本地输入被屏蔽时无法输入解锁手势）。
+- `Host::lockScreenLocal / unlockScreenLocal / isLocalLockActive`：独立于远控会话的
+  本机锁屏（用单独的 `m_localLock` 实例，不与远控隐私屏 `m_privacyScreen` 冲突）；
+  `stop()` 与析构会释放本地锁。
+- UI：菜单「文件 ▸ 锁定本机屏幕」+ 托盘右键菜单「锁定本机屏幕」；点击后弹窗输入
+  锁定时长（默认 60s，5–3600s），到时自动解锁，远程端也可提前解锁。
+- 说明：因 BlockInput 同时屏蔽本地解锁手势，故设计为定时自动解锁，绝不锁死用户。
+
+### 同 IP 免确认（连接授权记住信任 IP）
+- `Host` 信任 IP 名单（`m_trustedIps`，经 QSettings 持久化）：
+  `addTrustedIp / isTrustedIp / trustedIps / removeTrustedIp / clearTrustedIps`。
+- `requestConsent`：若对端 IP 在信任名单，直接 `grantConsent` 跳过授权弹窗。
+- UI：授权弹窗新增复选框「记住此 IP（…），下次自动允许」；勾选并在允许时写入信任名单。
+- 单测：`HostTeardown.TrustedIpStore`（headless，全绿）。
+- 说明：经中继连接时 peer 为中继 IP，仅直连（LAN）能精确匹配控制端真实 IP。
+
+### 移除控制端 Esc 断连
+- 删除 `RemoteDesktopWidget` 中 `Qt::Key_Escape` → `stopRemote` 的 `QShortcut`
+  （易误触导致断连）。断连仍可通过界面「断开」按钮进行。

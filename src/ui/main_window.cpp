@@ -195,6 +195,7 @@ void MainWindow::setupMenuBar() {
     QMenu* fileMenu = menuBar->addMenu("\u6587\u4ef6(&F)");
     fileMenu->addAction(m_toggleHostAction);
     fileMenu->addSeparator();
+    fileMenu->addAction(m_lockScreenAction);
     fileMenu->addAction(m_settingsAction);
     fileMenu->addSeparator();
     fileMenu->addAction(m_exitAction);
@@ -232,6 +233,12 @@ void MainWindow::setupStatusBar() {
     m_trayIcon = new QSystemTrayIcon(qApp->style()->standardIcon(QStyle::SP_ComputerIcon), this);
     m_trayIcon->setToolTip("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
     m_trayIcon->show();
+
+    QMenu* trayMenu = new QMenu(this);
+    trayMenu->addAction(m_lockScreenAction);
+    trayMenu->addSeparator();
+    trayMenu->addAction(m_exitAction);
+    m_trayIcon->setContextMenu(trayMenu);
 }
 
 // ────────── Event Handlers ──────────
@@ -313,6 +320,16 @@ void MainWindow::onAboutClicked() {
         "\u4f7f\u7528\u65b9\u6cd5:\n"
         "1. \u88ab\u63a7\u7aef: \u70b9\u51fb\"\u542f\u52a8\u670d\u52a1\"\u6309\u94ae\n"
         "2. \u4e3b\u63a7\u7aef: \u8f93\u5165\u88ab\u63a7\u7aefIP\u5730\u5740\uff0c\u70b9\u51fb\"\u8fde\u63a5\u5230IP\"");
+}
+
+void MainWindow::onLockScreenClicked() {
+    bool ok = false;
+    int seconds = QInputDialog::getInt(this, tr("\u9501\u5b9a\u672c\u673a\u5c4f\u5e55"),
+        tr("\u9501\u5b9a\u672c\u673a\u5e76\u758f\u6b62\u672c\u5730\u952e\u9f20\u8f93\u5165\uff0cN \u79d2\u540e\u81ea\u52a8\u89e3\u9501\uff1a"),
+        60, 5, 3600, 1, &ok);
+    if (!ok) return;
+    m_host->lockScreenLocal(seconds);
+    statusBar()->showMessage(tr("\u672c\u673a\u5c4f\u5e55\u5df2\u9501\u5b9a\uff0c%1 \u79d2\u540e\u81ea\u52a8\u89e3\u9501").arg(seconds));
 }
 
 void MainWindow::onToggleHost() {
@@ -487,6 +504,10 @@ void MainWindow::onConsentRequested(const QString& clientId, const QString& peer
     label->setWordWrap(true);
     layout->addWidget(label);
 
+    QCheckBox* rememberCheck = new QCheckBox(
+        tr("记住此 IP（%1），下次自动允许").arg(peerAddress), dlg);
+    layout->addWidget(rememberCheck);
+
     QDialogButtonBox* buttons = new QDialogButtonBox(dlg);
     QPushButton* allowBtn = buttons->addButton(tr("允许"), QDialogButtonBox::AcceptRole);
     QPushButton* denyBtn = buttons->addButton(tr("拒绝"), QDialogButtonBox::RejectRole);
@@ -494,9 +515,12 @@ void MainWindow::onConsentRequested(const QString& clientId, const QString& peer
     connect(denyBtn, &QPushButton::clicked, dlg, [dlg]() { dlg->reject(); });
     layout->addWidget(buttons);
 
-    connect(dlg, &QDialog::finished, this, [this, dlg, clientId](int result) {
+    connect(dlg, &QDialog::finished, this, [this, dlg, clientId, peerAddress, rememberCheck](int result) {
         if (m_consentDialog == dlg) m_consentDialog = nullptr;
         if (result == QDialog::Accepted) {
+            if (rememberCheck->isChecked()) {
+                m_host->addTrustedIp(peerAddress);
+            }
             m_host->grantConsent(clientId);
             statusBar()->showMessage(tr("已允许控制端：") + clientId);
         } else {
@@ -786,6 +810,9 @@ void MainWindow::createActions() {
     m_audioAction->setCheckable(true);
     m_audioAction->setChecked(true);
     connect(m_audioAction, &QAction::triggered, this, &MainWindow::onAudioToggle);
+
+    m_lockScreenAction = new QAction("\u9501\u5b9a\u672c\u673a\u5c4f\u5e55", this);
+    connect(m_lockScreenAction, &QAction::triggered, this, &MainWindow::onLockScreenClicked);
 
     m_settingsAction = new QAction("\u8bbe\u7f6e", this);
     connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);

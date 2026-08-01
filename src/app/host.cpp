@@ -24,6 +24,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDataStream>
+#include <QSettings>
 
 // Avoid pulling in <windows.h> here: it defines MOUSE_EVENT / KEY_EVENT macros
 // that collide with the MessageType enum cases below. Declare the one API we
@@ -330,6 +331,7 @@ void NetworkWorker::drainQueue() {
 // ==================== Host ====================
 
 Host::Host(QObject* parent) : QObject(parent) {
+    loadTrustedIps();
 }
 
 Host::~Host() {
@@ -494,6 +496,12 @@ void Host::stop() {
         m_privacyScreen->hide();
         delete m_privacyScreen;
         m_privacyScreen = nullptr;
+    }
+
+    if (m_localLock) {
+        m_localLock->hide();
+        delete m_localLock;
+        m_localLock = nullptr;
     }
 
     if (m_clipboardManager) {
@@ -889,6 +897,15 @@ void Host::requestConsent(const QString& clientId) {
     if (!socket) return;
 
     QString peer = socket->peerAddress().toString();
+
+    // Auto-grant connections from a trusted (remembered) IP without prompting,
+    // so the host user isn't asked to approve the same machine every time.
+    if (isTrustedIp(peer)) {
+        LOG_INFO("Host: Peer " + peer + " is trusted; auto-granting consent for " + clientId);
+        grantConsent(clientId);
+        return;
+    }
+
     // Inform the controller that a host-side approval is required (so it can
     // show a "waiting for host approval" state). deviceName carries the host's
     // computer name for display on the controller side.
@@ -1757,6 +1774,67 @@ void Host::setPrivacyScreenEnabled(bool enabled) {
 
 bool Host::isPrivacyScreenEnabled() const {
     return m_privacyScreenEnabled;
+}
+
+void Host::lockScreenLocal(int seconds) {
+    if (!m_localLock) {
+        m_localLock = new PrivacyScreen(this);
+    }
+    m_localLock->showLocal(seconds);
+    LOG_INFO("Host: Local lock engaged for " + QString::number(seconds) + "s");
+}
+
+void Host::unlockScreenLocal() {
+    if (m_localLock) {
+        m_localLock->hide();
+        m_localLock->deleteLater();
+        m_localLock = nullptr;
+        LOG_INFO("Host: Local lock released");
+    }
+}
+
+bool Host::isLocalLockActive() const {
+    return m_localLock && m_localLock->isVisible();
+}
+
+void Host::loadTrustedIps() {
+    QSettings settings("XRK", "LANRemote");
+    m_trustedIps = settings.value("trustedIps").toStringList();
+}
+
+void Host::saveTrustedIps() {
+    QSettings settings("XRK", "LANRemote");
+    settings.setValue("trustedIps", m_trustedIps);
+}
+
+void Host::addTrustedIp(const QString& ip) {
+    if (ip.isEmpty() || m_trustedIps.contains(ip)) return;
+    m_trustedIps.append(ip);
+    saveTrustedIps();
+    LOG_INFO("Host: Added trusted IP " + ip);
+}
+
+bool Host::isTrustedIp(const QString& ip) const {
+    return m_trustedIps.contains(ip);
+}
+
+QStringList Host::trustedIps() const {
+    return m_trustedIps;
+}
+
+void Host::removeTrustedIp(const QString& ip) {
+    if (m_trustedIps.removeAll(ip) > 0) {
+        saveTrustedIps();
+        LOG_INFO("Host: Removed trusted IP " + ip);
+    }
+}
+
+void Host::clearTrustedIps() {
+    if (!m_trustedIps.isEmpty()) {
+        m_trustedIps.clear();
+        saveTrustedIps();
+        LOG_INFO("Host: Cleared all trusted IPs");
+    }
 }
 
 void Host::setCameraMode(bool enabled) {

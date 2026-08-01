@@ -3,6 +3,7 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QVBoxLayout>
+#include <QTimer>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -26,11 +27,12 @@ PrivacyScreen::~PrivacyScreen() {
 
 void PrivacyScreen::show() {
     if (m_visible) return;
-    
+    m_localMode = false;
+
     if (!m_overlay) {
         setupOverlay();
     }
-    
+
     m_overlay->showFullScreen();
 
 #ifdef Q_OS_WIN
@@ -49,9 +51,77 @@ void PrivacyScreen::show() {
     m_visible = true;
 }
 
+void PrivacyScreen::showLocal(int seconds) {
+    if (m_visible) {
+        // Re-arm the countdown if already locked locally.
+        if (m_localMode) {
+            m_remaining = seconds;
+            updateLocalCountdown();
+        }
+        return;
+    }
+    m_localMode = true;
+    m_remaining = qMax(1, seconds);
+
+    if (!m_overlay) {
+        setupOverlay();
+    }
+
+    m_overlay->showFullScreen();
+
+#ifdef Q_OS_WIN
+    if (HWND hwnd = reinterpret_cast<HWND>(m_overlay->winId())) {
+        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
+    // Block all local physical input. Because BlockInput also blocks any local
+    // unlock gesture, the lock is time-bounded (auto-unlock below) and can be
+    // released early by a remote client via the privacy-screen-off path.
+    if (!BlockInput(TRUE)) {
+        LOG_WARNING("PrivacyScreen: BlockInput failed");
+    }
+#endif
+
+    updateLocalCountdown();
+    m_overlay->raise();
+    m_visible = true;
+
+    if (!m_tickTimer) {
+        m_tickTimer = new QTimer(this);
+        connect(m_tickTimer, &QTimer::timeout, this, [this]() {
+            --m_remaining;
+            if (m_remaining <= 0) {
+                hide();
+            } else {
+                updateLocalCountdown();
+            }
+        });
+    }
+    m_tickTimer->start(1000);
+}
+
+void PrivacyScreen::updateLocalCountdown() {
+    if (m_label) {
+        m_label->setText(
+            "<div style='text-align: center; color: white; font-family: Segoe UI;'>"
+            "<h1 style='font-size: 48px; color: #e74c3c;'>●</h1>"
+            "<h2 style='font-size: 32px;'>本机屏幕已锁定</h2>"
+            "<p style='font-size: 18px; color: #888;'>本地键鼠输入已屏蔽</p>"
+            "<p style='font-size: 18px; color: #aaa;'>" +
+            QString::number(m_remaining) + " 秒后自动解锁</p>"
+            "<p style='font-size: 14px; color: #555;'>远程端也可提前解锁</p>"
+            "</div>"
+        );
+    }
+}
+
 void PrivacyScreen::hide() {
     if (!m_visible) return;
-    
+
+    if (m_tickTimer) {
+        m_tickTimer->stop();
+    }
+    m_localMode = false;
+
 #ifdef Q_OS_WIN
     // Restore local input before hiding the overlay.
     BlockInput(FALSE);

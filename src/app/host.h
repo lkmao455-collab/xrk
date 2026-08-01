@@ -148,6 +148,21 @@ public:
     void setPrivacyScreenEnabled(bool enabled);
     bool isPrivacyScreenEnabled() const;
 
+    // Local "lock this console now" action: shows the privacy overlay and
+    // blocks all local physical input for `seconds`, then auto-unlocks. This is
+    // a host-side convenience independent of any remote session.
+    void lockScreenLocal(int seconds = 60);
+    void unlockScreenLocal();
+    bool isLocalLockActive() const;
+
+    // Trusted controller IPs: a connection from a trusted IP skips the consent
+    // dialog and is auto-granted (see requestConsent). Persisted via QSettings.
+    void addTrustedIp(const QString& ip);
+    bool isTrustedIp(const QString& ip) const;
+    QStringList trustedIps() const;
+    void removeTrustedIp(const QString& ip);
+    void clearTrustedIps();
+
     void setEncoderTrueColor(bool enable);
 
     void setAudioEnabled(bool enabled);
@@ -227,6 +242,9 @@ private:
     void onQualityTimer();
     void sendQualityInfo();
 
+    void loadTrustedIps();
+    void saveTrustedIps();
+
     void sendSyncNotify(const QString& clientId, const QString& hostDir,
                         const QString& hostFilePath, const QString& localDir,
                         uint64_t size, int64_t mtime);
@@ -291,6 +309,8 @@ private:
     
     PrivacyScreen* m_privacyScreen = nullptr;
     bool m_privacyScreenEnabled = false;
+    PrivacyScreen* m_localLock = nullptr;
+    QStringList m_trustedIps;
 
     // Host-side clipboard monitor; broadcasts local clipboard changes to all
     // authenticated clients (enables host -> controller sync).
