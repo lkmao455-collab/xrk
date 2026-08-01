@@ -154,74 +154,88 @@ void SimpleHomeWidget::setupUI() {
 void SimpleHomeWidget::setupStyle() {
     setStyleSheet(R"(
         #appLogo {
-            font-size: 36px;
+            font-size: 42px;
             font-weight: bold;
-            color: #e94560;
+            color: #ff6b8a;
             padding: 0;
         }
         #appSubtitle {
-            font-size: 14px;
-            color: #888888;
+            font-size: 15px;
+            color: #aab0c0;
             padding: 0;
         }
         #connectCard {
-            background-color: #1f2940;
-            border-radius: 12px;
-            border: 1px solid #2a2a4a;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #2a3a5a,
+                stop:1 #1f2940);
+            border-radius: 20px;
+            border: 2px solid #3a4a6a;
         }
         #inputLabel {
             font-size: 13px;
-            color: #b0b0b0;
+            color: #c0c8d8;
             border: none;
             background: transparent;
         }
         #connectInput {
             background-color: #16213e;
-            border: 2px solid #2a2a4a;
-            border-radius: 8px;
-            padding: 8px 16px;
+            border: 2px solid #3a4a6a;
+            border-radius: 20px;
+            padding: 12px 20px;
             font-size: 16px;
-            color: #e0e0e0;
+            color: #ffffff;
         }
         #connectInput:focus {
-            border-color: #e94560;
+            border-color: #ff6b8a;
         }
         #connectButton {
-            background-color: #e94560;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #ff6b8a,
+                stop:1 #e94560);
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
+            border-radius: 22px;
+            font-size: 18px;
             font-weight: bold;
+            padding: 14px 32px;
+            min-height: 28px;
         }
         #connectButton:hover {
-            background-color: #ff6b81;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #ff8faa,
+                stop:1 #ff6b8a);
         }
         #connectButton:pressed {
-            background-color: #c0392b;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #d93550,
+                stop:1 #c92540);
         }
         #hostButton {
-            background-color: #0f3460;
-            color: #e0e0e0;
-            border: 1px solid #2a2a4a;
-            border-radius: 6px;
-            padding: 8px 16px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #5cb85c,
+                stop:1 #4cae4c);
+            color: white;
+            border: none;
+            border-radius: 14px;
+            padding: 10px 18px;
             font-size: 13px;
         }
         #hostButton:hover {
-            background-color: #1a4a7a;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #6cc86c,
+                stop:1 #5cb85c);
         }
         #settingsButton {
-            background-color: transparent;
+            background: transparent;
             color: #888888;
-            border: 1px solid #2a2a4a;
-            border-radius: 6px;
-            padding: 8px 16px;
+            border: 2px solid #3a4a6a;
+            border-radius: 14px;
+            padding: 10px 18px;
             font-size: 13px;
         }
         #settingsButton:hover {
-            color: #e0e0e0;
-            border-color: #e0e0e0;
+            color: #ffffff;
+            border-color: #5a8fc5;
         }
         #statusLabel {
             font-size: 12px;
@@ -231,7 +245,7 @@ void SimpleHomeWidget::setupStyle() {
         }
         #sectionTitle {
             font-size: 13px;
-            color: #888888;
+            color: #aab0c0;
             font-weight: bold;
             border: none;
             background: transparent;
@@ -408,24 +422,28 @@ QWidget* SimpleHomeWidget::createDeviceCard(const QuickConnectDevice& device, in
     // Style
     card->setStyleSheet(R"(
         #deviceCard {
-            background-color: #1f2940;
-            border-radius: 8px;
-            border: 1px solid #2a2a4a;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #2a3a5a,
+                stop:1 #1f2940);
+            border-radius: 12px;
+            border: 2px solid #3a4a6a;
         }
         #deviceCard:hover {
-            border-color: #e94560;
-            background-color: #253352;
+            border-color: #ff6b8a;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #3a4a6a,
+                stop:1 #2a3a5a);
         }
         #deviceName {
             font-size: 12px;
             font-weight: bold;
-            color: #e0e0e0;
+            color: #ffffff;
             border: none;
             background: transparent;
         }
         #deviceSubInfo {
             font-size: 10px;
-            color: #888888;
+            color: #aab0c0;
             border: none;
             background: transparent;
         }
