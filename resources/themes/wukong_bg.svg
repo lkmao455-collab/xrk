@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFF8F0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFE8D6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" fill="url(#grad)"/>
+  <circle cx="100" cy="100" r="40" fill="#E74C3C" opacity="0.08"/>
+  <circle cx="300" cy="150" r="30" fill="#FF6B35" opacity="0.1"/>
+  <circle cx="200" cy="300" r="50" fill="#E74C3C" opacity="0.06"/>
+  <path d="M50,200 Q100,150 150,200 T250,200" stroke="#E74C3C" stroke-width="3" fill="none" opacity="0.12"/>
+  <path d="M150,50 Q200,100 250,50" stroke="#FF6B35" stroke-width="3" fill="none" opacity="0.15"/>
+  <polygon points="200,100 220,140 180,140" fill="#E74C3C" opacity="0.1"/>
+  <polygon points="300,250 310,280 290,280" fill="#FF6B35" opacity="0.12"/>
+  <text x="200" y="200" text-anchor="middle" font-size="50" fill="#E74C3C" opacity="0.1">🐒</text>
+</svg>

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E8F4FD;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F0F8FF;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" fill="url(#grad)"/>
+  <circle cx="80" cy="80" r="40" fill="#4A90E2" opacity="0.1"/>
+  <circle cx="320" cy="120" r="30" fill="#5DADE2" opacity="0.15"/>
+  <circle cx="200" cy="320" r="50" fill="#4A90E2" opacity="0.1"/>
+  <rect x="50" y="150" width="60" height="80" rx="5" fill="#4A90E2" opacity="0.1"/>
+  <rect x="290" y="250" width="50" height="70" rx="5" fill="#5DADE2" opacity="0.12"/>
+  <path d="M150,100 L180,80 L210,100 L210,130 L150,130 Z" fill="#4A90E2" opacity="0.08"/>
+  <circle cx="100" cy="250" r="8" fill="#4A90E2" opacity="0.2"/>
+  <circle cx="300" cy="180" r="6" fill="#5DADE2" opacity="0.25"/>
+  <text x="200" y="200" text-anchor="middle" font-size="40" fill="#4A90E2" opacity="0.08">📚</text>
+</svg>

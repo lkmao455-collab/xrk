@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F5E6D3;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FDF5E6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" fill="url(#grad)"/>
+  <circle cx="100" cy="100" r="50" fill="#8B7355" opacity="0.08"/>
+  <circle cx="300" cy="300" r="40" fill="#A0826D" opacity="0.1"/>
+  <rect x="150" y="150" width="100" height="100" rx="10" fill="#8B7355" opacity="0.06"/>
+  <path d="M50,300 Q100,280 150,300 T250,300" stroke="#8B7355" stroke-width="2" fill="none" opacity="0.15"/>
+  <path d="M200,50 Q250,30 300,50 T400,50" stroke="#A0826D" stroke-width="2" fill="none" opacity="0.12"/>
+  <circle cx="80" cy="200" r="10" fill="#8B7355" opacity="0.15"/>
+  <circle cx="320" cy="150" r="8" fill="#A0826D" opacity="0.12"/>
+  <text x="200" y="200" text-anchor="middle" font-size="50" fill="#8B7355" opacity="0.08">📖</text>
+</svg>

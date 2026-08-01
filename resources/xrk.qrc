@@ -12,4 +12,14 @@
         <file>icons/clipboard.svg</file>
         <file>icons/settings.svg</file>
     </qresource>
+    <qresource prefix="/themes">
+        <file>themes/pink_bg.svg</file>
+        <file>themes/otaku_bg.svg</file>
+        <file>themes/student_bg.svg</file>
+        <file>themes/teacher_bg.svg</file>
+        <file>themes/boss_bg.svg</file>
+        <file>themes/taoist_bg.svg</file>
+        <file>themes/wukong_bg.svg</file>
+        <file>themes/baby_bg.svg</file>
+    </qresource>
 </RCC>

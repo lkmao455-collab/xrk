@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/themes">
+        <file>pink_bg.svg</file>
+        <file>otaku_bg.svg</file>
+        <file>student_bg.svg</file>
+        <file>teacher_bg.svg</file>
+        <file>boss_bg.svg</file>
+        <file>taoist_bg.svg</file>
+        <file>wukong_bg.svg</file>
+        <file>baby_bg.svg</file>
+    </qresource>
+</RCC>

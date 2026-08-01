@@ -7,6 +7,7 @@
 #include "app/host_service.h"
 #include "core/logger.h"
 #include "core/translation_manager.h"
+#include "core/theme_manager.h"
 
 int main(int argc, char *argv[])
 {
@@ -46,12 +47,10 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
     app.setWindowIcon(QIcon(":/icons/xrk_window.png"));
 
-    // Load centralized dark theme
-    QFile themeFile(":/theme.qss");
-    if (themeFile.open(QFile::ReadOnly | QFile::Text)) {
-        app.setStyleSheet(themeFile.readAll());
-        themeFile.close();
-    }
+    // Load theme from ThemeManager
+    xrk::ThemeManager::instance().loadThemes();
+    QString themeQSS = xrk::ThemeManager::instance().generateQSS();
+    app.setStyleSheet(themeQSS);
 
     xrk::TranslationManager::instance().initialize();
 

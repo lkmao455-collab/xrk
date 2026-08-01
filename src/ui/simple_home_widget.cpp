@@ -1,5 +1,6 @@
 #include "simple_home_widget.h"
 #include "app/device_manager.h"
+#include "core/theme_manager.h"
 #include "core/logger.h"
 #include <QScrollArea>
 #include <QFrame>
@@ -12,6 +13,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QHostAddress>
+#include <QPainter>
+#include <QPixmap>
 
 namespace xrk {
 
@@ -22,6 +25,12 @@ SimpleHomeWidget::SimpleHomeWidget(DeviceManager* manager, QWidget* parent)
     loadRecentDevices();
     updateDeviceCards();
 
+    // 连接主题变化信号
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this, [this]() {
+        setupStyle();
+        update();
+    });
+
     if (m_manager) {
         connect(m_manager, &DeviceManager::deviceAdded, this, &SimpleHomeWidget::refreshDevices);
         connect(m_manager, &DeviceManager::deviceRemoved, this, &SimpleHomeWidget::refreshDevices);
@@ -31,6 +40,20 @@ SimpleHomeWidget::SimpleHomeWidget(DeviceManager* manager, QWidget* parent)
     m_refreshTimer = new QTimer(this);
     connect(m_refreshTimer, &QTimer::timeout, this, &SimpleHomeWidget::refreshDevices);
     m_refreshTimer->start(5000);
+}
+
+void SimpleHomeWidget::paintEvent(QPaintEvent* event) {
+    QWidget::paintEvent(event);
+    
+    Theme theme = ThemeManager::instance().currentTheme();
+    if (theme.hasBackground) {
+        QPixmap bg(theme.backgroundPixmap);
+        if (!bg.isNull()) {
+            QPainter painter(this);
+            // 拉伸背景图像以填充整个窗口
+            painter.drawPixmap(rect(), bg);
+        }
+    }
 }
 
 void SimpleHomeWidget::setupUI() {

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFF5EE;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFEFD5;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" fill="url(#grad)"/>
+  <circle cx="80" cy="80" r="30" fill="#FF69B4" opacity="0.15"/>
+  <circle cx="320" cy="100" r="25" fill="#87CEEB" opacity="0.2"/>
+  <circle cx="200" cy="320" r="40" fill="#FF69B4" opacity="0.12"/>
+  <circle cx="100" cy="250" r="20" fill="#87CEEB" opacity="0.18"/>
+  <circle cx="300" cy="280" r="35" fill="#FF69B4" opacity="0.1"/>
+  <path d="M150,150 Q175,130 200,150 T250,150" stroke="#FF69B4" stroke-width="2" fill="none" opacity="0.2"/>
+  <path d="M100,300 Q125,280 150,300 T200,300" stroke="#87CEEB" stroke-width="2" fill="none" opacity="0.15"/>
+  <text x="200" y="180" text-anchor="middle" font-size="40" fill="#FF69B4" opacity="0.15">🍼</text>
+  <text x="200" y="250" text-anchor="middle" font-size="30" fill="#87CEEB" opacity="0.12">⭐</text>
+</svg>

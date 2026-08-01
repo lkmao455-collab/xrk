@@ -1,5 +1,6 @@
 #include "settings_widget.h"
 #include "core/translation_manager.h"
+#include "core/theme_manager.h"
 #include <QSettings>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -34,6 +35,12 @@ void SettingsWidget::loadSettings() {
     if (idx >= 0) {
         m_languageCombo->setCurrentIndex(idx);
     }
+
+    QString currentTheme = ThemeManager::instance().currentThemeId();
+    int themeIdx = m_themeCombo->findData(currentTheme);
+    if (themeIdx >= 0) {
+        m_themeCombo->setCurrentIndex(themeIdx);
+    }
 }
 
 void SettingsWidget::saveSettings() {
@@ -49,6 +56,11 @@ void SettingsWidget::saveSettings() {
     settings.setValue("relay/host", m_relayHostEdit->text());
     settings.setValue("relay/port", m_relayPortSpinBox->value());
     settings.setValue("relay/token", m_relayTokenEdit->text());
+    
+    // Save theme
+    QString themeId = m_themeCombo->currentData().toString();
+    ThemeManager::instance().applyTheme(themeId);
+    settings.setValue("theme/current", themeId);
 }
 
 uint16_t SettingsWidget::port() const {
@@ -158,6 +170,25 @@ void SettingsWidget::setupUI() {
         m_languageCombo->addItem(label, lang);
     }
     formLayout->addRow(tr("语言:"), m_languageCombo);
+
+    // Theme selector
+    m_themeCombo = new QComboBox(this);
+    QMap<QString, QString> themeNames = {
+        {"pink", tr("女生主题")},
+        {"otaku", tr("宅男主题")},
+        {"student", tr("学生主题")},
+        {"teacher", tr("教师主题")},
+        {"boss", tr("老板主题")},
+        {"taoist", tr("道士主题")},
+        {"wukong", tr("悟空主题")},
+        {"baby", tr("宝贝主题")}
+    };
+    QMapIterator<QString, QString> i(themeNames);
+    while (i.hasNext()) {
+        i.next();
+        m_themeCombo->addItem(i.value(), i.key());
+    }
+    formLayout->addRow(tr("主题:"), m_themeCombo);
 
     mainLayout->addLayout(formLayout);
 

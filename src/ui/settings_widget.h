@@ -56,6 +56,7 @@ private:
     QLineEdit* m_relayTokenEdit = nullptr;
 
     QComboBox* m_languageCombo = nullptr;
+    QComboBox* m_themeCombo = nullptr;
 
     QPushButton* m_okButton = nullptr;
     QPushButton* m_cancelButton = nullptr;

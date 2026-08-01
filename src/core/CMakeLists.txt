@@ -10,6 +10,7 @@ set(CORE_SOURCES
     arp_resolver.cpp
     audit_logger.cpp
     translation_manager.cpp
+    theme_manager.cpp
 )
 
 set(CORE_HEADERS
@@ -26,6 +27,7 @@ set(CORE_HEADERS
     arp_resolver.h
     audit_logger.h
     translation_manager.h
+    theme_manager.h
 )
 
 add_library(xrk_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})

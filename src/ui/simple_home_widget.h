@@ -30,6 +30,9 @@ class SimpleHomeWidget : public QWidget {
 public:
     explicit SimpleHomeWidget(DeviceManager* manager, QWidget* parent = nullptr);
 
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
 signals:
     void connectToIp(const QString& ip, uint16_t port);
     void connectToCode(const QString& code);
