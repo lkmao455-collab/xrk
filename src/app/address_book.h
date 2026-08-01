@@ -19,6 +19,8 @@ struct AddressBookEntry {
     QString accessCode;
     bool favorite = false;
     QDateTime lastConnected;
+    QStringList tags;       // free-form labels (e.g. "server", "win11")
+    QDateTime lastSeen;     // last time the device responded to a probe
 
     QJsonObject toJson() const;
     static AddressBookEntry fromJson(const QJsonObject& obj);
@@ -42,6 +44,19 @@ public:
     QList<AddressBookEntry> entriesByGroup(const QString& group) const;
     QList<AddressBookEntry> favorites() const;
     QList<AddressBookEntry> search(const QString& keyword) const;
+    // Most-recently-connected entries first (up to `n`), for quick access.
+    QList<AddressBookEntry> recent(int n = 10) const;
+
+    // Group management (groups are derived from entries' `group` field).
+    bool renameGroup(const QString& oldName, const QString& newName);
+    bool removeGroup(const QString& name);  // reassigns members to ""
+
+    // Bulk import/export for IT distribution. merge=true updates existing
+    // records (by id for JSON, by ip for CSV) instead of duplicating.
+    bool exportJson(const QString& path) const;
+    int importJson(const QString& path, bool merge);
+    bool exportCsv(const QString& path) const;
+    int importCsv(const QString& path, bool merge);
 
 private:
     QString filePath() const;
