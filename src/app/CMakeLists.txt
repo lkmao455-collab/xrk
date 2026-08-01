@@ -18,6 +18,7 @@ set(APP_SOURCES
     system_info_collector.cpp
     address_book.cpp
     device_registry.cpp
+    ipmsg_manager.cpp
 )
 
 set(APP_HEADERS
@@ -40,6 +41,7 @@ set(APP_HEADERS
     system_info_collector.h
     address_book.h
     device_registry.h
+    ipmsg_manager.h
 )
 
 add_library(xrk_app STATIC ${APP_SOURCES} ${APP_HEADERS})

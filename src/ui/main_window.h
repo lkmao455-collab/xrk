@@ -30,6 +30,8 @@ class SystemInfoWidget;
 class AuditLogger;
 class ClipboardHistory;
 class ClipboardHistoryWidget;
+class IPMsgWidget;
+class IPMsgManager;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -58,6 +60,7 @@ private slots:
     void onPowerAction(PowerAction action);
     void onLockScreenClicked();
     void onMediaTestClicked();
+    void onIPMsgClicked();
 
 private:
     void setupUI();
@@ -82,6 +85,8 @@ private:
     std::unique_ptr<AuditLogger> m_auditLogger;
     std::unique_ptr<ClipboardHistory> m_clipboardHistory;
     ClipboardHistoryWidget* m_clipboardHistoryWidget = nullptr;
+    std::unique_ptr<IPMsgManager> m_ipmsgManager;
+    IPMsgWidget* m_ipmsgWidget = nullptr;
     // Phase 5: connection consent dialog (tracks the open dialog to close it if
     // the client disconnects before the host user decides).
     QPointer<QDialog> m_consentDialog;
@@ -124,6 +129,7 @@ private:
     QAction* m_audioAction = nullptr;
     QAction* m_lockScreenAction = nullptr;
     QAction* m_mediaTestAction = nullptr;
+    QAction* m_ipmsgAction = nullptr;
     bool m_recordingActive = false;
     bool m_cameraActive = false;
     QSystemTrayIcon* m_trayIcon = nullptr;

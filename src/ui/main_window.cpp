@@ -23,6 +23,8 @@
 #include "core/logger.h"
 #include "clipboard_history_widget.h"
 #include "media_test_dialog.h"
+#include "ipmsg_widget.h"
+#include "app/ipmsg_manager.h"
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QSplitter>
@@ -60,6 +62,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_auditLogger = std::make_unique<AuditLogger>();
     m_clipboardHistory = std::make_unique<ClipboardHistory>();
     m_clipboardHistory->load();
+
+    // Initialize IPMsg manager
+    m_ipmsgManager = std::make_unique<IPMsgManager>();
+    m_ipmsgManager->setUserName(QHostInfo::localHostName());
 
     setupUI();
     createActions();
@@ -241,6 +247,7 @@ void MainWindow::setupMenuBar() {
     connect(lockAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::LOCK); });
 
     QMenu* helpMenu = menuBar->addMenu("\u5e2e\u52a9(&H)");
+    helpMenu->addAction(m_ipmsgAction);
     helpMenu->addAction(m_mediaTestAction);
     helpMenu->addAction(m_aboutAction);
 }
@@ -354,6 +361,29 @@ void MainWindow::onAboutClicked() {
 void MainWindow::onMediaTestClicked() {
     MediaTestDialog dlg(this);
     dlg.exec();
+}
+
+void MainWindow::onIPMsgClicked() {
+    // Start IPMsg manager if not running
+    if (m_ipmsgManager && !m_ipmsgManager->isRunning()) {
+        m_ipmsgManager->start();
+    }
+
+    // Create and show IPMsg widget in a dialog
+    QDialog* dlg = new QDialog(this);
+    dlg->setWindowTitle(tr("飞鸽传书"));
+    dlg->setMinimumSize(800, 600);
+
+    QVBoxLayout* layout = new QVBoxLayout(dlg);
+    IPMsgWidget* widget = new IPMsgWidget(m_ipmsgManager.get(), dlg);
+    layout->addWidget(widget);
+
+    // Connect widget signals
+    connect(widget, &IPMsgWidget::sendMessage, m_ipmsgManager.get(), &IPMsgManager::sendMessage);
+    connect(widget, &IPMsgWidget::sendFile, m_ipmsgManager.get(), &IPMsgManager::sendFile);
+    connect(widget, &IPMsgWidget::sendFolder, m_ipmsgManager.get(), &IPMsgManager::sendFolder);
+
+    dlg->show();
 }
 
 void MainWindow::onLockScreenClicked() {
@@ -859,6 +889,9 @@ void MainWindow::createActions() {
 
     m_mediaTestAction = new QAction("\u9ea6\u514b\u98ce\u4e0e\u6444\u50cf\u5934\u6d4b\u8bd5", this);
     connect(m_mediaTestAction, &QAction::triggered, this, &MainWindow::onMediaTestClicked);
+
+    m_ipmsgAction = new QAction("\u98de\u9e3f\u4f20\u4e66", this);
+    connect(m_ipmsgAction, &QAction::triggered, this, &MainWindow::onIPMsgClicked);
 }
 
 } // namespace xrk

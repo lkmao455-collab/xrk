@@ -11,6 +11,7 @@ set(UI_SOURCES
     address_book_dialog.cpp
     clipboard_history_widget.cpp
     media_test_dialog.cpp
+    ipmsg_widget.cpp
 )
 
 set(UI_HEADERS
@@ -26,6 +27,7 @@ set(UI_HEADERS
     address_book_dialog.h
     clipboard_history_widget.h
     media_test_dialog.h
+    ipmsg_widget.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})
