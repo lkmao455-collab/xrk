@@ -37,14 +37,17 @@ if not errorlevel 1 (
     timeout /t 1 >nul
 )
 
-REM Clean deploy directory
+REM Clean deploy directory - remove file if it's not a directory
 if exist "%DEPLOY_DIR%" (
     echo [INFO] Cleaning previous deploy...
-    rmdir /s /q "%DEPLOY_DIR%" 2>nul
+    if exist "%DEPLOY_DIR%\NUL" (
+        rmdir /s /q "%DEPLOY_DIR%" 2>nul
+    ) else (
+        del /f /q "%DEPLOY_DIR%" 2>nul
+    )
     timeout /t 1 >nul
-    if exist "%DEPLOY_DIR%" rmdir /s /q "%DEPLOY_DIR%" 2>nul
 )
-mkdir "%DEPLOY_DIR%" 2>nul
+if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
 
 echo [INFO] Running windeployqt...
 "%QT_DIR%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --dir "%DEPLOY_DIR%" "%EXE_PATH%"
