@@ -11,6 +11,8 @@
 
 namespace xrk {
 
+class DeviceRegistry;
+
 class RelayServer : public QObject {
     Q_OBJECT
 public:
@@ -26,6 +28,10 @@ public:
     // Set the shared secret used to authenticate REGISTER. An empty secret
     // disables token checking (accepts any token) for LAN/local relays.
     void setSecret(const QString& secret);
+    
+    // Device registry access
+    void setDeviceRegistry(DeviceRegistry* registry);
+    DeviceRegistry* deviceRegistry() const;
 
 signals:
     void serverStarted(quint16 port);
@@ -43,6 +49,13 @@ private slots:
 private:
     void processLine(QTcpSocket* socket, const QString& line);
     void sendLine(QTcpSocket* socket, const QString& line);
+    
+    // Device registry protocol handlers
+    void handleDeviceRegister(QTcpSocket* socket, const QStringList& parts);
+    void handleDeviceList(QTcpSocket* socket, const QStringList& parts);
+    void handleDeviceUpdate(QTcpSocket* socket, const QStringList& parts);
+    void handleDeviceRemove(QTcpSocket* socket, const QStringList& parts);
+    void handleDeviceQuery(QTcpSocket* socket, const QStringList& parts);
 
     QTcpServer* m_server = nullptr;
     QUdpSocket* m_udpSock = nullptr;
@@ -60,6 +73,9 @@ private:
 
     // Bridge forwarding state
     QHash<QTcpSocket*, QByteArray> m_bridgeBuffers;
+    
+    // Device registry
+    DeviceRegistry* m_deviceRegistry = nullptr;
 
     static constexpr int CLEANUP_INTERVAL_MS = 30000;
 };

@@ -17,6 +17,7 @@ set(APP_SOURCES
     p2p_manager.cpp
     system_info_collector.cpp
     address_book.cpp
+    device_registry.cpp
 )
 
 set(APP_HEADERS
@@ -38,6 +39,7 @@ set(APP_HEADERS
     p2p_manager.h
     system_info_collector.h
     address_book.h
+    device_registry.h
 )
 
 add_library(xrk_app STATIC ${APP_SOURCES} ${APP_HEADERS})

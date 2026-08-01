@@ -1,7 +1,11 @@
 #include "relay_server.h"
+#include "device_registry.h"
 #include "core/logger.h"
 #include "core/types.h"
 #include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 namespace xrk {
 
@@ -52,6 +56,14 @@ bool RelayServer::start(quint16 port) {
 
 void RelayServer::setSecret(const QString& secret) {
     m_secret = secret;
+}
+
+void RelayServer::setDeviceRegistry(DeviceRegistry* registry) {
+    m_deviceRegistry = registry;
+}
+
+DeviceRegistry* RelayServer::deviceRegistry() const {
+    return m_deviceRegistry;
 }
 
 void RelayServer::stop() {
@@ -137,6 +149,13 @@ void RelayServer::onClientDisconnected() {
     if (!deviceId.isEmpty()) {
         m_registeredPeers.remove(deviceId);
         m_publicIps.remove(deviceId);
+        
+        // Update device registry if available
+        if (m_deviceRegistry && m_deviceRegistry->containsDevice(deviceId)) {
+            m_deviceRegistry->setDeviceOnline(deviceId, false);
+            LOG_INFO("RelayServer: device went offline: " + deviceId);
+        }
+        
         LOG_INFO("RelayServer: peer left: " + deviceId);
         emit peerDisconnected(deviceId);
     }
@@ -261,6 +280,24 @@ void RelayServer::processLine(QTcpSocket* socket, const QString& line) {
     } else if (cmd == "LIST") {
         QStringList peers = m_registeredPeers.keys();
         sendLine(socket, "PEERS " + peers.join(','));
+    } else if (cmd == "DEVICE_REGISTER" && parts.size() >= 2) {
+        handleDeviceRegister(socket, parts);
+    } else if (cmd == "DEVICE_LIST") {
+        handleDeviceList(socket, parts);
+    } else if (cmd == "DEVICE_UPDATE" && parts.size() >= 2) {
+        handleDeviceUpdate(socket, parts);
+    } else if (cmd == "DEVICE_REMOVE" && parts.size() >= 2) {
+        handleDeviceRemove(socket, parts);
+    } else if (cmd == "DEVICE_QUERY" && parts.size() >= 2) {
+        handleDeviceQuery(socket, parts);
+    } else if (cmd == "HEARTBEAT" && parts.size() >= 2) {
+        QString deviceId = parts[1];
+        if (m_deviceRegistry && m_deviceRegistry->containsDevice(deviceId)) {
+            m_deviceRegistry->updateHeartbeat(deviceId);
+            sendLine(socket, "HEARTBEAT_OK");
+        } else {
+            sendLine(socket, "ERROR DEVICE_NOT_FOUND");
+        }
     } else {
         sendLine(socket, "ERROR UNKNOWN " + cmd);
     }
@@ -295,6 +332,162 @@ void RelayServer::sendLine(QTcpSocket* socket, const QString& line) {
     if (!socket || socket->state() != QAbstractSocket::ConnectedState) return;
     socket->write((line + "\n").toUtf8());
     socket->flush();
+}
+
+void RelayServer::handleDeviceRegister(QTcpSocket* socket, const QStringList& parts) {
+    if (!m_deviceRegistry) {
+        sendLine(socket, "ERROR DEVICE_REGISTRY_NOT_AVAILABLE");
+        return;
+    }
+    
+    // Format: DEVICE_REGISTER <deviceId> [name] [ip] [port] [version] [group] [mac] [notes] [tags]
+    if (parts.size() < 2) {
+        sendLine(socket, "ERROR INVALID_PARAMETERS");
+        return;
+    }
+    
+    RegisteredDevice device;
+    device.deviceId = parts[1];
+    
+    if (parts.size() > 2) device.deviceName = parts[2];
+    if (parts.size() > 3) device.ipAddress = parts[3];
+    if (parts.size() > 4) device.port = static_cast<uint16_t>(parts[4].toUShort());
+    if (parts.size() > 5) device.version = parts[5];
+    if (parts.size() > 6) device.group = parts[6];
+    if (parts.size() > 7) device.mac = parts[7];
+    if (parts.size() > 8) device.notes = parts[8];
+    if (parts.size() > 9) device.tags = parts[9].split(',', Qt::SkipEmptyParts);
+    
+    // Use socket IP if not provided
+    if (device.ipAddress.isEmpty()) {
+        device.ipAddress = socket->peerAddress().toString();
+    }
+    
+    m_deviceRegistry->registerDevice(device);
+    sendLine(socket, "DEVICE_REGISTERED " + device.deviceId);
+    LOG_INFO("RelayServer: device registered via protocol: " + device.deviceId);
+}
+
+void RelayServer::handleDeviceList(QTcpSocket* socket, const QStringList& parts) {
+    if (!m_deviceRegistry) {
+        sendLine(socket, "ERROR DEVICE_REGISTRY_NOT_AVAILABLE");
+        return;
+    }
+    
+    QJsonArray devicesArray;
+    QList<RegisteredDevice> devices;
+    
+    if (parts.size() > 1 && parts[1] == "online") {
+        devices = m_deviceRegistry->onlineDevices();
+    } else if (parts.size() > 2 && parts[1] == "group") {
+        devices = m_deviceRegistry->devicesByGroup(parts[2]);
+    } else if (parts.size() > 2 && parts[1] == "search") {
+        devices = m_deviceRegistry->searchDevices(parts[2]);
+    } else {
+        devices = m_deviceRegistry->allDevices();
+    }
+    
+    for (const RegisteredDevice& device : devices) {
+        devicesArray.append(device.toJson());
+    }
+    
+    QJsonObject response;
+    response["devices"] = devicesArray;
+    response["count"] = devices.size();
+    response["total"] = m_deviceRegistry->deviceCount();
+    response["online"] = m_deviceRegistry->onlineDeviceCount();
+    
+    QJsonDocument doc(response);
+    sendLine(socket, "DEVICE_LIST " + doc.toJson(QJsonDocument::Compact).toBase64());
+}
+
+void RelayServer::handleDeviceUpdate(QTcpSocket* socket, const QStringList& parts) {
+    if (!m_deviceRegistry) {
+        sendLine(socket, "ERROR DEVICE_REGISTRY_NOT_AVAILABLE");
+        return;
+    }
+    
+    // Format: DEVICE_UPDATE <deviceId> <jsonBase64>
+    if (parts.size() < 3) {
+        sendLine(socket, "ERROR INVALID_PARAMETERS");
+        return;
+    }
+    
+    QString deviceId = parts[1];
+    QByteArray jsonData = QByteArray::fromBase64(parts[2].toUtf8());
+    
+    QJsonDocument doc = QJsonDocument::fromJson(jsonData);
+    if (doc.isNull() || !doc.isObject()) {
+        sendLine(socket, "ERROR INVALID_JSON");
+        return;
+    }
+    
+    QJsonObject obj = doc.object();
+    RegisteredDevice device = m_deviceRegistry->device(deviceId);
+    
+    if (device.deviceId.isEmpty()) {
+        sendLine(socket, "ERROR DEVICE_NOT_FOUND");
+        return;
+    }
+    
+    // Update fields from JSON
+    if (obj.contains("deviceName")) device.deviceName = obj["deviceName"].toString();
+    if (obj.contains("ipAddress")) device.ipAddress = obj["ipAddress"].toString();
+    if (obj.contains("port")) device.port = static_cast<uint16_t>(obj["port"].toInt());
+    if (obj.contains("version")) device.version = obj["version"].toString();
+    if (obj.contains("group")) device.group = obj["group"].toString();
+    if (obj.contains("mac")) device.mac = obj["mac"].toString();
+    if (obj.contains("notes")) device.notes = obj["notes"].toString();
+    if (obj.contains("tags")) {
+        device.tags.clear();
+        QJsonArray tagsArray = obj["tags"].toArray();
+        for (const QJsonValue& v : tagsArray) {
+            device.tags.append(v.toString());
+        }
+    }
+    
+    m_deviceRegistry->updateDevice(device);
+    sendLine(socket, "DEVICE_UPDATED " + deviceId);
+    LOG_INFO("RelayServer: device updated via protocol: " + deviceId);
+}
+
+void RelayServer::handleDeviceRemove(QTcpSocket* socket, const QStringList& parts) {
+    if (!m_deviceRegistry) {
+        sendLine(socket, "ERROR DEVICE_REGISTRY_NOT_AVAILABLE");
+        return;
+    }
+    
+    QString deviceId = parts[1];
+    if (!m_deviceRegistry->containsDevice(deviceId)) {
+        sendLine(socket, "ERROR DEVICE_NOT_FOUND");
+        return;
+    }
+    
+    m_deviceRegistry->removeDevice(deviceId);
+    sendLine(socket, "DEVICE_REMOVED " + deviceId);
+    LOG_INFO("RelayServer: device removed via protocol: " + deviceId);
+}
+
+void RelayServer::handleDeviceQuery(QTcpSocket* socket, const QStringList& parts) {
+    if (!m_deviceRegistry) {
+        sendLine(socket, "ERROR DEVICE_REGISTRY_NOT_AVAILABLE");
+        return;
+    }
+    
+    QString deviceId = parts[1];
+    if (!m_deviceRegistry->containsDevice(deviceId)) {
+        sendLine(socket, "ERROR DEVICE_NOT_FOUND");
+        return;
+    }
+    
+    RegisteredDevice device = m_deviceRegistry->device(deviceId);
+    QJsonObject response = device.toJson();
+    response["online"] = device.online;
+    response["lastSeen"] = device.lastSeen.toSecsSinceEpoch();
+    response["lastConnected"] = device.lastConnected.toSecsSinceEpoch();
+    
+    QJsonDocument doc(response);
+    sendLine(socket, "DEVICE_INFO " + doc.toJson(QJsonDocument::Compact).toBase64());
 }
 
 } // namespace xrk

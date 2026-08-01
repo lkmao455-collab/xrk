@@ -29,8 +29,8 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - [x] **Task 27** 文件实时同步（本地→远程 + 反向远程→本地）
 
 ### 阶段 B：新增中等功能
-- [ ] **Task 27** 文件实时同步（目录 watch + 增量传输）
-- [ ] **Task 28** 企业级/服务器侧设备管理（强化地址簿或轻量服务端）
+- [x] **Task 27** 文件实时同步（目录 watch + 增量传输）
+- [x] **Task 28** 企业级/服务器侧设备管理（强化地址簿或轻量服务端）
 
 ### 阶段 C：架构重、需评估（先评估再落地）
 - [ ] **Task 29** 远程打印 —— 评估走"打印到 PDF 再传输"等价方案，或标注长期
@@ -44,9 +44,8 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 - 有 GUI 事件（拖拽/输入）的部分用合成事件单测覆盖逻辑，肉眼验证交给桌面端。
 
 ## 进度（完成一项更新一项）
-- 已完成：Task 24, Task 25, Task 26, Task 27（+ 本地锁屏按钮 / 信任IP免确认 / 移除Esc断连 三项追加）
-- 进行中：Task 28（企业设备目录，被上述临时需求插队，暂缓）
-- 待办：28, 29, 30, 31
+- 已完成：Task 24, Task 25, Task 26, Task 27, Task 28（+ 本地锁屏按钮 / 信任IP免确认 / 移除Esc断连 三项追加）
+- 待办：29, 30, 31
 
 ## Task 26 记录（画质/延迟档位）
 - 新增 `MessageType::SET_QUALITY` + `QualityRequest{level,gameMode}` 结构体及
@@ -116,3 +115,69 @@ H.264 编码、AES 加密、多显示器、断线重连、跨平台采集/输入
 ### 移除控制端 Esc 断连
 - 删除 `RemoteDesktopWidget` 中 `Qt::Key_Escape` → `stopRemote` 的 `QShortcut`
   （易误触导致断连）。断连仍可通过界面「断开」按钮进行。
+
+## Task 28 记录（企业级设备管理）
+
+### 设计目标
+- 扩展中继服务器，从纯转发升级为"带状态的中继"，维护设备注册表
+- 支持设备注册、查询、更新、删除等管理操作
+- 设备状态持久化到JSON文件，支持多控制端共享设备目录
+- 保持向后兼容，不破坏现有中继功能
+
+### 实现方案
+
+#### 1. 新增 DeviceRegistry 类（`src/app/device_registry.h/.cpp`）
+- `RegisteredDevice` 结构体：设备ID、名称、IP、端口、版本、分组、MAC、备注、标签、在线状态、最后心跳时间
+- 持久化：JSON文件存储，支持增量更新
+- 线程安全：QMutex保护并发访问
+- 自动清理：定时器检测超时设备（5分钟无心跳标记为离线）
+- 信号：deviceRegistered/deviceUpdated/deviceRemoved/deviceOnlineStatusChanged
+
+#### 2. 扩展 RelayServer 协议
+新增命令：
+- `DEVICE_REGISTER <deviceId> [name] [ip] [port] [version] [group] [mac] [notes] [tags]`
+  - 设备连接时上报详细信息，自动注册到设备注册表
+- `DEVICE_LIST [online|group <name>|search <keyword>]`
+  - 返回设备列表（JSON格式，Base64编码）
+- `DEVICE_UPDATE <deviceId> <jsonBase64>`
+  - 更新设备信息（名称、分组等）
+- `DEVICE_REMOVE <deviceId>`
+  - 从注册表中移除设备
+- `DEVICE_QUERY <deviceId>`
+  - 查询单个设备详细信息
+- `HEARTBEAT <deviceId>`
+  - 设备心跳，更新在线状态
+
+#### 3. 集成到现有架构
+- `RelayServer::setDeviceRegistry(DeviceRegistry*)` 注入设备注册表
+- 设备注册时自动调用 `DeviceRegistry::registerDevice()`
+- 设备断开时自动标记为离线 `DeviceRegistry::setDeviceOnline(false)`
+- 心跳包更新设备在线状态
+
+### 协议格式示例
+```
+# 设备注册
+DEVICE_REGISTER dev-001 "Server-01" 192.168.1.100 9999 1.0.0 "servers" "AA:BB:CC:DD:EE:FF" "生产服务器" "linux,production"
+
+# 查询设备列表
+DEVICE_LIST
+DEVICE_LIST online
+DEVICE_LIST group servers
+DEVICE_LIST search server
+
+# 更新设备
+DEVICE_UPDATE dev-01 eyJkZXZpY2VOYW1lIjoiU2VydmVyLTAyIn0=
+
+# 移除设备
+DEVICE_REMOVE dev-001
+
+# 心跳
+HEARTBEAT dev-001
+```
+
+### 文件变更
+- 新增：`src/app/device_registry.h` - 设备注册表头文件
+- 新增：`src/app/device_registry.cpp` - 设备注册表实现
+- 修改：`src/app/relay_server.h` - 添加设备注册表支持
+- 修改：`src/app/relay_server.cpp` - 实现设备管理协议
+- 修改：`src/app/CMakeLists.txt` - 添加新源文件

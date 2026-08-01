@@ -16,6 +16,7 @@ if(GTest_FOUND)
         test_file_transfer_drag.cpp
         test_clipboard.cpp
         test_file_sync.cpp
+        test_address_book.cpp
         test_security_manager.cpp
         test_p2p_relay.cpp
         test_loopback.cpp
@@ -25,6 +26,7 @@ if(GTest_FOUND)
         test_host_authkey.cpp
         test_encryption.cpp
         test_svg_icons.cpp
+        test_device_registry.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)
