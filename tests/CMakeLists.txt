@@ -3,7 +3,7 @@
 # camera stack, so it can be excluded for fast or portable builds.
 option(XRK_BUILD_HOST_TEARDOWN_TEST "Build the Host-start/stop/destroy teardown test" ON)
 
-if(GTest_FOUND)
+if(XRK_GTEST_AVAILABLE)
     set(XRK_TEST_SOURCES
         test_main.cpp
         test_device_discovery.cpp
@@ -24,11 +24,30 @@ if(GTest_FOUND)
         test_video_roundtrip.cpp
         test_controller_screen.cpp
         test_host_authkey.cpp
+        test_host_encoder_default.cpp
         test_encryption.cpp
+        test_e2e_black_screen.cpp
         test_svg_icons.cpp
         test_device_registry.cpp
         test_camera_basic.cpp
         test_microphone_basic.cpp
+        test_database_manager.cpp
+        test_ipmsg_crypto.cpp
+        test_wake_on_lan.cpp
+        test_clipboard_history.cpp
+        test_audit_logger.cpp
+        test_jpeg_encoder.cpp
+        test_frame_queue.cpp
+        test_system_info.cpp
+        test_theme_manager.cpp
+        test_screen_recorder.cpp
+        test_arp_resolver.cpp
+        test_translation_manager.cpp
+        test_message_codec_edge.cpp
+        test_remote_terminal.cpp
+        test_web_socket_gateway.cpp
+        test_voice_messages.cpp
+        test_input_control.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)
@@ -55,5 +74,5 @@ if(GTest_FOUND)
     # PATH (or run build/tests/Release/xrk_tests.exe directly).
     gtest_discover_tests(xrk_tests DISCOVERY_MODE PRE_TEST)
 else()
-    message(STATUS "GTest not found, tests disabled")
+    message(STATUS "GTest not available, tests disabled")
 endif()

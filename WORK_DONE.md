@@ -1,4 +1,4 @@
-# XRK 局域网远程控制软件 - 已完成任务
+﻿# XRK 局域网远程控制软件 - 已完成任务
 
 ## 工程流程
 
@@ -282,6 +282,27 @@
 - [x] FileTransferManagerTest - 文件传输测试
 - [x] SecurityManagerTest - 安全管理测试
 
+### Web 客户端组件测试 (React SPA)
+- [x] Jest + React Testing Library 测试框架搭建（babel-jest + jsdom，兼容 TS6/Vite）
+- [x] protocol.test.ts — XRK 线协议编解码/校验往返（encode/decode/parseHeader/verifyChecksum/decodeScreenFrame/encodeMouseEvent/encodeKeyEvent）
+- [x] ConnectionScreen.test.tsx — 连接表单默认值/本地输入/connect 写 store 并派发 xrk-connect/错误横幅/连接中禁用
+- [x] Button.test.tsx — 可复用 Button 原语：variant(primary/secondary/connect/toolbar)/loading/disabled/className 合并
+- [x] Toolbar.test.tsx — 工具栏显隐、缩放/画质 select 联动、断开连接、全屏切换
+- [x] SettingsPanel.test.tsx — 设置面板显隐、保存写配置并关闭、取消还原并关闭、点遮罩关闭
+- [x] RemoteDesktop.test.tsx — 画布按连接态显隐、鼠标/键盘事件认证后派发 xrk-mouse/xrk-key
+- [x] App.test.tsx — 按连接状态在 ConnectionScreen↔RemoteDesktop+Toolbar 间切换、错误状态文案、设置面板
+- [x] RemoteDesktop.integration.test.tsx — 端到端帧链路：connect→AUTH_RESP(会话密钥)→AES-256-CBC 解密→decodeScreenFrame→canvas 绘制（含"未认证帧被忽略"反例）
+- [x] jsdom 环境桩补齐：TextEncoder/TextDecoder、requestFullscreen、crypto.subtle（Web Crypto）、WebSocket/Image/getContext，并把 store reset 包进 act()
+- [x] 全量：**8 套件 / 53 用例全部通过**（`npm test`）
+
+### UI/UX 优化 (React SPA)
+- [x] **修复 index.css / App.css 主题与布局冲突**：index.css（main.tsx 最先加载）原本带一套浅/暗紫模板主题，并把 `#root` 锁死为 `1126px` 居中列 + 两侧 `border-inline`，与 App.css 的整屏 `100vw/100vh` 蓝色布局直接打架 → 画面溢出、边线悬空。已将 index.css 收敛为纯全局基底（html/body/#root 满高、color-scheme:dark、字体平滑），主题与布局唯一由 App.css 负责。
+- [x] **构建修复（配套）**：tsconfig.app.json 的 `include:["src"]` 会把 `*.test.ts(x)` 拉进 `tsc -b` 生产类型检查，而 build 仅声明 `types:["vite/client"]` → `npm run build` 在 Phase 2 测试文件加入后必败。已为 build tsconfig 增加 `exclude` 测试文件（Vite 打包本就不含测试），`npm run build` 恢复通过。
+- [x] **连接卡片品牌感**：connection-card 顶部增加渐变圆角品牌徽标（SVG 显示器图标），卡片阴影升级为 `--shadow-lg`，移动端徽标尺寸自适应。
+- [x] **工具栏交互修正**：全屏按钮原本进出两种状态都用 `⛶`（复制粘贴 bug）→ 改为进 `⛶` / 出 `⤡` 区分；状态徽标从硬编码"已连接"改为随 `status` 动态显示「已连接/连接中…/未连接」并套用 `connected`/`connecting`/`disconnected` 三套配色。
+- [x] **无障碍与动效**：全局 `:focus-visible` 键盘焦点环（按钮/输入/下拉），区分鼠标点击无环；新增 `@media (prefers-reduced-motion: reduce)` 关闭动画与 hover 位移；`.app-main` 增加径向渐变背景层次；`.connecting-overlay` 增加 `backdrop-filter` 模糊与排版间距。
+- [x] `npm run build` 通过（tsc + vite，dist 产出）；`npm test` 53/53 全绿（改造未触碰任何测试的 title/label/role 断言）。
+
 ### 界面
 - [x] 主窗口布局（左右分栏）
 - [x] IP地址输入框
@@ -344,3 +365,48 @@
 | 隐私屏 | ✅ 远控时全屏黑屏遮挡, DXGI排除+输入穿透+即时生效 |
 | Controller卡顿修复 | ✅ Decode Worker线程修复, worker context模式防止主线程阻塞 |
 | 企业级设备管理 | ✅ DeviceRegistry设备注册表, RelayServer协议扩展, 设备在线状态跟踪 |
+| 飞鸽传书基础 | ✅ IPMsgManager+微信风格UI+双实例+设备发现+表情面板+文件发送 |
+| 飞鸽传书增强 | ✅ 消息收发BUG修复+图片消息+拖拽粘贴+文件接收对话框 |
+| 飞鸽传书高级 | ✅ 消息引用回复+消息撤回+联系人详情 |
+| 飞鸽传书完善 | ✅ 联系人搜索+最近聊天列表 |
+| 飞鸽传书增强 | ✅ 右键菜单+拖拽优化+通知系统 |
+| 飞鸽传书高级 | ✅ 群聊功能（创建群组+群消息） |
+| 飞鸽传书完整 | ✅ 聊天背景+消息转发 |
+| 飞鸽传书增强 | ✅ 已读回执+输入状态+图片查看器 |
+| 飞鸽传书中级 | ✅ 好友申请+聊天记录搜索+群聊增强+免打扰+聊天记录导出 |
+| 飞鸽传书可选 | ✅ 消息多选批量操作+聊天记录定期清理 |
+| 飞鸽传书P0基础 | ✅ SQLite持久化+离线消息+端到端加密+文件传输优化 |
+| 飞鸽传书基础设施 | ✅ SQLite持久化+离线消息+端到端加密+文件传输优化 |
+| 飞鸽传书中级2 | ✅ 语音/视频/位置/名片消息+VoIP信令+通话UI+群聊进阶(@/公告/投票) |
+| 飞鸽传书单元测试 | ✅ test_database_manager(17)+test_ipmsg_crypto(13)=30用例全通过 |
+| 飞鸽传书E1多设备同步 | ✅ 同账号多PC同步: 快照协议(SYNC_REQUEST/SNAPSHOT/ACK)+LWW合并+密钥鉴权+同步UI+8新用例(38用例全通过) |
+| 全量测试修复 | ✅ 全量189用例无崩溃(NetworkTest ARP悬垂this→QPointer) + 修复3个环境性失败(Microphone音量float EXPECT_NEAR / Clipboard先clear再setMimeData+轮询 / HostAuth先grantConsent再等AUTH_RESP), 全量188用例通过 |
+---
+
+## 🎯 微信对标差距分析 (新增)
+
+| 维度 | 微信 | IPMsg现状 | 差距等级 | 计划Phase |
+|------|------|-----------|----------|-----------|
+| **消息持久化** | 本地数据库+云端同步 | 仅内存存储 | 🔴 严重 | Phase A1 |
+| **离线消息** | 服务器存储离线推送 | 必须在线 | 🔴 严重 | Phase A2 |
+| **端到端加密** | 端到端加密 | 明文传输 | 🔴 严重 | Phase A3 |
+| **文件断点续传** | 秒传/断点续传/大文件 | 基础TCP传输 | 🟠 高 | Phase A4 |
+| **语音消息** | 录音/播放/转文字 | 无 | 🟠 高 | Phase B1 |
+| **视频消息** | 视频压缩/预览/播放 | 无 | 🟠 高 | Phase B2 |
+| **位置/名片** | 地图选点/联系人分享 | 无 | 🟡 中 | Phase B3/B4 |
+| **合并转发** | 多条消息合并转发 | 单条转发 | 🟡 中 | Phase B5 |
+| **语音通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C1 |
+| **视频通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C2 |
+| **屏幕共享** | 会议共享屏幕 | 远程桌面能力复用 | 🟡 中 | Phase C3 |
+| **群@/公告** | @提醒/群公告置顶 | 无 | 🟡 中 | Phase D1 |
+| **群文件/相册** | 群共享文件/图片墙 | 无 | 🟡 中 | Phase D2 |
+| **群待办/投票** | 协作工具 | 无 | 🟢 低 | Phase D3 |
+| **多设备同步** | 手机/电脑/网页/平板 | 仅单PC实例 | 🔴 严重 | Phase E1 |
+| **网页/移动端** | Web/小程序/移动端 | 无 | 🟠 高 | Phase E2 |
+
+---
+
+## 下一步执行计划
+
+**当前**: Phase A1 - SQLite持久化存储 (预估3天)
+**目标**: 完成消息/联系人/群组/设置的本地持久化，支持启动加载历史
