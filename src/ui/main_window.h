@@ -32,6 +32,7 @@ class ClipboardHistory;
 class ClipboardHistoryWidget;
 class IPMsgWidget;
 class IPMsgManager;
+class WebSocketGateway;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -58,9 +59,17 @@ private slots:
     void onCameraToggle();
     void onAudioToggle();
     void onPowerAction(PowerAction action);
+
+signals:
+    void hostModeChanged(bool started);
+
+private slots:
     void onLockScreenClicked();
     void onMediaTestClicked();
     void onIPMsgClicked();
+    void onIPMsg2Clicked();
+    // Phase E2: start the bundled web gateway on demand and open the SPA in a browser.
+    void onOpenWebConsole();
 
 private:
     void setupUI();
@@ -87,6 +96,8 @@ private:
     ClipboardHistoryWidget* m_clipboardHistoryWidget = nullptr;
     std::unique_ptr<IPMsgManager> m_ipmsgManager;
     IPMsgWidget* m_ipmsgWidget = nullptr;
+    std::unique_ptr<IPMsgManager> m_ipmsgManager2;
+    IPMsgWidget* m_ipmsgWidget2 = nullptr;
     // Phase 5: connection consent dialog (tracks the open dialog to close it if
     // the client disconnects before the host user decides).
     QPointer<QDialog> m_consentDialog;
@@ -130,6 +141,11 @@ private:
     QAction* m_lockScreenAction = nullptr;
     QAction* m_mediaTestAction = nullptr;
     QAction* m_ipmsgAction = nullptr;
+    QAction* m_ipmsg2Action = nullptr;
+    QAction* m_webConsoleAction = nullptr;
+    // Phase E2: lazily-started web gateway that serves the bundled React SPA and
+    // bridges browser/mobile WebSocket clients to the local Host (DEFAULT_PORT).
+    WebSocketGateway* m_webGateway = nullptr;
     bool m_recordingActive = false;
     bool m_cameraActive = false;
     QSystemTrayIcon* m_trayIcon = nullptr;

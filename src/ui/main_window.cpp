@@ -25,6 +25,9 @@
 #include "media_test_dialog.h"
 #include "ipmsg_widget.h"
 #include "app/ipmsg_manager.h"
+#include "app/web_socket_gateway.h"
+#include <QDesktopServices>
+#include <QUrl>
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QSplitter>
@@ -66,6 +69,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Initialize IPMsg manager
     m_ipmsgManager = std::make_unique<IPMsgManager>();
     m_ipmsgManager->setUserName(QHostInfo::localHostName());
+
+    // Initialize second IPMsg manager (for testing) with different name
+    m_ipmsgManager2 = std::make_unique<IPMsgManager>();
+    m_ipmsgManager2->setUserName(QHostInfo::localHostName() + "_测试");
 
     setupUI();
     createActions();
@@ -181,6 +188,8 @@ void MainWindow::setupUI() {
     connect(simpleHome, &SimpleHomeWidget::connectToCode, this, &MainWindow::onConnectToCode);
     connect(simpleHome, &SimpleHomeWidget::startHostService, this, &MainWindow::onToggleHost);
     connect(simpleHome, &SimpleHomeWidget::openSettings, this, &MainWindow::onSettingsClicked);
+    // Connect host mode change to update SimpleHomeWidget button
+    connect(this, &MainWindow::hostModeChanged, simpleHome, &SimpleHomeWidget::setHostButtonState);
     m_contentStack->addWidget(simpleHome);
 
     // Page 1: Remote Desktop
@@ -220,6 +229,9 @@ void MainWindow::setupMenuBar() {
     QMenu* fileMenu = menuBar->addMenu("\u6587\u4ef6(&F)");
     fileMenu->addAction(m_toggleHostAction);
     fileMenu->addSeparator();
+    fileMenu->addAction(m_ipmsgAction);  // 飞鸽传书
+    fileMenu->addAction(m_ipmsg2Action);  // 飞鸽传书测试窗口
+    fileMenu->addSeparator();
     fileMenu->addAction(m_lockScreenAction);
     fileMenu->addAction(m_settingsAction);
     fileMenu->addSeparator();
@@ -241,14 +253,17 @@ void MainWindow::setupMenuBar() {
     powerMenu->addSeparator();
     QAction* sleepAct = powerMenu->addAction("\u7761\u7720");
     connect(sleepAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::SLEEP); });
-    QAction* hibernateAct = powerMenu->addAction("\u4f11\u7720");
+    QAction* hibernateAct = powerMenu->addAction("\u4f11\u606f");
     connect(hibernateAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::HIBERNATE); });
     QAction* lockAct = powerMenu->addAction("\u9501\u5c4f");
     connect(lockAct, &QAction::triggered, this, [this]() { onPowerAction(PowerAction::LOCK); });
 
+    QMenu* toolsMenu = menuBar->addMenu("\u5de5\u5177(&T)");
+    toolsMenu->addAction(m_mediaTestAction);
+    toolsMenu->addSeparator();
+    toolsMenu->addAction(m_webConsoleAction);
+
     QMenu* helpMenu = menuBar->addMenu("\u5e2e\u52a9(&H)");
-    helpMenu->addAction(m_ipmsgAction);
-    helpMenu->addAction(m_mediaTestAction);
     helpMenu->addAction(m_aboutAction);
 }
 
@@ -263,6 +278,8 @@ void MainWindow::setupStatusBar() {
 
     QMenu* trayMenu = new QMenu(this);
     trayMenu->addAction(m_lockScreenAction);
+    trayMenu->addSeparator();
+    trayMenu->addAction(m_webConsoleAction);
     trayMenu->addSeparator();
     trayMenu->addAction(m_exitAction);
     m_trayIcon->setContextMenu(trayMenu);
@@ -327,6 +344,7 @@ void MainWindow::onSettingsClicked() {
         if (m_host) {
             m_host->setCaptureFps(settings.fps());
             m_host->setPrivacyScreenEnabled(settings.privacyScreenEnabled());
+            m_host->setAutoGrantConsent(settings.autoGrantConsentEnabled());
             m_host->setEncoderTrueColor(settings.trueColorEnabled());
         }
         if (m_relayServer->isRunning()) {
@@ -371,7 +389,7 @@ void MainWindow::onIPMsgClicked() {
 
     // Create and show IPMsg widget in a dialog
     QDialog* dlg = new QDialog(this);
-    dlg->setWindowTitle(tr("飞鸽传书"));
+    dlg->setWindowTitle(tr("飞鸽传书 (%1 - UDP:%2)").arg(m_ipmsgManager->userName()).arg(2425));
     dlg->setMinimumSize(800, 600);
 
     QVBoxLayout* layout = new QVBoxLayout(dlg);
@@ -382,8 +400,60 @@ void MainWindow::onIPMsgClicked() {
     connect(widget, &IPMsgWidget::sendMessage, m_ipmsgManager.get(), &IPMsgManager::sendMessage);
     connect(widget, &IPMsgWidget::sendFile, m_ipmsgManager.get(), &IPMsgManager::sendFile);
     connect(widget, &IPMsgWidget::sendFolder, m_ipmsgManager.get(), &IPMsgManager::sendFolder);
+    connect(widget, &IPMsgWidget::sendImage, m_ipmsgManager.get(), &IPMsgManager::sendImage);
+    connect(widget, &IPMsgWidget::sendReply, m_ipmsgManager.get(), &IPMsgManager::sendReply);
+    connect(widget, &IPMsgWidget::sendGroupMessage, m_ipmsgManager.get(), &IPMsgManager::sendGroupMessage);
 
     dlg->show();
+}
+
+void MainWindow::onIPMsg2Clicked() {
+    // Start IPMsg manager with different port
+    if (m_ipmsgManager2 && !m_ipmsgManager2->isRunning()) {
+        m_ipmsgManager2->start(2427);
+    }
+
+    // Create and show IPMsg widget in a dialog
+    QDialog* dlg = new QDialog(this);
+    dlg->setWindowTitle(tr("飞鸽传书 (%1 - UDP:%2)").arg(m_ipmsgManager2->userName()).arg(2427));
+    dlg->setMinimumSize(800, 600);
+
+    QVBoxLayout* layout = new QVBoxLayout(dlg);
+    IPMsgWidget* widget = new IPMsgWidget(m_ipmsgManager2.get(), dlg);
+    layout->addWidget(widget);
+
+    // Connect widget signals
+    connect(widget, &IPMsgWidget::sendMessage, m_ipmsgManager2.get(), &IPMsgManager::sendMessage);
+    connect(widget, &IPMsgWidget::sendFile, m_ipmsgManager2.get(), &IPMsgManager::sendFile);
+    connect(widget, &IPMsgWidget::sendFolder, m_ipmsgManager2.get(), &IPMsgManager::sendFolder);
+    connect(widget, &IPMsgWidget::sendImage, m_ipmsgManager2.get(), &IPMsgManager::sendImage);
+    connect(widget, &IPMsgWidget::sendReply, m_ipmsgManager2.get(), &IPMsgManager::sendReply);
+    connect(widget, &IPMsgWidget::sendGroupMessage, m_ipmsgManager2.get(), &IPMsgManager::sendGroupMessage);
+
+    dlg->show();
+}
+
+void MainWindow::onOpenWebConsole() {
+    // Lazily start the bundled web gateway so it doesn't consume a port until
+    // the user actually wants the browser/mobile SPA. It bridges WebSocket
+    // clients to the local Host (DEFAULT_PORT on 127.0.0.1), so the SPA works
+    // against this very app's host session.
+    constexpr quint16 kWebConsoleWsPort = 8080;
+    if (!m_webGateway) {
+        m_webGateway = new WebSocketGateway(this);
+        if (!m_webGateway->start(kWebConsoleWsPort, DEFAULT_PORT)) {
+            QMessageBox::warning(this, tr("Web 控制台"),
+                tr("无法启动 Web 控制台，端口 %1 可能已被占用\n（是否已有一个 --ws 网关在运行？）").arg(kWebConsoleWsPort));
+            m_webGateway->deleteLater();
+            m_webGateway = nullptr;
+            return;
+        }
+        LOG_INFO("Web console gateway started: ws://*:" + QString::number(m_webGateway->webSocketPort()) +
+                 "  web page http://*:" + QString::number(m_webGateway->httpPort()) + "/");
+    }
+    const QUrl url("http://localhost:" + QString::number(m_webGateway->httpPort()) + "/");
+    QDesktopServices::openUrl(url);
+    statusBar()->showMessage(tr("Web 控制台已打开: %1").arg(url.toString()));
 }
 
 void MainWindow::onLockScreenClicked() {
@@ -402,32 +472,36 @@ void MainWindow::onToggleHost() {
         m_hostMode = false;
         m_relayServer->stop();
         m_natTraversal->disconnectFromRelay();
-        m_toggleHostAction->setText("\u542f\u52a8\u670d\u52a1");
+        m_toggleHostAction->setText(tr("启动服务"));
         m_recordAction->setEnabled(false);
         if (m_recordingActive) {
             m_recordingActive = false;
-            m_recordAction->setText("\u5f00\u59cb\u5f55\u5236");
+            m_recordAction->setText(tr("开始录制"));
         }
-        statusBar()->showMessage("\u670d\u52a1\u5df2\u505c\u6b62");
-        setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236");
+        statusBar()->showMessage(tr("服务已停止"));
+        setWindowTitle(tr("XRK - 局域网远程控制"));
+        emit hostModeChanged(false);
         LOG_INFO("Host mode stopped");
     } else {
         QSettings settings;
         int savedFps = settings.value("performance/capture_fps", 60).toInt();
         bool privacy = settings.value("security/privacy_screen", false).toBool();
+        bool autoGrant = settings.value("security/auto_grant_consent", false).toBool();
         bool trueColor = settings.value("video/true_color", false).toBool();
 
         m_host->setCaptureFps(savedFps);
         m_host->setPrivacyScreenEnabled(privacy);
+        m_host->setAutoGrantConsent(autoGrant);
         m_host->setEncoderTrueColor(trueColor);
 
         if (m_host->start(DEFAULT_PORT)) {
             m_hostMode = true;
-            m_toggleHostAction->setText("\u505c\u6b62\u670d\u52a1");
+            m_toggleHostAction->setText(tr("停止服务"));
             m_recordAction->setEnabled(true);
             m_cameraAction->setEnabled(true);
-            statusBar()->showMessage("\u670d\u52a1\u5df2\u542f\u52a8 - \u8bc6\u522b\u7801: " + m_host->accessCode());
-            setWindowTitle("XRK - \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236 [\u670d\u52a1\u6a21\u5f0f - " + m_host->accessCode() + "]");
+            statusBar()->showMessage(tr("服务已启动 - 识别码: %1").arg(m_host->accessCode()));
+            setWindowTitle(tr("XRK - 局域网远程控制 [服务模式 - %1]").arg(m_host->accessCode()));
+            emit hostModeChanged(true);
 
             bool relayEnabled = settings.value("relay/enabled", false).toBool();
             QString relayHost = settings.value("relay/host", "").toString();
@@ -445,7 +519,13 @@ void MainWindow::onToggleHost() {
 
             LOG_INFO("Host mode started");
         } else {
-            QMessageBox::warning(this, "\u9519\u8bef", "\u65e0\u6cd5\u542f\u52a8\u670d\u52a1\uff0c\u8bf7\u68c0\u67e5\u7aef\u53e3\u662f\u5426\u88ab\u5360\u7528");
+            // Error already shown via errorOccurred signal
+            // If no specific error was emitted, show generic message
+            if (!m_host->errorString().isEmpty()) {
+                QMessageBox::warning(this, tr("错误"), m_host->errorString());
+            } else {
+                QMessageBox::warning(this, tr("错误"), tr("无法启动服务，请检查端口是否被占用"));
+            }
         }
     }
 }
@@ -615,6 +695,13 @@ void MainWindow::setupConnections() {
         m_fileTransferWidget->onRemoteDisconnected();
     });
 
+    // Handle connection errors from remote controller
+    connect(m_remoteController.get(), &RemoteController::connectionError,
+            this, [this](const QString& error) {
+        QMessageBox::critical(this, tr("连接错误"), tr("远程连接失败: %1").arg(error));
+        m_remoteDesktopWidget->stopRemote();
+    });
+
     connect(m_host.get(), &Host::clientConnected,
             this, &MainWindow::onHostClientConnected);
 
@@ -650,6 +737,21 @@ void MainWindow::setupConnections() {
         if (m_auditLogger) {
             m_auditLogger->logSession(sessionId, QString(), "closed");
         }
+    });
+
+    // Session expiry logging
+    connect(m_sessionManager.get(), &SessionManager::sessionExpired,
+            this, [this](const QString& sessionId) {
+        if (m_auditLogger) {
+            m_auditLogger->logSession(sessionId, QString(), "expired");
+        }
+        statusBar()->showMessage(tr("会话已过期: %1").arg(sessionId));
+    });
+
+    // Audit logger entry logging
+    connect(m_auditLogger.get(), &AuditLogger::entryAdded,
+            this, [this](const QJsonObject& entry) {
+        LOG_INFO("Audit: " + entry["event"].toString() + " - " + entry["details"].toString());
     });
 
     connect(m_remoteController.get(), &RemoteController::terminalOutputReceived,
@@ -752,11 +854,38 @@ void MainWindow::setupConnections() {
 
     connect(m_natTraversal.get(), &NatTraversal::relayError,
             this, [this](const QString& msg) {
-        statusBar()->showMessage("\u4e2d\u7ee7\u9519\u8bef: " + msg);
+        statusBar()->showMessage(tr("中继错误: %1").arg(msg));
+    });
+
+    // Handle auth errors from remote controller
+    connect(m_remoteController.get(), &RemoteController::authFailed,
+            this, [this](const QString& reason) {
+        QMessageBox::warning(this, tr("认证失败"), tr("密码错误或认证失败: %1").arg(reason));
+        m_remoteDesktopWidget->stopRemote();
+    });
+
+    connect(m_remoteController.get(), &RemoteController::authRequired,
+            this, [this]() {
+        // Auth dialog is handled by RemoteDesktopWidget
     });
 
     connect(m_remoteController.get(), &RemoteController::transportEstablished,
             this, &MainWindow::onTransportEstablished);
+
+    // Translation language change - retranslate UI
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, [this](const QString& lang) {
+        statusBar()->showMessage(tr("语言已切换: %1").arg(lang));
+    });
+
+    // Host error signal forwarding (connected once here; do NOT use
+    // Qt::UniqueConnection with a lambda — Qt rejects it and the connect
+    // silently fails). Show a popup AND log.
+    connect(m_host.get(), &Host::errorOccurred,
+            this, [this](const QString& msg) {
+        LOG_ERROR("Host error: " + msg);
+        QMessageBox::critical(this, tr("服务错误"), tr("服务错误: %1").arg(msg));
+    });
 }
 
 // ────────── Toolbar Actions (kept for menu) ──────────
@@ -886,6 +1015,12 @@ void MainWindow::createActions() {
 
     m_ipmsgAction = new QAction("\u98de\u9e3f\u4f20\u4e66", this);
     connect(m_ipmsgAction, &QAction::triggered, this, &MainWindow::onIPMsgClicked);
+
+    m_ipmsg2Action = new QAction("\u98de\u9e3f\u4f20\u4e66 (\u6d4b\u8bd5\u7a97\u53e3)", this);
+    connect(m_ipmsg2Action, &QAction::triggered, this, &MainWindow::onIPMsg2Clicked);
+
+    m_webConsoleAction = new QAction("\u6253\u5f00 Web \u63a7\u5236\u53f0", this);
+    connect(m_webConsoleAction, &QAction::triggered, this, &MainWindow::onOpenWebConsole);
 }
 
 } // namespace xrk
