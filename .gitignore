@@ -22,3 +22,7 @@ WORK_NEXT.md
 svc_*.log
 test_*.log
 teardown_out.txt
+
+# Web SPA source tree — built output is committed under resources/web/,
+# so the React source (incl. 154M node_modules) stays local-only.
+/web-client/
