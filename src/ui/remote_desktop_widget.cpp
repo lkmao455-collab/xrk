@@ -1,6 +1,8 @@
 #include "remote_desktop_widget.h"
 #include "app/remote_controller.h"
+#ifdef XRK_FFMPEG_AVAILABLE
 #include "hw/video_decoder.h"
+#endif
 #include "core/logger.h"
 #include <QPainter>
 #include <QMouseEvent>
@@ -392,6 +394,7 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
                         " first4=0x" + frame.data.left(4).toHex());
         }
     } else if (frame.format == FrameFormat::H264) {
+#ifdef XRK_FFMPEG_AVAILABLE
         if (!m_h264Decoder) {
             m_h264Decoder = std::make_unique<VideoDecoder>();
             bool initOk = m_h264Decoder->initialize();
@@ -415,6 +418,11 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
                 LOG_WARNING("[Widget] H264 decoder not initialized - cannot decode H264 frames");
             }
         }
+#else
+        if (decodeFailCount < 5) {
+            LOG_WARNING("[Widget] H264 decoder not available (FFmpeg not built)");
+        }
+#endif
     } else {
         if (decodeFailCount < 5) {
             LOG_WARNING("[Widget] Unknown frame format: " + QString::number(static_cast<int>(frame.format)));

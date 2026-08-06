@@ -6,7 +6,9 @@
 #include "app/host.h"
 #include "app/relay_server.h"
 #include "app/web_socket_gateway.h"
+#ifdef _WIN32
 #include "app/host_service.h"
+#endif
 #include "core/logger.h"
 #include "core/translation_manager.h"
 #include "core/theme_manager.h"
@@ -22,13 +24,16 @@ int main(int argc, char *argv[])
     QString logFilePath;
 
     for (int i = 1; i < argc; ++i) {
+#ifdef _WIN32
         if (strcmp(argv[i], "--install-service") == 0) {
             return xrk::HostService::installService() ? 0 : 1;
         } else if (strcmp(argv[i], "--uninstall-service") == 0) {
             return xrk::HostService::uninstallService() ? 0 : 1;
         } else if (strcmp(argv[i], "--service") == 0) {
             return xrk::HostService::runService(argc, argv);
-        } else if (strcmp(argv[i], "--logfile") == 0 && i + 1 < argc) {
+        } else
+#endif
+        if (strcmp(argv[i], "--logfile") == 0 && i + 1 < argc) {
             logFilePath = QString::fromUtf8(argv[++i]);
         } else if (strcmp(argv[i], "--relay") == 0 && i + 1 < argc) {
             relayMode = true;

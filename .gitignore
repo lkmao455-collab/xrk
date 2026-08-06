@@ -1,5 +1,9 @@
 # Build output
 build/
+build_win_x64/
+build_macos/
+build_linux/
+build_appimage/
 
 # Third-party binary dependencies (ffmpeg dev libs, etc.)
 third_party/

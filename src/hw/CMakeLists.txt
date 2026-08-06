@@ -3,8 +3,6 @@ set(HW_SOURCES
     input_control.cpp
     video_encoder.cpp
     jpeg_encoder.cpp
-    h264_encoder.cpp
-    video_decoder.cpp
     camera_capture.cpp
     audio_capture.cpp
     audio_player.cpp
@@ -15,13 +13,16 @@ set(HW_HEADERS
     input_control.h
     video_encoder.h
     jpeg_encoder.h
-    h264_encoder.h
-    video_decoder.h
     camera_capture.h
     camera_control.h
     audio_capture.h
     audio_player.h
 )
+
+if(XRK_FFMPEG_AVAILABLE)
+    list(APPEND HW_SOURCES h264_encoder.cpp video_decoder.cpp)
+    list(APPEND HW_HEADERS h264_encoder.h video_decoder.h)
+endif()
 
 add_library(xrk_hw STATIC ${HW_SOURCES} ${HW_HEADERS})
 

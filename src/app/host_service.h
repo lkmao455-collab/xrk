@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#ifdef _WIN32
+
 // windows.h is needed for SERVICE_STATUS / SERVICE_STATUS_HANDLE / DWORD used
 // below. It must come AFTER core/types.h (MessageType) is parsed to avoid the
 // MOUSE_EVENT/KEY_EVENT macro clash — every translation unit includes this
@@ -48,3 +50,19 @@ private:
 };
 
 } // namespace xrk
+
+#else // non-Windows: stub declarations so callers compile but can never run
+
+namespace xrk {
+
+class HostService {
+public:
+    static bool installService()  { return false; }
+    static bool uninstallService() { return false; }
+    static int  runService(int, char**) { return 1; }
+    static int  serviceMain(int, char**) { return 1; }
+};
+
+} // namespace xrk
+
+#endif // _WIN32

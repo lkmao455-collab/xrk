@@ -7,6 +7,8 @@
 #include <QApplication>
 #include <QSettings>
 
+#ifdef _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <tchar.h>
@@ -227,3 +229,13 @@ bool HostService::uninstallService() {
 }
 
 } // namespace xrk
+
+#else // non-Windows stubs
+
+namespace xrk {
+
+// All HostService methods are already stubbed in the header on non-Windows.
+
+} // namespace xrk
+
+#endif // _WIN32

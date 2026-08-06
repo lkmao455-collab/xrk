@@ -1,6 +1,8 @@
 #include "audio_player.h"
 #include "core/logger.h"
 
+#ifdef _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -159,3 +161,39 @@ void AudioPlayer::playAudio(const QByteArray& pcmData) {
 }
 
 } // namespace xrk
+
+#else // non-Windows stubs
+
+namespace xrk {
+
+AudioPlayer::AudioPlayer(QObject* parent)
+    : QObject(parent) {
+}
+
+AudioPlayer::~AudioPlayer() {
+    shutdown();
+}
+
+bool AudioPlayer::initialize(int sampleRate, int channels, int bitsPerSample) {
+    Q_UNUSED(sampleRate);
+    Q_UNUSED(channels);
+    Q_UNUSED(bitsPerSample);
+    LOG_WARNING("AudioPlayer: not supported on this platform (Windows WASAPI only)");
+    return false;
+}
+
+void AudioPlayer::shutdown() {
+    m_initialized = false;
+}
+
+bool AudioPlayer::isInitialized() const {
+    return m_initialized;
+}
+
+void AudioPlayer::playAudio(const QByteArray& pcmData) {
+    Q_UNUSED(pcmData);
+}
+
+} // namespace xrk
+
+#endif // _WIN32

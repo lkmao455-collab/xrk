@@ -2,6 +2,8 @@
 #include "logger.h"
 #include <QRandomGenerator>
 
+#ifdef XRK_FFMPEG_AVAILABLE
+
 extern "C" {
 #include <libavutil/aes.h>
 #include <libavutil/mem.h>
@@ -90,7 +92,6 @@ QByteArray Encryption::encrypt(const QByteArray& data) const {
     }
 
     int blockSize = 16;
-    // PKCS#7 padding: pad to next block boundary, pad bytes = number of padding bytes
     int paddedSize = ((data.size() + blockSize) / blockSize) * blockSize;
     int padLen = paddedSize - data.size();
 
@@ -131,9 +132,6 @@ QByteArray Encryption::decrypt(const QByteArray& data) const {
     const uint8_t* currentIv = iv;
 
     for (int i = 0; i < blockCount; ++i) {
-        // NOTE: FFmpeg's av_aes_crypt ignores its `decrypt` argument; the
-        // operation is fixed at av_aes_init time (decCtx was initialized with
-        // decrypt=1, so it always decrypts). We pass 1 anyway to document intent.
         av_aes_crypt(m_ctx->decCtx,
                      reinterpret_cast<uint8_t*>(result.data()) + i * 16,
                      reinterpret_cast<const uint8_t*>(data.constData()) + i * 16,
@@ -144,7 +142,6 @@ QByteArray Encryption::decrypt(const QByteArray& data) const {
         currentIv = reinterpret_cast<const uint8_t*>(data.constData()) + i * 16;
     }
 
-    // PKCS#7 padding removal: last byte = number of padding bytes
     if (!result.isEmpty()) {
         int padLen = static_cast<unsigned char>(result.back());
         if (padLen > 0 && padLen <= 16) {
@@ -168,3 +165,45 @@ bool Encryption::isInitialized() const {
 }
 
 } // namespace xrk
+
+#else // No FFmpeg: stub implementation
+
+namespace xrk {
+
+struct Encryption::AesContext {};
+
+Encryption::Encryption()
+    : m_ctx(std::make_unique<AesContext>()) {
+}
+
+Encryption::~Encryption() = default;
+
+bool Encryption::generateKey() {
+    LOG_WARNING("Encryption: FFmpeg not available, AES disabled");
+    return false;
+}
+
+bool Encryption::setKey(const QByteArray& key, const QByteArray& iv) {
+    Q_UNUSED(key);
+    Q_UNUSED(iv);
+    LOG_WARNING("Encryption: FFmpeg not available, AES disabled");
+    return false;
+}
+
+QByteArray Encryption::encrypt(const QByteArray& data) const {
+    Q_UNUSED(data);
+    return QByteArray();
+}
+
+QByteArray Encryption::decrypt(const QByteArray& data) const {
+    Q_UNUSED(data);
+    return QByteArray();
+}
+
+QByteArray Encryption::key() const { return m_key; }
+QByteArray Encryption::iv() const { return m_iv; }
+bool Encryption::isInitialized() const { return m_initialized; }
+
+} // namespace xrk
+
+#endif // XRK_FFMPEG_AVAILABLE

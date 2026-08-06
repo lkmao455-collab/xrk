@@ -29,9 +29,11 @@
 // Avoid pulling in <windows.h> here: it defines MOUSE_EVENT / KEY_EVENT macros
 // that collide with the MessageType enum cases below. Declare the one API we
 // need (LockWorkStation, from user32.dll) directly.
+#ifdef _WIN32
 extern "C" {
     __declspec(dllimport) int __stdcall LockWorkStation(void);
 }
+#endif
 
 namespace xrk {
 
@@ -1813,7 +1815,8 @@ void Host::onAudioDataCaptured(const QByteArray& pcmData) {
 
 void Host::executePowerAction(PowerAction action) {
     LOG_INFO("Host: Executing power action: " + QString::number(static_cast<int>(action)));
-    
+
+#ifdef _WIN32
     const char* cmd = nullptr;
     switch (action) {
         case PowerAction::SHUTDOWN:
@@ -1832,13 +1835,38 @@ void Host::executePowerAction(PowerAction action) {
             cmd = "rundll32.exe powrprof.dll,SetSuspendState 1,1,0";
             break;
         case PowerAction::LOCK:
-            // Lock the workstation immediately (no shell command needed).
             ::LockWorkStation();
             break;
     }
     if (cmd) {
         ::system(cmd);
     }
+#else
+    const char* cmd = nullptr;
+    switch (action) {
+        case PowerAction::SHUTDOWN:
+            cmd = "shutdown -h now";
+            break;
+        case PowerAction::RESTART:
+            cmd = "reboot";
+            break;
+        case PowerAction::LOGOUT:
+            cmd = "pkill -u $USER";
+            break;
+        case PowerAction::SLEEP:
+            cmd = "systemctl suspend";
+            break;
+        case PowerAction::HIBERNATE:
+            cmd = "systemctl hibernate";
+            break;
+        case PowerAction::LOCK:
+            cmd = "xdg-screensaver lock || gnome-screensaver-command -l || loginctl lock-session";
+            break;
+    }
+    if (cmd) {
+        ::system(cmd);
+    }
+#endif
 }
 
 void Host::handleFileRequest(const QString& clientId, const QByteArray& payload) {

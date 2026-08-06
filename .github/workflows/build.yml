@@ -58,11 +58,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6 via Homebrew
+      - name: Install Qt6 and FFmpeg via Homebrew
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew untap aws/tap 2>/dev/null || true
-          brew install qt@6 ninja
+          brew install qt@6 ninja ffmpeg
 
       - name: Set Qt Environment
         run: |
@@ -94,11 +94,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6 via Homebrew
+      - name: Install Qt6 and FFmpeg via Homebrew
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew untap aws/tap 2>/dev/null || true
-          brew install qt@6 ninja
+          brew install qt@6 ninja ffmpeg
 
       - name: Set Qt Environment
         run: |
@@ -130,11 +130,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6 via Homebrew
+      - name: Install Qt6 and FFmpeg via Homebrew
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew untap aws/tap 2>/dev/null || true
-          brew install qt@6 ninja
+          brew install qt@6 ninja ffmpeg
 
       - name: Set Qt Environment
         run: |
@@ -176,7 +176,9 @@ jobs:
             build-essential cmake ninja-build \
             qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
             qt6-multimedia-dev qt6-websockets-dev \
-            libqt6sql6-sqlite libqt6test6
+            libqt6sql6-sqlite libqt6test6 \
+            libx11-dev libxtst-dev libxext-dev \
+            libavcodec-dev libavutil-dev libswscale-dev
 
       - name: Configure CMake
         run: cmake -B build_linux -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -208,7 +210,9 @@ jobs:
             qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
             qt6-multimedia-dev qt6-websockets-dev \
             libqt6sql6-sqlite libqt6test6 \
-            libfuse2 libxcb-cursor0
+            libfuse2 libxcb-cursor0 \
+            libx11-dev libxtst-dev libxext-dev \
+            libavcodec-dev libavutil-dev libswscale-dev
 
       - name: Configure CMake
         run: |

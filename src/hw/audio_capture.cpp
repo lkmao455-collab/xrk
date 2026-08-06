@@ -1,6 +1,8 @@
 #include "audio_capture.h"
 #include "core/logger.h"
 
+#ifdef _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -194,3 +196,40 @@ void AudioCapture::onCaptureTimer() {
 }
 
 } // namespace xrk
+
+#else // non-Windows stubs
+
+namespace xrk {
+
+AudioCapture::AudioCapture(QObject* parent, CaptureMode mode)
+    : QObject(parent), m_mode(mode), m_timer(nullptr) {
+}
+
+AudioCapture::~AudioCapture() {
+    shutdown();
+}
+
+bool AudioCapture::initialize() {
+    LOG_WARNING("AudioCapture: not supported on this platform (Windows WASAPI only)");
+    return false;
+}
+
+void AudioCapture::shutdown() {
+    if (m_timer) {
+        m_timer->stop();
+        m_timer->deleteLater();
+        m_timer = nullptr;
+    }
+    m_initialized = false;
+}
+
+bool AudioCapture::isInitialized() const {
+    return m_initialized;
+}
+
+void AudioCapture::onCaptureTimer() {
+}
+
+} // namespace xrk
+
+#endif // _WIN32
