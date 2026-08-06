@@ -24,12 +24,35 @@ bool H264Encoder::initialize(int width, int height, int fps) {
     // per-sample timestamps and fails at encode time (MF_E_NO_SAMPLE_TIMESTAMP),
     // producing empty output and a black remote desktop. libx264 is the reliable,
     // low-latency choice we ship with.
+    // 
+    // CRITICAL: On Windows, Media Foundation H.264 encoder (h264_mf) is often
+    // selected by default by FFmpeg. It requires COM to be in MTA mode and 
+    // proper per-sample timestamps. If COM is initialized in STA mode (common
+    // in Qt apps), h264_mf will fail with MF_E_NO_SAMPLE_TIMESTAMP at encode
+    // time, producing empty output. This causes "mouse works but no frame" bug.
+    // libx264 is the reliable, low-latency choice we ship with - it has no
+    // COM dependencies and works in any thread mode.
     const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
     if (!codec) {
+        // libx264 is the only encoder we ship that is safe under every COM
+        // threading mode. The Media Foundation encoder (h264_mf) requires COM
+        // to be in MTA mode and either returns empty frames (MF_E_NO_SAMPLE_
+        // TIMESTAMP) or outright crashes inside the MFT when the host runs in
+        // STA mode - which is the default for Qt GUI and worker threads. Under
+        // repeated Host start/stop (or any STA COM churn) that crash is
+        // non-deterministic and can take down the whole process. Refuse h264_mf
+        // so the caller falls back to the rock-solid JPEG encoder instead of
+        // producing a black desktop or crashing the host. Hardware encoders
+        // (h264_nvenc / h264_qsv / h264_amf / ...) are still allowed.
         codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (codec && std::string(codec->name) == "h264_mf") {
+            LOG_ERROR("H264: only the Media Foundation encoder (h264_mf) is available, but it "
+                      "crashes under STA COM (the Qt default). Refusing H264; caller should use JPEG.");
+            return false;
+        }
     }
     if (!codec) {
-        LOG_ERROR("H264: H264 encoder not found");
+        LOG_ERROR("H264: No usable H264 encoder found (libx264 missing and no safe alternative)");
         return false;
     }
     LOG_INFO("H264: using encoder '" + QString(codec->name) + "'");
@@ -70,7 +93,9 @@ bool H264Encoder::initialize(int width, int height, int fps) {
     av_dict_free(&opts);
 
     if (ret < 0) {
-        LOG_ERROR("H264: Failed to open codec: " + QString::number(ret));
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR("H264: Failed to open codec: " + QString::number(ret) + " (" + QString(errbuf) + ")");
         avcodec_free_context(&m_codecCtx);
         return false;
     }
@@ -88,7 +113,7 @@ bool H264Encoder::initialize(int width, int height, int fps) {
 
     ret = av_frame_get_buffer(m_frame, 0);
     if (ret < 0) {
-        LOG_ERROR("H264: Failed to allocate frame buffer");
+        LOG_ERROR("H264: Failed to allocate frame buffer: " + QString::number(ret));
         av_frame_free(&m_frame);
         avcodec_free_context(&m_codecCtx);
         return false;
@@ -118,7 +143,7 @@ bool H264Encoder::initialize(int width, int height, int fps) {
     }
 
     m_initialized = true;
-    LOG_INFO("H264 encoder initialized: " + QString::number(m_width) + "x" + QString::number(m_height) + "@" + QString::number(m_fps) + "fps, bitrate=" + QString::number(m_bitrate));
+    LOG_INFO("H264 encoder initialized: " + QString::number(m_width) + "x" + QString::number(m_height) + "@" + QString::number(m_fps) + "fps, bitrate=" + QString::number(m_bitrate) + ", encoder=" + QString(codec->name));
     return true;
 }
 
@@ -166,10 +191,12 @@ QByteArray H264Encoder::encode(const QImage& frame) {
     }
 
     if (!sendFrame(frame)) {
+        // sendFrame logs the specific error
         return QByteArray();
     }
 
     QByteArray result;
+    char errbuf[AV_ERROR_MAX_STRING_SIZE];
 
     while (true) {
         int ret = avcodec_receive_packet(m_codecCtx, m_packet);
@@ -177,7 +204,16 @@ QByteArray H264Encoder::encode(const QImage& frame) {
             break;
         }
         if (ret < 0) {
-            LOG_ERROR("H264: avcodec_receive_packet failed: " + QString::number(ret));
+            // Check for Media Foundation specific error
+            // MF_E_NO_SAMPLE_TIMESTAMP (0xC00D36B4) = COM not in MTA mode
+            if (ret == -1072873804) { // 0xC00D36B4 as signed int
+                LOG_ERROR("H264: CRITICAL - Media Foundation MF_E_NO_SAMPLE_TIMESTAMP (0xC00D36B4). "
+                          "COM is in STA mode! This causes 'mouse works but no frame' bug. "
+                          "libx264 should be used instead of Media Foundation encoder. "
+                          "Check that libx264 is available and preferred over h264_mf.");
+            }
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            LOG_ERROR("H264: avcodec_receive_packet failed: " + QString::number(ret) + " (" + QString(errbuf) + ")");
             break;
         }
 

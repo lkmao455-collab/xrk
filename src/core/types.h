@@ -26,10 +26,11 @@ enum class MessageType : uint32_t {
     QUALITY_INFO = 22,
     MOUSE_EVENT = 30,
     KEY_EVENT = 31,
-    FILE_REQ = 40,
-    FILE_DATA = 41,
-    FILE_ACK = 42,
-    CLIPBOARD_DATA = 50,
+FILE_REQ = 40,
+     FILE_DATA = 41,
+     FILE_ACK = 42,
+     FILE_CHECKSUM = 43,
+     CLIPBOARD_DATA = 50,
     CLIPBOARD_ACK = 51,
     MONITOR_LIST = 60,
     MONITOR_SWITCH = 61,
@@ -53,11 +54,55 @@ enum class MessageType : uint32_t {
     
     CAMERA_MODE = 130,
     
-    AUDIO_START = 140,
+AUDIO_START = 140,
     AUDIO_STOP = 141,
     AUDIO_DATA = 142,
-    
-    POWER_COMMAND = 150,
+
+    VOICE_MSG = 143,
+    VOICE_ACK = 144,
+
+    VIDEO_MSG = 145,
+    VIDEO_ACK = 146,
+
+    LOCATION_MSG = 147,
+    LOCATION_ACK = 148,
+
+    CARD_MSG = 149,
+    CARD_ACK = 150,
+
+    MERGE_FORWARD = 151,
+    MERGE_FORWARD_ACK = 152,
+
+    CALL_INVITE = 153,
+    CALL_ACCEPT = 154,
+    CALL_REJECT = 155,
+    CALL_END = 156,
+    ICE_CANDIDATE = 157,
+
+    VIDEO_CALL_START = 250,
+    VIDEO_CALL_STOP = 251,
+    VIDEO_CALL_FRAME = 252,
+    VIDEO_CALL_ACK = 253,
+
+    SCREEN_SHARE_START = 254,
+    SCREEN_SHARE_STOP = 255,
+    SCREEN_SHARE_FRAME = 256,
+    SCREEN_SHARE_ACK = 257,
+
+    GROUP_ANNOUNCEMENT = 258,
+    GROUP_MENTION = 259,
+    GROUP_VOTE = 260,
+
+    GROUP_FILE = 261,
+    GROUP_FILE_ACK = 262,
+    GROUP_ALBUM = 263,
+    GROUP_ALBUM_ACK = 264,
+
+    GROUP_TODO = 265,
+    GROUP_TODO_ACK = 266,
+    GROUP_TODO_UPDATE = 267,
+
+    POWER_COMMAND = 158,
     FILE_BROWSER_REQ = 160,
     FILE_BROWSER_RESP = 161,
     SYSINFO_REQ = 170,
@@ -68,7 +113,19 @@ enum class MessageType : uint32_t {
     CONSENT_RESPONSE = 191,
     SYNC_ADD = 200,        // controller -> host: start watching a host dir (reverse sync)
     SYNC_REMOVE = 201,     // controller -> host: stop watching a host dir
-    SYNC_NOTIFY = 202      // host -> controller: a watched host file changed
+    SYNC_NOTIFY = 202,      // host -> controller: a watched host file changed
+
+    // Multi-device sync (Phase E1)
+    SYNC_REQUEST = 203,    // request sync snapshot from peer
+    SYNC_SNAPSHOT = 204,   // sync snapshot data (devices, groups, settings, messages)
+    SYNC_ACK = 205,        // sync acknowledgment
+
+    // E2EE (End-to-End Encryption) message types
+    E2EE_KEY_EXCHANGE = 300,
+    E2EE_KEY_RESPONSE = 301,
+    E2EE_SESSION_ESTABLISHED = 302,
+    E2EE_MESSAGE = 303,
+    E2EE_ACK = 304
 };
 
 enum class PowerAction : uint8_t {
@@ -145,12 +202,88 @@ struct SyncPair {
 // Host -> Controller notification that a watched host file changed. The
 // controller downloads hostFilePath into localDir, preserving the relative
 // sub-path under hostDir.
+// Host -> Controller notification that a watched host file changed. The
+// controller downloads hostFilePath into localDir, preserving the relative
+// sub-path under hostDir.
 struct SyncNotify {
     QString hostDir;
     QString hostFilePath;
     QString localDir;
     uint64_t size = 0;
     int64_t mtime = 0;
+};
+
+// Multi-device sync (Phase E1): request a full state snapshot from a peer.
+struct SyncRequest {
+    QString requestId;
+    QString accountHash;
+    QString syncKeyHash;
+    qint64 timestamp = 0;
+};
+
+// Multi-device sync (Phase E1): complete state snapshot for LWW merge.
+struct SyncSnapshot {
+    qint64 version = 0;  // Lamport-style logical clock
+
+    struct Device {
+        QString deviceId;
+        QString name;
+        QString ip;
+        quint16 port = 0;
+        qint64 lastSeen = 0;
+        qint64 updatedAt = 0;
+        bool isFriend = false;
+    };
+    QList<Device> devices;
+
+    struct Group {
+        QString groupId;
+        QString name;
+        QList<QString> memberIds;
+        QList<QString> memberNames;
+        qint64 createdAt = 0;
+        qint64 updatedAt = 0;
+    };
+    QList<Group> groups;
+
+    struct Setting {
+        QString key;
+        QString value;
+        qint64 updatedAt = 0;
+    };
+    QList<Setting> settings;
+
+    struct Message {
+        QString messageId;
+        QString senderId;
+        QString senderName;
+        QString senderIp;
+        QString content;
+        qint64 timestamp = 0;
+        bool isFile = false;
+        QString filePath;
+        qint64 fileSize = 0;
+        bool isDirectory = false;
+        bool isImage = false;
+        QString imageFileName;
+        QString replyTo;
+        QString replyContent;
+        QString recallId;
+        bool isRecalled = false;
+        QString targetId;
+        bool isGroup = false;
+        bool isRead = false;
+        QString readBy;
+    };
+    QList<Message> messages;
+};
+
+// Multi-device sync (Phase E1): acknowledgment of received snapshot.
+struct SyncAck {
+    QString requestId;
+    bool success = false;
+    int appliedCount = 0;
+    QString errorMessage;
 };
 
 struct DeviceInfo {
@@ -194,6 +327,12 @@ struct KeyEvent {
     uint32_t keyCode = 0;
     bool pressed = false;
     uint32_t modifiers = 0;
+    // The actual typed character(s) from the controller (Qt QKeyEvent::text()).
+    // Sent in addition to keyCode so the host can inject the exact Unicode
+    // character via KEYEVENTF_UNICODE, making remote typing independent of the
+    // host's active keyboard layout / IME. Empty for non-character keys
+    // (modifiers, F-keys, arrows, etc.), which fall back to keyCode (VK).
+    QString text;
 };
 
 struct ScreenFrame {
@@ -301,6 +440,224 @@ struct SysInfo {
     QString cpuName;
     uint64_t uptime = 0;          // seconds
     int processCount = 0;
+};
+
+struct VoiceMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    QByteArray voiceData;
+    QString voiceFileName;
+    int duration = 0; // in seconds
+    qint64 timestamp = 0;
+    bool isRead = false;
+};
+
+struct VideoMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    QByteArray videoData;
+    QString videoFileName;
+    int duration = 0; // in seconds
+    double width = 0;
+    double height = 0;
+    qint64 timestamp = 0;
+    bool isRead = false;
+};
+
+struct LocationMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    double latitude = 0;
+    double longitude = 0;
+    QString locationName;
+    qint64 timestamp = 0;
+    bool isRead = false;
+};
+
+struct CardMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    QString vCardData;
+    qint64 timestamp = 0;
+    bool isRead = false;
+};
+
+struct ForwardedMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    QString content;
+    qint64 timestamp = 0;
+    int msgType = 0; // 0=text, 1=image, 2=voice, 3=video, 4=location, 5=card
+};
+
+struct MergeForwardMessage {
+    QString messageId;
+    QString senderId;
+    QString senderName;
+    QList<ForwardedMessage> messages;
+    qint64 timestamp = 0;
+    bool isRead = false;
+};
+
+struct CallInvite {
+    QString callId;
+    QString callerId;
+    QString callerName;
+    QString callType; // "voice" or "video"
+    QString sdp;      // SDP offer
+    qint64 timestamp = 0;
+};
+
+struct CallAccept {
+    QString callId;
+    QString calleeId;
+    QString sdp;      // SDP answer
+    qint64 timestamp = 0;
+};
+
+struct CallReject {
+    QString callId;
+    QString calleeId;
+    QString reason;
+    qint64 timestamp = 0;
+};
+
+struct CallEnd {
+    QString callId;
+    QString peerId;
+    qint64 timestamp = 0;
+};
+
+struct IceCandidate {
+    QString callId;
+    QString candidate; // ICE candidate SDP
+    qint64 timestamp = 0;
+};
+
+struct VideoCallStart {
+    QString callId;
+    QString callerId;
+    QString callerName;
+    int width = 0;
+    int height = 0;
+    int fps = 30;
+    qint64 timestamp = 0;
+};
+
+struct VideoCallStop {
+    QString callId;
+    QString peerId;
+    qint64 timestamp = 0;
+};
+
+struct VideoCallFrame {
+    QString callId;
+    QByteArray frameData; // H.264 encoded frame
+    uint64_t timestamp = 0; // RTP timestamp
+    uint32_t sequenceNumber = 0;
+    bool isKeyFrame = false;
+    qint64 captureTime = 0;
+};
+
+struct ScreenShareStart {
+    QString sessionId;
+    QString callerId;
+    QString callerName;
+    int width = 0;
+    int height = 0;
+    int fps = 30;
+    qint64 timestamp = 0;
+};
+
+struct ScreenShareStop {
+    QString sessionId;
+    QString peerId;
+    qint64 timestamp = 0;
+};
+
+struct ScreenShareFrame {
+    QString sessionId;
+    QByteArray frameData; // H.264 encoded frame
+    uint64_t timestamp = 0; // RTP timestamp
+    uint32_t sequenceNumber = 0;
+    bool isKeyFrame = false;
+    qint64 captureTime = 0;
+};
+
+struct GroupAnnouncement {
+    QString groupId;
+    QString groupName;
+    QString announcement;
+    QString announcerId;
+    QString announcerName;
+    qint64 timestamp = 0;
+};
+
+struct GroupMention {
+    QString groupId;
+    QString groupName;
+    QString message;
+    QStringList mentionedMemberIds;
+    QStringList mentionedMemberNames;
+    QString senderId;
+    QString senderName;
+    qint64 timestamp = 0;
+};
+
+struct GroupVote {
+    QString groupId;
+    QString groupName;
+    QString voteTitle;
+    QStringList options;
+    int durationSeconds = 0;
+    QString creatorId;
+    QString creatorName;
+    qint64 timestamp = 0;
+};
+
+struct GroupFile {
+    QString groupId;
+    QString groupName;
+    QString fileId;
+    QString fileName;
+    qint64 fileSize = 0;
+    QString md5;
+    QString uploaderId;
+    QString uploaderName;
+    qint64 timestamp = 0;
+};
+
+struct GroupAlbum {
+    QString groupId;
+    QString groupName;
+    QString albumId;
+    QString albumName;
+    QStringList fileIds;
+    QStringList fileNames;
+    QString creatorId;
+    QString creatorName;
+    qint64 timestamp = 0;
+};
+
+struct GroupTodo {
+    QString groupId;
+    QString groupName;
+    QString todoId;
+    QString title;
+    QString description;
+    int status = 0; // 0=pending, 1=in_progress, 2=completed
+    int priority = 0; // 0=low, 1=medium, 2=high
+    QString assigneeId;
+    QString assigneeName;
+    QString creatorId;
+    QString creatorName;
+    qint64 dueDate = 0;
+    qint64 timestamp = 0;
 };
 
 } // namespace xrk

@@ -24,6 +24,7 @@ void SettingsWidget::loadSettings() {
     m_autoDiscoveryCheckBox->setChecked(settings.value("network/auto_discovery", true).toBool());
     m_encryptionCheckBox->setChecked(settings.value("security/encryption_enabled", false).toBool());
     m_privacyScreenCheckBox->setChecked(settings.value("security/privacy_screen", false).toBool());
+    m_autoGrantConsentCheckBox->setChecked(settings.value("security/auto_grant_consent", false).toBool());
     m_trueColorCheckBox->setChecked(settings.value("video/true_color", false).toBool());
     m_fpsSpinBox->setValue(settings.value("performance/capture_fps", 60).toInt());
     m_relayCheckBox->setChecked(settings.value("relay/enabled", false).toBool());
@@ -57,6 +58,7 @@ void SettingsWidget::saveSettings() {
     settings.setValue("network/auto_discovery", m_autoDiscoveryCheckBox->isChecked());
     settings.setValue("security/encryption_enabled", m_encryptionCheckBox->isChecked());
     settings.setValue("security/privacy_screen", m_privacyScreenCheckBox->isChecked());
+    settings.setValue("security/auto_grant_consent", m_autoGrantConsentCheckBox->isChecked());
     settings.setValue("video/true_color", m_trueColorCheckBox->isChecked());
     settings.setValue("performance/capture_fps", m_fpsSpinBox->value());
     settings.setValue("relay/enabled", m_relayCheckBox->isChecked());
@@ -100,6 +102,10 @@ int SettingsWidget::fps() const {
 
 bool SettingsWidget::privacyScreenEnabled() const {
     return m_privacyScreenCheckBox->isChecked();
+}
+
+bool SettingsWidget::autoGrantConsentEnabled() const {
+    return m_autoGrantConsentCheckBox->isChecked();
 }
 
 bool SettingsWidget::trueColorEnabled() const {
@@ -177,6 +183,9 @@ void SettingsWidget::setupUI() {
 
     m_privacyScreenCheckBox = new QCheckBox(tr("远程控制时锁屏"), this);
     formLayout->addRow("", m_privacyScreenCheckBox);
+
+    m_autoGrantConsentCheckBox = new QCheckBox(tr("自动允许受信任连接 (无需确认)"), this);
+    formLayout->addRow("", m_autoGrantConsentCheckBox);
 
     m_trueColorCheckBox = new QCheckBox(tr("真彩 4:4:4 (更高色彩保真度)"), this);
     formLayout->addRow("", m_trueColorCheckBox);

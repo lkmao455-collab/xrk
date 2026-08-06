@@ -159,7 +159,8 @@ void ThemeManager::initThemes() {
 }
 
 void ThemeManager::loadThemes() {
-    // 主题已在initThemes中加载
+    m_themes.clear();
+    initThemes();
 }
 
 void ThemeManager::applyTheme(const QString& themeId) {

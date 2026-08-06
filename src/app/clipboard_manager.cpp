@@ -126,9 +126,6 @@ void ClipboardManager::onCheckTimer() {
     }
 }
 
-void ClipboardManager::setupConnections() {
-}
-
 void ClipboardManager::setConnection(TcpConnection* connection) {
     m_connection = connection;
     if (m_connection) {

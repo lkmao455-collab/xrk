@@ -73,7 +73,8 @@ private:
     void setupFpsTimer();
     void setupShortcuts();
     void sendMouseEventToRemote(MouseAction action, MouseButton button, int x, int y, int delta = 0);
-    void sendKeyEventToRemote(uint32_t keyCode, bool pressed, uint32_t modifiers);
+    void sendKeyEventToRemote(uint32_t keyCode, bool pressed, uint32_t modifiers,
+                             const QString& text = QString());
     QPoint mapToRemote(const QPoint& localPos);
     QPoint remoteToWidget(const QPoint& remotePos) const;
     void updateQualityLabel();

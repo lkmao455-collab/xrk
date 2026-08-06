@@ -59,14 +59,29 @@ TEST_F(ProtocolTest, EncodeKeyEvent) {
     event.keyCode = 65;
     event.pressed = true;
     event.modifiers = 0x0001;
-    
+    event.text = QStringLiteral("A");
+
     QByteArray encoded = ProtocolManager::encodeKeyEvent(event);
     EXPECT_FALSE(encoded.isEmpty());
-    
+
     KeyEvent decoded = ProtocolManager::decodeKeyEvent(encoded);
     EXPECT_EQ(decoded.keyCode, event.keyCode);
     EXPECT_EQ(decoded.pressed, event.pressed);
     EXPECT_EQ(decoded.modifiers, event.modifiers);
+    EXPECT_EQ(decoded.text, event.text);
+}
+
+TEST_F(ProtocolTest, EncodeKeyEventUnicode) {
+    // CJK / surrogate characters must survive the wire intact so the host can
+    // inject them via KEYEVENTF_UNICODE regardless of its keyboard layout.
+    KeyEvent event;
+    event.keyCode = 0;
+    event.pressed = true;
+    event.text = QStringLiteral("你好");
+
+    QByteArray encoded = ProtocolManager::encodeKeyEvent(event);
+    KeyEvent decoded = ProtocolManager::decodeKeyEvent(encoded);
+    EXPECT_EQ(decoded.text, event.text);
 }
 
 TEST_F(ProtocolTest, EncodeScreenFrame) {

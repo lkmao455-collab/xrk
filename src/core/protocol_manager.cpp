@@ -129,12 +129,14 @@ QByteArray ProtocolManager::encodeKeyEvent(const KeyEvent& event) {
     stream.setByteOrder(QDataStream::BigEndian);
     
     stream << event.keyCode;
-    
+
     quint8 pressed = event.pressed ? 1 : 0;
     stream << pressed;
-    
+
     stream << event.modifiers;
-    
+
+    stream << event.text;
+
     return data;
 }
 
@@ -150,7 +152,9 @@ KeyEvent ProtocolManager::decodeKeyEvent(const QByteArray& data) {
     event.pressed = (pressed != 0);
     
     stream >> event.modifiers;
-    
+
+    stream >> event.text;
+
     return event;
 }
 
@@ -281,22 +285,1049 @@ FileData ProtocolManager::decodeFileData(const QByteArray& data) {
     FileData fileData;
     QDataStream stream(data);
     stream.setByteOrder(QDataStream::BigEndian);
-    
+
     uint32_t len;
-    
+
     stream >> len;
     QByteArray fileIdBytes = data.mid(stream.device()->pos(), len);
     stream.skipRawData(len);
     fileData.fileId = QString::fromUtf8(fileIdBytes);
-    
+
     stream >> fileData.offset;
-    
+
     uint32_t dataSize;
     stream >> dataSize;
-    
+
     fileData.data = data.mid(stream.device()->pos(), dataSize);
-    
+
     return fileData;
+}
+
+QByteArray ProtocolManager::encodeFileChecksum(const QByteArray& checksum, const QString& fileId) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    QByteArray fileIdBytes = fileId.toUtf8();
+    stream << static_cast<uint32_t>(fileIdBytes.size());
+    stream.writeRawData(fileIdBytes.constData(), fileIdBytes.size());
+
+    stream << static_cast<uint32_t>(checksum.size());
+    stream.writeRawData(checksum.constData(), checksum.size());
+
+    return data;
+}
+
+QByteArray ProtocolManager::decodeFileChecksum(const QByteArray& data, QString& fileId) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    uint32_t len;
+
+    stream >> len;
+    QByteArray fileIdBytes = data.mid(stream.device()->pos(), len);
+    stream.skipRawData(len);
+    fileId = QString::fromUtf8(fileIdBytes);
+
+    uint32_t checksumSize;
+    stream >> checksumSize;
+
+    QByteArray checksum = data.mid(stream.device()->pos(), checksumSize);
+    stream.skipRawData(checksumSize);
+
+    return checksum;
+}
+
+QByteArray ProtocolManager::encodeVoiceMessage(const VoiceMessage& msg) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << msg.messageId;
+    stream << msg.senderId;
+    stream << msg.senderName;
+    stream << msg.voiceData;
+    stream << msg.voiceFileName;
+    stream << static_cast<int32_t>(msg.duration);
+    stream << msg.timestamp;
+    stream << static_cast<uint8_t>(msg.isRead ? 1 : 0);
+
+    return data;
+}
+
+VoiceMessage ProtocolManager::decodeVoiceMessage(const QByteArray& data) {
+    VoiceMessage msg;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> msg.messageId;
+    stream >> msg.senderId;
+    stream >> msg.senderName;
+    stream >> msg.voiceData;
+    stream >> msg.voiceFileName;
+    int32_t duration = 0;
+    stream >> duration;
+    msg.duration = duration;
+    stream >> msg.timestamp;
+    uint8_t isRead = 0;
+    stream >> isRead;
+    msg.isRead = (isRead != 0);
+
+    return msg;
+}
+
+QByteArray ProtocolManager::encodeVideoMessage(const VideoMessage& msg) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << msg.messageId;
+    stream << msg.senderId;
+    stream << msg.senderName;
+    stream << msg.videoData;
+    stream << msg.videoFileName;
+    stream << static_cast<int32_t>(msg.duration);
+    stream << msg.width;
+    stream << msg.height;
+    stream << msg.timestamp;
+    stream << static_cast<uint8_t>(msg.isRead ? 1 : 0);
+
+    return data;
+}
+
+VideoMessage ProtocolManager::decodeVideoMessage(const QByteArray& data) {
+    VideoMessage msg;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> msg.messageId;
+    stream >> msg.senderId;
+    stream >> msg.senderName;
+    stream >> msg.videoData;
+    stream >> msg.videoFileName;
+    int32_t duration = 0;
+    stream >> duration;
+    msg.duration = duration;
+    stream >> msg.width;
+    stream >> msg.height;
+    stream >> msg.timestamp;
+    uint8_t isRead = 0;
+    stream >> isRead;
+    msg.isRead = (isRead != 0);
+
+    return msg;
+}
+
+QByteArray ProtocolManager::encodeLocationMessage(const LocationMessage& msg) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << msg.messageId;
+    stream << msg.senderId;
+    stream << msg.senderName;
+    stream << msg.latitude;
+    stream << msg.longitude;
+    stream << msg.locationName;
+    stream << msg.timestamp;
+    stream << static_cast<uint8_t>(msg.isRead ? 1 : 0);
+
+    return data;
+}
+
+LocationMessage ProtocolManager::decodeLocationMessage(const QByteArray& data) {
+    LocationMessage msg;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> msg.messageId;
+    stream >> msg.senderId;
+    stream >> msg.senderName;
+    stream >> msg.latitude;
+    stream >> msg.longitude;
+    stream >> msg.locationName;
+    stream >> msg.timestamp;
+    uint8_t isRead = 0;
+    stream >> isRead;
+    msg.isRead = (isRead != 0);
+
+    return msg;
+}
+
+QByteArray ProtocolManager::encodeCardMessage(const CardMessage& msg) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << msg.messageId;
+    stream << msg.senderId;
+    stream << msg.senderName;
+    stream << msg.vCardData;
+    stream << msg.timestamp;
+    stream << static_cast<uint8_t>(msg.isRead ? 1 : 0);
+
+    return data;
+}
+
+CardMessage ProtocolManager::decodeCardMessage(const QByteArray& data) {
+    CardMessage msg;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> msg.messageId;
+    stream >> msg.senderId;
+    stream >> msg.senderName;
+    stream >> msg.vCardData;
+    stream >> msg.timestamp;
+    uint8_t isRead = 0;
+    stream >> isRead;
+    msg.isRead = (isRead != 0);
+
+    return msg;
+}
+
+QByteArray ProtocolManager::encodeMergeForwardMessage(const MergeForwardMessage& msg) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << msg.messageId;
+    stream << msg.senderId;
+    stream << msg.senderName;
+    stream << static_cast<uint32_t>(msg.messages.size());
+    for (const ForwardedMessage& fwd : msg.messages) {
+        stream << fwd.messageId;
+        stream << fwd.senderId;
+        stream << fwd.senderName;
+        stream << fwd.content;
+        stream << fwd.timestamp;
+        stream << static_cast<int32_t>(fwd.msgType);
+    }
+    stream << msg.timestamp;
+    stream << static_cast<uint8_t>(msg.isRead ? 1 : 0);
+
+    return data;
+}
+
+MergeForwardMessage ProtocolManager::decodeMergeForwardMessage(const QByteArray& data) {
+    MergeForwardMessage msg;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> msg.messageId;
+    stream >> msg.senderId;
+    stream >> msg.senderName;
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        ForwardedMessage fwd;
+        stream >> fwd.messageId;
+        stream >> fwd.senderId;
+        stream >> fwd.senderName;
+        stream >> fwd.content;
+        stream >> fwd.timestamp;
+        int32_t msgType = 0;
+        stream >> msgType;
+        fwd.msgType = msgType;
+        msg.messages.append(fwd);
+    }
+    stream >> msg.timestamp;
+    uint8_t isRead = 0;
+    stream >> isRead;
+    msg.isRead = (isRead != 0);
+
+    return msg;
+}
+
+QByteArray ProtocolManager::encodeCallInvite(const CallInvite& invite) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << invite.callId;
+    stream << invite.callerId;
+    stream << invite.callerName;
+    stream << invite.callType;
+    stream << invite.sdp;
+    stream << invite.timestamp;
+
+    return data;
+}
+
+CallInvite ProtocolManager::decodeCallInvite(const QByteArray& data) {
+    CallInvite invite;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> invite.callId;
+    stream >> invite.callerId;
+    stream >> invite.callerName;
+    stream >> invite.callType;
+    stream >> invite.sdp;
+    stream >> invite.timestamp;
+
+    return invite;
+}
+
+QByteArray ProtocolManager::encodeCallAccept(const CallAccept& accept) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << accept.callId;
+    stream << accept.calleeId;
+    stream << accept.sdp;
+    stream << accept.timestamp;
+
+    return data;
+}
+
+CallAccept ProtocolManager::decodeCallAccept(const QByteArray& data) {
+    CallAccept accept;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> accept.callId;
+    stream >> accept.calleeId;
+    stream >> accept.sdp;
+    stream >> accept.timestamp;
+
+    return accept;
+}
+
+QByteArray ProtocolManager::encodeCallReject(const CallReject& reject) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << reject.callId;
+    stream << reject.calleeId;
+    stream << reject.reason;
+    stream << reject.timestamp;
+
+    return data;
+}
+
+CallReject ProtocolManager::decodeCallReject(const QByteArray& data) {
+    CallReject reject;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> reject.callId;
+    stream >> reject.calleeId;
+    stream >> reject.reason;
+    stream >> reject.timestamp;
+
+    return reject;
+}
+
+QByteArray ProtocolManager::encodeCallEnd(const CallEnd& end) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << end.callId;
+    stream << end.peerId;
+    stream << end.timestamp;
+
+    return data;
+}
+
+CallEnd ProtocolManager::decodeCallEnd(const QByteArray& data) {
+    CallEnd end;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> end.callId;
+    stream >> end.peerId;
+    stream >> end.timestamp;
+
+    return end;
+}
+
+QByteArray ProtocolManager::encodeIceCandidate(const IceCandidate& candidate) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << candidate.callId;
+    stream << candidate.candidate;
+    stream << candidate.timestamp;
+
+    return data;
+}
+
+IceCandidate ProtocolManager::decodeIceCandidate(const QByteArray& data) {
+    IceCandidate candidate;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> candidate.callId;
+    stream >> candidate.candidate;
+    stream >> candidate.timestamp;
+
+    return candidate;
+}
+
+QByteArray ProtocolManager::encodeVideoCallStart(const VideoCallStart& start) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << start.callId;
+    stream << start.callerId;
+    stream << start.callerName;
+    stream << static_cast<int32_t>(start.width);
+    stream << static_cast<int32_t>(start.height);
+    stream << static_cast<int32_t>(start.fps);
+    stream << start.timestamp;
+
+    return data;
+}
+
+VideoCallStart ProtocolManager::decodeVideoCallStart(const QByteArray& data) {
+    VideoCallStart start;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> start.callId;
+    stream >> start.callerId;
+    stream >> start.callerName;
+    int32_t w = 0, h = 0, f = 0;
+    stream >> w >> h >> f;
+    start.width = w;
+    start.height = h;
+    start.fps = f;
+    stream >> start.timestamp;
+
+    return start;
+}
+
+QByteArray ProtocolManager::encodeVideoCallStop(const VideoCallStop& stop) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << stop.callId;
+    stream << stop.peerId;
+    stream << stop.timestamp;
+
+    return data;
+}
+
+VideoCallStop ProtocolManager::decodeVideoCallStop(const QByteArray& data) {
+    VideoCallStop stop;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> stop.callId;
+    stream >> stop.peerId;
+    stream >> stop.timestamp;
+
+    return stop;
+}
+
+QByteArray ProtocolManager::encodeVideoCallFrame(const VideoCallFrame& frame) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << frame.callId;
+    stream << static_cast<uint32_t>(frame.frameData.size());
+    stream.writeRawData(frame.frameData.constData(), frame.frameData.size());
+    stream << frame.timestamp;
+    stream << frame.sequenceNumber;
+    stream << static_cast<uint8_t>(frame.isKeyFrame ? 1 : 0);
+    stream << frame.captureTime;
+
+    return data;
+}
+
+VideoCallFrame ProtocolManager::decodeVideoCallFrame(const QByteArray& data) {
+    VideoCallFrame frame;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> frame.callId;
+    uint32_t dataSize;
+    stream >> dataSize;
+    frame.frameData = data.mid(stream.device()->pos(), dataSize);
+    stream.skipRawData(dataSize);
+    stream >> frame.timestamp;
+    stream >> frame.sequenceNumber;
+    uint8_t isKey = 0;
+    stream >> isKey;
+    frame.isKeyFrame = (isKey != 0);
+    stream >> frame.captureTime;
+
+    return frame;
+}
+
+QByteArray ProtocolManager::encodeScreenShareStart(const ScreenShareStart& start) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << start.sessionId;
+    stream << start.callerId;
+    stream << start.callerName;
+    stream << static_cast<int32_t>(start.width);
+    stream << static_cast<int32_t>(start.height);
+    stream << static_cast<int32_t>(start.fps);
+    stream << start.timestamp;
+
+    return data;
+}
+
+ScreenShareStart ProtocolManager::decodeScreenShareStart(const QByteArray& data) {
+    ScreenShareStart start;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> start.sessionId;
+    stream >> start.callerId;
+    stream >> start.callerName;
+    int32_t w = 0, h = 0, f = 0;
+    stream >> w >> h >> f;
+    start.width = w;
+    start.height = h;
+    start.fps = f;
+    stream >> start.timestamp;
+
+    return start;
+}
+
+QByteArray ProtocolManager::encodeScreenShareStop(const ScreenShareStop& stop) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << stop.sessionId;
+    stream << stop.peerId;
+    stream << stop.timestamp;
+
+    return data;
+}
+
+ScreenShareStop ProtocolManager::decodeScreenShareStop(const QByteArray& data) {
+    ScreenShareStop stop;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> stop.sessionId;
+    stream >> stop.peerId;
+    stream >> stop.timestamp;
+
+    return stop;
+}
+
+QByteArray ProtocolManager::encodeScreenShareFrame(const ScreenShareFrame& frame) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << frame.sessionId;
+    stream << static_cast<uint32_t>(frame.frameData.size());
+    stream.writeRawData(frame.frameData.constData(), frame.frameData.size());
+    stream << frame.timestamp;
+    stream << frame.sequenceNumber;
+    stream << static_cast<uint8_t>(frame.isKeyFrame ? 1 : 0);
+    stream << frame.captureTime;
+
+    return data;
+}
+
+ScreenShareFrame ProtocolManager::decodeScreenShareFrame(const QByteArray& data) {
+    ScreenShareFrame frame;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> frame.sessionId;
+    uint32_t dataSize;
+    stream >> dataSize;
+    frame.frameData = data.mid(stream.device()->pos(), dataSize);
+    stream.skipRawData(dataSize);
+    stream >> frame.timestamp;
+    stream >> frame.sequenceNumber;
+    uint8_t isKey = 0;
+    stream >> isKey;
+    frame.isKeyFrame = (isKey != 0);
+    stream >> frame.captureTime;
+
+    return frame;
+}
+
+QByteArray ProtocolManager::encodeGroupAnnouncement(const GroupAnnouncement& announcement) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << announcement.groupId;
+    stream << announcement.groupName;
+    stream << announcement.announcement;
+    stream << announcement.announcerId;
+    stream << announcement.announcerName;
+    stream << announcement.timestamp;
+
+    return data;
+}
+
+GroupAnnouncement ProtocolManager::decodeGroupAnnouncement(const QByteArray& data) {
+    GroupAnnouncement announcement;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> announcement.groupId;
+    stream >> announcement.groupName;
+    stream >> announcement.announcement;
+    stream >> announcement.announcerId;
+    stream >> announcement.announcerName;
+    stream >> announcement.timestamp;
+
+    return announcement;
+}
+
+QByteArray ProtocolManager::encodeGroupMention(const GroupMention& mention) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << mention.groupId;
+    stream << mention.groupName;
+    stream << mention.message;
+    stream << static_cast<uint32_t>(mention.mentionedMemberIds.size());
+    for (const QString& id : mention.mentionedMemberIds) {
+        stream << id;
+    }
+    stream << static_cast<uint32_t>(mention.mentionedMemberNames.size());
+    for (const QString& name : mention.mentionedMemberNames) {
+        stream << name;
+    }
+    stream << mention.senderId;
+    stream << mention.senderName;
+    stream << mention.timestamp;
+
+    return data;
+}
+
+GroupMention ProtocolManager::decodeGroupMention(const QByteArray& data) {
+    GroupMention mention;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> mention.groupId;
+    stream >> mention.groupName;
+    stream >> mention.message;
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        QString id;
+        stream >> id;
+        mention.mentionedMemberIds.append(id);
+    }
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        QString name;
+        stream >> name;
+        mention.mentionedMemberNames.append(name);
+    }
+    stream >> mention.senderId;
+    stream >> mention.senderName;
+    stream >> mention.timestamp;
+
+    return mention;
+}
+
+QByteArray ProtocolManager::encodeGroupVote(const GroupVote& vote) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << vote.groupId;
+    stream << vote.groupName;
+    stream << vote.voteTitle;
+    stream << static_cast<uint32_t>(vote.options.size());
+    for (const QString& opt : vote.options) {
+        stream << opt;
+    }
+    stream << vote.durationSeconds;
+    stream << vote.creatorId;
+    stream << vote.creatorName;
+    stream << vote.timestamp;
+
+    return data;
+}
+
+GroupVote ProtocolManager::decodeGroupVote(const QByteArray& data) {
+    GroupVote vote;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> vote.groupId;
+    stream >> vote.groupName;
+    stream >> vote.voteTitle;
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        QString opt;
+        stream >> opt;
+        vote.options.append(opt);
+    }
+    stream >> vote.durationSeconds;
+    stream >> vote.creatorId;
+    stream >> vote.creatorName;
+    stream >> vote.timestamp;
+
+    return vote;
+}
+
+QByteArray ProtocolManager::encodeGroupFile(const GroupFile& file) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << file.groupId;
+    stream << file.groupName;
+    stream << file.fileId;
+    stream << file.fileName;
+    stream << file.fileSize;
+    stream << file.md5;
+    stream << file.uploaderId;
+    stream << file.uploaderName;
+    stream << file.timestamp;
+
+    return data;
+}
+
+GroupFile ProtocolManager::decodeGroupFile(const QByteArray& data) {
+    GroupFile file;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> file.groupId;
+    stream >> file.groupName;
+    stream >> file.fileId;
+    stream >> file.fileName;
+    stream >> file.fileSize;
+    stream >> file.md5;
+    stream >> file.uploaderId;
+    stream >> file.uploaderName;
+    stream >> file.timestamp;
+
+    return file;
+}
+
+QByteArray ProtocolManager::encodeGroupAlbum(const GroupAlbum& album) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << album.groupId;
+    stream << album.groupName;
+    stream << album.albumId;
+    stream << album.albumName;
+    stream << static_cast<uint32_t>(album.fileIds.size());
+    for (const QString& id : album.fileIds) {
+        stream << id;
+    }
+    stream << static_cast<uint32_t>(album.fileNames.size());
+    for (const QString& name : album.fileNames) {
+        stream << name;
+    }
+    stream << album.creatorId;
+    stream << album.creatorName;
+    stream << album.timestamp;
+
+    return data;
+}
+
+GroupAlbum ProtocolManager::decodeGroupAlbum(const QByteArray& data) {
+    GroupAlbum album;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> album.groupId;
+    stream >> album.groupName;
+    stream >> album.albumId;
+    stream >> album.albumName;
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        QString id;
+        stream >> id;
+        album.fileIds.append(id);
+    }
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        QString name;
+        stream >> name;
+        album.fileNames.append(name);
+    }
+    stream >> album.creatorId;
+    stream >> album.creatorName;
+    stream >> album.timestamp;
+
+    return album;
+}
+
+QByteArray ProtocolManager::encodeGroupTodo(const GroupTodo& todo) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << todo.groupId;
+    stream << todo.groupName;
+    stream << todo.todoId;
+    stream << todo.title;
+    stream << todo.description;
+    stream << static_cast<int32_t>(todo.status);
+    stream << static_cast<int32_t>(todo.priority);
+    stream << todo.assigneeId;
+    stream << todo.assigneeName;
+    stream << todo.creatorId;
+    stream << todo.creatorName;
+    stream << todo.dueDate;
+    stream << todo.timestamp;
+
+    return data;
+}
+
+GroupTodo ProtocolManager::decodeGroupTodo(const QByteArray& data) {
+    GroupTodo todo;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> todo.groupId;
+    stream >> todo.groupName;
+    stream >> todo.todoId;
+    stream >> todo.title;
+    stream >> todo.description;
+    int32_t status = 0, priority = 0;
+    stream >> status >> priority;
+    todo.status = status;
+    todo.priority = priority;
+    stream >> todo.assigneeId;
+    stream >> todo.assigneeName;
+    stream >> todo.creatorId;
+    stream >> todo.creatorName;
+    stream >> todo.dueDate;
+    stream >> todo.timestamp;
+
+    return todo;
+}
+
+QByteArray ProtocolManager::encodeSyncRequest(const SyncRequest& request) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << request.requestId;
+    stream << request.accountHash;
+    stream << request.syncKeyHash;
+    stream << request.timestamp;
+
+    return data;
+}
+
+SyncRequest ProtocolManager::decodeSyncRequest(const QByteArray& data) {
+    SyncRequest request;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> request.requestId;
+    stream >> request.accountHash;
+    stream >> request.syncKeyHash;
+    stream >> request.timestamp;
+
+    return request;
+}
+
+QByteArray ProtocolManager::encodeSyncSnapshot(const SyncSnapshot& snapshot) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << snapshot.version;
+
+    stream << static_cast<uint32_t>(snapshot.devices.size());
+    for (const auto& d : snapshot.devices) {
+        stream << d.deviceId;
+        stream << d.name;
+        stream << d.ip;
+        stream << d.port;
+        stream << d.lastSeen;
+        stream << d.updatedAt;
+        stream << static_cast<uint8_t>(d.isFriend ? 1 : 0);
+    }
+
+    stream << static_cast<uint32_t>(snapshot.groups.size());
+    for (const auto& g : snapshot.groups) {
+        stream << g.groupId;
+        stream << g.name;
+        stream << static_cast<uint32_t>(g.memberIds.size());
+        for (const QString& id : g.memberIds) stream << id;
+        stream << static_cast<uint32_t>(g.memberNames.size());
+        for (const QString& name : g.memberNames) stream << name;
+        stream << g.createdAt;
+        stream << g.updatedAt;
+    }
+
+    stream << static_cast<uint32_t>(snapshot.settings.size());
+    for (const auto& s : snapshot.settings) {
+        stream << s.key;
+        stream << s.value;
+        stream << s.updatedAt;
+    }
+
+    stream << static_cast<uint32_t>(snapshot.messages.size());
+    for (const auto& m : snapshot.messages) {
+        stream << m.messageId;
+        stream << m.senderId;
+        stream << m.senderName;
+        stream << m.senderIp;
+        stream << m.content;
+        stream << m.timestamp;
+        stream << static_cast<uint8_t>(m.isFile ? 1 : 0);
+        stream << m.filePath;
+        stream << m.fileSize;
+        stream << static_cast<uint8_t>(m.isDirectory ? 1 : 0);
+        stream << static_cast<uint8_t>(m.isImage ? 1 : 0);
+        stream << m.imageFileName;
+        stream << m.replyTo;
+        stream << m.replyContent;
+        stream << m.recallId;
+        stream << static_cast<uint8_t>(m.isRecalled ? 1 : 0);
+        stream << m.targetId;
+        stream << static_cast<uint8_t>(m.isGroup ? 1 : 0);
+        stream << static_cast<uint8_t>(m.isRead ? 1 : 0);
+        stream << m.readBy;
+    }
+
+    return data;
+}
+
+SyncSnapshot ProtocolManager::decodeSyncSnapshot(const QByteArray& data) {
+    SyncSnapshot snapshot;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> snapshot.version;
+
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        SyncSnapshot::Device d;
+        stream >> d.deviceId;
+        stream >> d.name;
+        stream >> d.ip;
+        stream >> d.port;
+        stream >> d.lastSeen;
+        stream >> d.updatedAt;
+        uint8_t isFriend;
+        stream >> isFriend;
+        d.isFriend = (isFriend != 0);
+        snapshot.devices.append(d);
+    }
+
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        SyncSnapshot::Group g;
+        stream >> g.groupId;
+        stream >> g.name;
+        uint32_t idCount;
+        stream >> idCount;
+        for (uint32_t i = 0; i < idCount; ++i) {
+            QString id;
+            stream >> id;
+            g.memberIds.append(id);
+        }
+        stream >> idCount;
+        for (uint32_t i = 0; i < idCount; ++i) {
+            QString name;
+            stream >> name;
+            g.memberNames.append(name);
+        }
+        stream >> g.createdAt;
+        stream >> g.updatedAt;
+        snapshot.groups.append(g);
+    }
+
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        SyncSnapshot::Setting s;
+        stream >> s.key;
+        stream >> s.value;
+        stream >> s.updatedAt;
+        snapshot.settings.append(s);
+    }
+
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        SyncSnapshot::Message m;
+        stream >> m.messageId;
+        stream >> m.senderId;
+        stream >> m.senderName;
+        stream >> m.senderIp;
+        stream >> m.content;
+        stream >> m.timestamp;
+        uint8_t isFile;
+        stream >> isFile;
+        m.isFile = (isFile != 0);
+        stream >> m.filePath;
+        stream >> m.fileSize;
+        uint8_t isDir;
+        stream >> isDir;
+        m.isDirectory = (isDir != 0);
+        uint8_t isImg;
+        stream >> isImg;
+        m.isImage = (isImg != 0);
+        stream >> m.imageFileName;
+        stream >> m.replyTo;
+        stream >> m.replyContent;
+        stream >> m.recallId;
+        uint8_t isRecalled;
+        stream >> isRecalled;
+        m.isRecalled = (isRecalled != 0);
+        stream >> m.targetId;
+        uint8_t isGroup;
+        stream >> isGroup;
+        m.isGroup = (isGroup != 0);
+        uint8_t isRead;
+        stream >> isRead;
+        m.isRead = (isRead != 0);
+        stream >> m.readBy;
+        snapshot.messages.append(m);
+    }
+
+    return snapshot;
+}
+
+QByteArray ProtocolManager::encodeSyncAck(const SyncAck& ack) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << ack.requestId;
+    stream << static_cast<uint8_t>(ack.success ? 1 : 0);
+    stream << static_cast<int32_t>(ack.appliedCount);
+    stream << ack.errorMessage;
+
+    return data;
+}
+
+SyncAck ProtocolManager::decodeSyncAck(const QByteArray& data) {
+    SyncAck ack;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> ack.requestId;
+    uint8_t success;
+    stream >> success;
+    ack.success = (success != 0);
+    stream >> ack.appliedCount;
+    stream >> ack.errorMessage;
+
+    return ack;
 }
 
 QByteArray ProtocolManager::encodeClipboardData(const ClipboardData& data) {
@@ -889,6 +1920,97 @@ SyncNotify ProtocolManager::decodeSyncNotify(const QByteArray& data) {
     note.size = size;
     note.mtime = mtime;
     return note;
+}
+
+// ────────── E2EE (End-to-End Encryption) encode/decode ──────────
+
+QByteArray ProtocolManager::encodeE2EEKeyExchange(const QByteArray& publicKey, const QString& sessionId) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << sessionId;
+    stream << publicKey;
+    return data;
+}
+
+QByteArray ProtocolManager::decodeE2EEKeyExchange(const QByteArray& data, QByteArray& publicKey, QString& sessionId) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> sessionId;
+    stream >> publicKey;
+    return data;
+}
+
+QByteArray ProtocolManager::encodeE2EEKeyResponse(const QByteArray& publicKey, const QByteArray& encryptedSharedSecret, const QString& sessionId) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << sessionId;
+    stream << publicKey;
+    stream << encryptedSharedSecret;
+    return data;
+}
+
+QByteArray ProtocolManager::decodeE2EEKeyResponse(const QByteArray& data, QByteArray& publicKey, QByteArray& encryptedSharedSecret, QString& sessionId) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> sessionId;
+    stream >> publicKey;
+    stream >> encryptedSharedSecret;
+    return data;
+}
+
+QByteArray ProtocolManager::encodeE2EESessionEstablished(const QString& sessionId, const QByteArray& encryptedNonce) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << sessionId;
+    stream << encryptedNonce;
+    return data;
+}
+
+QByteArray ProtocolManager::decodeE2EESessionEstablished(const QByteArray& data, QString& sessionId, QByteArray& encryptedNonce) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> sessionId;
+    stream >> encryptedNonce;
+    return data;
+}
+
+QByteArray ProtocolManager::encodeE2EEMessage(const QByteArray& encryptedPayload, const QString& sessionId, const QByteArray& nonce) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << sessionId;
+    stream << nonce;
+    stream << encryptedPayload;
+    return data;
+}
+
+QByteArray ProtocolManager::decodeE2EEMessage(const QByteArray& data, QByteArray& encryptedPayload, QString& sessionId, QByteArray& nonce) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> sessionId;
+    stream >> nonce;
+    stream >> encryptedPayload;
+    return data;
+}
+
+QByteArray ProtocolManager::encodeE2EEAck(const QString& sessionId, const QByteArray& messageId) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << sessionId;
+    stream << messageId;
+    return data;
+}
+
+QByteArray ProtocolManager::decodeE2EEAck(const QByteArray& data, QString& sessionId, QByteArray& messageId) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> sessionId;
+    stream >> messageId;
+    return data;
 }
 
 } // namespace xrk

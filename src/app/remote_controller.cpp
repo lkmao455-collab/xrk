@@ -8,6 +8,7 @@
 #include "hw/audio_capture.h"
 #include "nat_traversal.h"
 #include "p2p_manager.h"
+#include "connection_history_manager.h"
 #include <QThread>
 #include <QDataStream>
 
@@ -17,6 +18,15 @@ RemoteController::RemoteController(NetworkManager* network, SessionManager* sess
     : QObject(parent), m_network(network), m_session(session) {
     m_heartbeatTimer = new QTimer(this);
     connect(m_heartbeatTimer, &QTimer::timeout, this, &RemoteController::sendHeartbeat);
+    
+    // Initialize connection history manager
+    m_historyManager = new ConnectionHistoryManager(this);
+    connect(m_historyManager, &ConnectionHistoryManager::connectionRecorded, this, [this](const ConnectionRecord& record) {
+        LOG_DEBUG("Connection recorded: " + record.hostAddress + ":" + QString::number(record.hostPort));
+    });
+    connect(m_historyManager, &ConnectionHistoryManager::historyCleared, this, [this]() {
+        LOG_INFO("Connection history cleared");
+    });
 }
 
 RemoteController::~RemoteController() {
@@ -37,11 +47,26 @@ bool RemoteController::startRemote(const QString& ip, uint16_t port, const QStri
         return false;
     }
 
+    // Record connection attempt
+    xrk::ConnectionRecord record;
+    record.timestamp = QDateTime::currentDateTime();
+    record.hostAddress = ip;
+    record.hostPort = port;
+    record.deviceId = m_network->deviceId();
+    record.success = false;
+    record.reconnectAttempts = 0;
+
     auto conn = m_network->connectTo(ip, port);
     if (!conn) {
+        record.errorMessage = "Failed to establish TCP connection";
+        m_historyManager->recordConnection(record);
         LOG_ERROR("Failed to connect to " + ip + ":" + QString::number(port));
         return false;
     }
+
+    // Store connection start time for duration tracking
+    m_connectionStartTime = QDateTime::currentDateTime();
+    m_currentConnectionRecord = record;
 
     return setupConnection(conn, ip, TransportType::Lan, password);
 }
@@ -73,9 +98,10 @@ bool RemoteController::startRemoteByDevice(const QString& deviceId, const QStrin
 }
 
 bool RemoteController::setupConnection(std::shared_ptr<TcpConnection> conn, const QString& peerLabel,
-                                       TransportType transport, const QString& password) {
+                                        TransportType transport, const QString& password) {
     if (!conn) {
         LOG_ERROR("RemoteController: null connection");
+        recordConnectionResult(false, "Null connection");
         return false;
     }
 
@@ -86,12 +112,21 @@ bool RemoteController::setupConnection(std::shared_ptr<TcpConnection> conn, cons
     m_connection->setReconnectEnabled(useReconnect);
     m_connection->setReconnectInterval(3000);
     m_connection->setMaxReconnectAttempts(5);
+    // Enhanced reconnection config
+    m_connection->setReconnectConfig(1000, 30000, 2.0, 20);
 
     connect(m_connection.get(), &TcpConnection::readyRead, this, &RemoteController::onMessageReceived);
     connect(m_connection.get(), &TcpConnection::disconnected, this, &RemoteController::onConnectionLost);
     connect(m_connection.get(), &TcpConnection::reconnecting, this, &RemoteController::onReconnecting);
     connect(m_connection.get(), &TcpConnection::reconnected, this, &RemoteController::onReconnected);
     connect(m_connection.get(), &TcpConnection::reconnectFailed, this, &RemoteController::onReconnectFailed);
+    // Connect to enhanced signals
+    connect(m_connection.get(), &TcpConnection::stateChanged, this, [this](xrk::ConnectionState state) {
+        m_currentConnectionRecord.errorMessage = "State: " + QString::number(static_cast<int>(state));
+    });
+    connect(m_connection.get(), &TcpConnection::errorOccurred, this, [this](const QString& error) {
+        m_currentConnectionRecord.errorMessage = error;
+    });
 
     m_currentIp = peerLabel;
     m_currentPort = 0;
@@ -121,6 +156,8 @@ bool RemoteController::setupConnection(std::shared_ptr<TcpConnection> conn, cons
         }
     }
 
+    // Record successful connection
+    recordConnectionResult(true);
     LOG_INFO("Remote started (" + QString::number(static_cast<int>(transport)) + ") to " + peerLabel);
     return true;
 }
@@ -128,6 +165,11 @@ bool RemoteController::setupConnection(std::shared_ptr<TcpConnection> conn, cons
 void RemoteController::stopRemote() {
     if (!m_active && !m_p2pInProgress) {
         return;
+    }
+
+    // Record connection result if we had an active connection
+    if (m_connectionStartTime.isValid()) {
+        recordConnectionResult(true);  // Normal disconnect is success
     }
 
     m_active = false;
@@ -155,18 +197,7 @@ void RemoteController::stopRemote() {
         m_connection.reset();
     }
 
-    if (m_session && !m_currentSessionId.isEmpty()) {
-        m_session->closeSession(m_currentSessionId);
-    }
-
-    QString ip = m_currentIp;
-    m_currentIp.clear();
-    m_currentPort = 0;
-    m_currentSessionId.clear();
-    m_password.clear();
-
     emit remoteStopped();
-    LOG_INFO("Remote stopped from " + ip);
 }
 
 bool RemoteController::isRemoteActive() const {
@@ -284,6 +315,164 @@ void RemoteController::sendChatMessage(const QString& message) {
     QByteArray payload = ProtocolManager::encodeChatMessage(chat);
     QByteArray msg = ProtocolManager::encode(MessageType::CHAT_MESSAGE, payload, m_currentSessionId);
     m_connection->send(msg);
+}
+
+void RemoteController::sendVoiceMessageProtocol(const QByteArray& voiceData, int duration) {
+    if (!m_active || !m_connection) return;
+    
+    VoiceMessage voiceMsg;
+    voiceMsg.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    voiceMsg.senderId = m_currentSessionId;
+    voiceMsg.senderName = "Me";
+    voiceMsg.voiceData = voiceData;
+    voiceMsg.voiceFileName = "voice_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".pcm";
+    voiceMsg.duration = duration;
+    voiceMsg.timestamp = QDateTime::currentMSecsSinceEpoch();
+    voiceMsg.isRead = false;
+    
+    QByteArray payload = ProtocolManager::encodeVoiceMessage(voiceMsg);
+    QByteArray message = ProtocolManager::encode(MessageType::VOICE_MSG, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendVideoMessageProtocol(const QByteArray& videoData, int duration, double width, double height) {
+    if (!m_active || !m_connection) return;
+    
+    VideoMessage videoMsg;
+    videoMsg.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    videoMsg.senderId = m_currentSessionId;
+    videoMsg.senderName = "Me";
+    videoMsg.videoData = videoData;
+    videoMsg.videoFileName = "video_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".mp4";
+    videoMsg.duration = duration;
+    videoMsg.width = width;
+    videoMsg.height = height;
+    videoMsg.timestamp = QDateTime::currentMSecsSinceEpoch();
+    videoMsg.isRead = false;
+    
+    QByteArray payload = ProtocolManager::encodeVideoMessage(videoMsg);
+    QByteArray message = ProtocolManager::encode(MessageType::VIDEO_MSG, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendLocationMessageProtocol(double latitude, double longitude, const QString& name) {
+    if (!m_active || !m_connection) return;
+    
+    LocationMessage locMsg;
+    locMsg.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    locMsg.senderId = m_currentSessionId;
+    locMsg.senderName = "Me";
+    locMsg.latitude = latitude;
+    locMsg.longitude = longitude;
+    locMsg.locationName = name;
+    locMsg.timestamp = QDateTime::currentMSecsSinceEpoch();
+    locMsg.isRead = false;
+    
+    QByteArray payload = ProtocolManager::encodeLocationMessage(locMsg);
+    QByteArray message = ProtocolManager::encode(MessageType::LOCATION_MSG, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendCardMessageProtocol(const QString& vCardData) {
+    if (!m_active || !m_connection) return;
+    
+    CardMessage cardMsg;
+    cardMsg.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    cardMsg.senderId = m_currentSessionId;
+    cardMsg.senderName = "Me";
+    cardMsg.vCardData = vCardData;
+    cardMsg.timestamp = QDateTime::currentMSecsSinceEpoch();
+    cardMsg.isRead = false;
+    
+    QByteArray payload = ProtocolManager::encodeCardMessage(cardMsg);
+    QByteArray message = ProtocolManager::encode(MessageType::CARD_MSG, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendMergeForwardMessageProtocol(const QList<ForwardedMessage>& messages) {
+    if (!m_active || !m_connection) return;
+    
+    MergeForwardMessage mergeMsg;
+    mergeMsg.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    mergeMsg.senderId = m_currentSessionId;
+    mergeMsg.senderName = "Me";
+    mergeMsg.messages = messages;
+    mergeMsg.timestamp = QDateTime::currentMSecsSinceEpoch();
+    mergeMsg.isRead = false;
+    
+    QByteArray payload = ProtocolManager::encodeMergeForwardMessage(mergeMsg);
+    QByteArray message = ProtocolManager::encode(MessageType::MERGE_FORWARD, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::initiateCall(const QString& callType, const QString& sdp) {
+    if (!m_active || !m_connection) return;
+    
+    CallInvite invite;
+    invite.callId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    invite.callerId = m_currentSessionId;
+    invite.callerName = "Me";
+    invite.callType = callType;
+    invite.sdp = sdp;
+    invite.timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    QByteArray payload = ProtocolManager::encodeCallInvite(invite);
+    QByteArray message = ProtocolManager::encode(MessageType::CALL_INVITE, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::acceptCall(const QString& callId, const QString& sdp) {
+    if (!m_active || !m_connection) return;
+    
+    CallAccept accept;
+    accept.callId = callId;
+    accept.calleeId = m_currentSessionId;
+    accept.sdp = sdp;
+    accept.timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    QByteArray payload = ProtocolManager::encodeCallAccept(accept);
+    QByteArray message = ProtocolManager::encode(MessageType::CALL_ACCEPT, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::rejectCall(const QString& callId, const QString& reason) {
+    if (!m_active || !m_connection) return;
+    
+    CallReject reject;
+    reject.callId = callId;
+    reject.calleeId = m_currentSessionId;
+    reject.reason = reason;
+    reject.timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    QByteArray payload = ProtocolManager::encodeCallReject(reject);
+    QByteArray message = ProtocolManager::encode(MessageType::CALL_REJECT, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::endCall(const QString& callId) {
+    if (!m_active || !m_connection) return;
+    
+    CallEnd end;
+    end.callId = callId;
+    end.peerId = m_currentSessionId;
+    end.timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    QByteArray payload = ProtocolManager::encodeCallEnd(end);
+    QByteArray message = ProtocolManager::encode(MessageType::CALL_END, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendIceCandidate(const QString& callId, const QString& candidate) {
+    if (!m_active || !m_connection) return;
+    
+    IceCandidate ice;
+    ice.callId = callId;
+    ice.candidate = candidate;
+    ice.timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    QByteArray payload = ProtocolManager::encodeIceCandidate(ice);
+    QByteArray message = ProtocolManager::encode(MessageType::ICE_CANDIDATE, payload, m_currentSessionId);
+    m_connection->send(message);
 }
 
 void RemoteController::startRecording(const QString& filePath, int fps) {
@@ -474,10 +663,17 @@ void RemoteController::onMessageReceived(const QByteArray& data) {
 void RemoteController::onConnectionLost(const QString& deviceId) {
     if (m_active) {
         LOG_WARNING("Connection lost, waiting for reconnect...");
+        // Record failed connection if not reconnecting
+        if (m_connection && !m_connection->isReconnectEnabled()) {
+            recordConnectionResult(false, "Connection lost");
+        }
     }
 }
 
 void RemoteController::onReconnecting(int attempt, int maxAttempts) {
+    if (m_connectionStartTime.isValid()) {
+        m_currentConnectionRecord.reconnectAttempts = attempt;
+    }
     emit reconnecting(attempt, maxAttempts);
     LOG_INFO("Reconnecting: " + QString::number(attempt) + "/" + QString::number(maxAttempts));
 }
@@ -495,6 +691,7 @@ void RemoteController::onReconnectFailed() {
     m_active = false;
     emit reconnectFailed();
     LOG_ERROR("Reconnect failed to " + m_currentIp);
+    recordConnectionResult(false, "Reconnection failed after max attempts", m_currentConnectionRecord.reconnectAttempts);
 }
 
 void RemoteController::processMessage(MessageType type, const QByteArray& payload) {
@@ -569,6 +766,151 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
             }
             break;
         }
+        case MessageType::VOICE_MSG: {
+            if (m_audioPlayer && m_audioPlayer->isInitialized()) {
+                m_audioPlayer->playAudio(payload);
+            }
+            QByteArray ack = ProtocolManager::encode(MessageType::VOICE_ACK, QByteArray("OK"), m_currentSessionId);
+            m_connection->send(ack);
+            LOG_INFO("Voice message received and played");
+            break;
+        }
+        case MessageType::VOICE_ACK: {
+            LOG_INFO("Voice message delivery confirmed by host");
+            break;
+        }
+        case MessageType::VIDEO_MSG: {
+            // Video message received - for now just log and send ACK
+            // Full video playback would require video player component
+            QByteArray ack = ProtocolManager::encode(MessageType::VIDEO_ACK, QByteArray("OK"), m_currentSessionId);
+            m_connection->send(ack);
+            LOG_INFO("Video message received");
+            break;
+        }
+        case MessageType::VIDEO_ACK: {
+            LOG_INFO("Video message delivery confirmed by host");
+            break;
+        }
+        case MessageType::LOCATION_MSG: {
+            QByteArray ack = ProtocolManager::encode(MessageType::LOCATION_ACK, QByteArray("OK"), m_currentSessionId);
+            m_connection->send(ack);
+            LOG_INFO("Location message received");
+            break;
+        }
+        case MessageType::LOCATION_ACK: {
+            LOG_INFO("Location message delivery confirmed by host");
+            break;
+        }
+        case MessageType::CARD_MSG: {
+            QByteArray ack = ProtocolManager::encode(MessageType::CARD_ACK, QByteArray("OK"), m_currentSessionId);
+            m_connection->send(ack);
+            LOG_INFO("Card message received");
+            break;
+        }
+        case MessageType::CARD_ACK: {
+            LOG_INFO("Card message delivery confirmed by host");
+            break;
+        }
+        case MessageType::MERGE_FORWARD: {
+            QByteArray ack = ProtocolManager::encode(MessageType::MERGE_FORWARD_ACK, QByteArray("OK"), m_currentSessionId);
+            m_connection->send(ack);
+            LOG_INFO("Merge forward message received");
+            break;
+        }
+        case MessageType::MERGE_FORWARD_ACK: {
+            LOG_INFO("Merge forward message delivery confirmed by host");
+            break;
+        }
+        case MessageType::CALL_INVITE: {
+            CallInvite invite = ProtocolManager::decodeCallInvite(payload);
+            emit incomingCall(invite.callId, invite.callerName, invite.callType, invite.sdp);
+            break;
+        }
+        case MessageType::CALL_ACCEPT: {
+            CallAccept accept = ProtocolManager::decodeCallAccept(payload);
+            emit callAccepted(accept.callId, accept.sdp);
+            break;
+        }
+        case MessageType::CALL_REJECT: {
+            CallReject reject = ProtocolManager::decodeCallReject(payload);
+            emit callRejected(reject.callId, reject.reason);
+            break;
+        }
+        case MessageType::CALL_END: {
+            CallEnd end = ProtocolManager::decodeCallEnd(payload);
+            emit callEnded(end.callId);
+            break;
+        }
+        case MessageType::ICE_CANDIDATE: {
+            IceCandidate candidate = ProtocolManager::decodeIceCandidate(payload);
+            emit iceCandidateReceived(candidate.callId, candidate.candidate);
+            break;
+        }
+        case MessageType::VIDEO_CALL_START: {
+            VideoCallStart start = ProtocolManager::decodeVideoCallStart(payload);
+            emit videoCallStarted(start.callId, start.width, start.height, start.fps);
+            break;
+        }
+        case MessageType::VIDEO_CALL_STOP: {
+            VideoCallStop stop = ProtocolManager::decodeVideoCallStop(payload);
+            emit videoCallStopped(stop.callId);
+            break;
+        }
+        case MessageType::VIDEO_CALL_FRAME: {
+            VideoCallFrame frame = ProtocolManager::decodeVideoCallFrame(payload);
+            emit videoCallFrameReceived(frame.callId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_START: {
+            ScreenShareStart start = ProtocolManager::decodeScreenShareStart(payload);
+            emit screenShareStarted(start.sessionId, start.width, start.height, start.fps);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_STOP: {
+            ScreenShareStop stop = ProtocolManager::decodeScreenShareStop(payload);
+            emit screenShareStopped(stop.sessionId);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_FRAME: {
+            ScreenShareFrame frame = ProtocolManager::decodeScreenShareFrame(payload);
+            emit screenShareFrameReceived(frame.sessionId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
+            break;
+        }
+        case MessageType::GROUP_ANNOUNCEMENT: {
+            GroupAnnouncement announcement = ProtocolManager::decodeGroupAnnouncement(payload);
+            emit groupAnnouncementReceived(announcement.groupId, announcement.groupName, announcement.announcement, announcement.announcerId, announcement.announcerName);
+            break;
+        }
+        case MessageType::GROUP_MENTION: {
+            GroupMention mention = ProtocolManager::decodeGroupMention(payload);
+            emit groupMentionReceived(mention.groupId, mention.groupName, mention.message, mention.mentionedMemberIds, mention.mentionedMemberNames, mention.senderId, mention.senderName);
+            break;
+        }
+        case MessageType::GROUP_VOTE: {
+            GroupVote vote = ProtocolManager::decodeGroupVote(payload);
+            emit groupVoteReceived(vote.groupId, vote.groupName, vote.voteTitle, vote.options, vote.durationSeconds, vote.creatorId, vote.creatorName);
+            break;
+        }
+        case MessageType::GROUP_FILE: {
+            GroupFile file = ProtocolManager::decodeGroupFile(payload);
+            emit groupFileReceived(file.groupId, file.groupName, file.fileId, file.fileName, file.fileSize, file.md5, file.uploaderId, file.uploaderName);
+            break;
+        }
+        case MessageType::GROUP_ALBUM: {
+            GroupAlbum album = ProtocolManager::decodeGroupAlbum(payload);
+            emit groupAlbumReceived(album.groupId, album.groupName, album.albumId, album.albumName, album.fileIds, album.fileNames, album.creatorId, album.creatorName);
+            break;
+        }
+        case MessageType::GROUP_TODO: {
+            GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
+            emit groupTodoReceived(todo.groupId, todo.groupName, todo.todoId, todo.title, todo.description, todo.status, todo.priority, todo.assigneeId, todo.assigneeName, todo.creatorId, todo.creatorName, todo.dueDate);
+            break;
+        }
+        case MessageType::GROUP_TODO_UPDATE: {
+            GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
+            emit groupTodoUpdated(todo.groupId, todo.groupName, todo.todoId, todo.status);
+            break;
+        }
         case MessageType::MONITOR_LIST: {
             QList<MonitorInfo> monitors = ProtocolManager::decodeMonitorList(payload);
             emit monitorListReceived(monitors);
@@ -600,6 +942,14 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
 }
 
 void RemoteController::handleScreenFrame(const QByteArray& data) {
+    static bool firstRecv = false;
+    if (!firstRecv) {
+        firstRecv = true;
+        LOG_INFO("[DIAG] Controller: FIRST SCREEN_FRAME received, size=" +
+                 QString::number(data.size()) + "B, decodeWorker=" +
+                 QString(m_decodeRunning ? "on" : "off"));
+    }
+
     if (m_decodeQueue && m_decodeRunning) {
         if (!m_decodeQueue->enqueueNonBlocking(data)) {
             static int dropCount = 0;
@@ -621,6 +971,13 @@ void RemoteController::handleScreenFrame(const QByteArray& data) {
     QByteArray frameData = data;
     if (hasEncryption) {
         frameData = m_encryption->decrypt(data);
+        static bool firstDecrypt = false;
+        if (!firstDecrypt) {
+            firstDecrypt = true;
+            LOG_INFO("[DIAG] Controller: FIRST frame decrypt " +
+                     QString(frameData.isEmpty() ? "FAILED (empty result)" :
+                             "OK, size=" + QString::number(frameData.size()) + "B"));
+        }
         if (frameData.isEmpty()) {
             ++decryptFailCount;
             if (decryptFailCount <= 5 || decryptFailCount % 300 == 0) {
@@ -636,6 +993,7 @@ void RemoteController::handleScreenFrame(const QByteArray& data) {
         return;
     }
 
+    reportFrameDecodeResult(frame.format, true);
     emit screenFrameReceived(frame);
 }
 
@@ -664,6 +1022,13 @@ void RemoteController::startDecodeWorker() {
             QByteArray frameData = data;
             if (hasEncryption) {
                 frameData = m_encryption->decrypt(data);
+                static bool firstDecrypt = false;
+                if (!firstDecrypt) {
+                    firstDecrypt = true;
+                    LOG_INFO("[DIAG] Controller: (decode-worker) FIRST frame decrypt " +
+                             QString(frameData.isEmpty() ? "FAILED (empty result)" :
+                                     "OK, size=" + QString::number(frameData.size()) + "B"));
+                }
                 if (frameData.isEmpty()) {
                     ++decryptFailCount;
                     if (decryptFailCount <= 5 || decryptFailCount % 300 == 0) {
@@ -681,9 +1046,11 @@ void RemoteController::startDecodeWorker() {
                                 QString::number(frame.width) + " h=" + QString::number(frame.height) +
                                 " dataSz=" + QString::number(frame.data.size()));
                 }
+                reportFrameDecodeResult(frame.format, false);
                 continue;
             }
 
+            reportFrameDecodeResult(frame.format, true);
             if (frameCount <= 5 || frameCount % 300 == 1) {
                 LOG_INFO("[Decode#" + QString::number(frameCount) + "] OK " +
                          QString::number(frame.width) + "x" + QString::number(frame.height));
@@ -712,6 +1079,28 @@ void RemoteController::stopDecodeWorker() {
         m_decodeQueue = nullptr;
     }
     LOG_INFO("RemoteController: decode worker stopped");
+}
+
+void RemoteController::reportFrameDecodeResult(FrameFormat format, bool ok) {
+    if (format != FrameFormat::H264) {
+        // JPEG (or unknown) decoded fine -> reset any H264 streak.
+        m_h264FailStreak = 0;
+        return;
+    }
+    if (ok) {
+        m_h264FailStreak = 0;
+        return;
+    }
+    ++m_h264FailStreak;
+    // After a short streak of H264 decode failures, ask the host to switch to
+    // JPEG. This is a one-shot request: once sent we stop nagging, and the host
+    // only moves to H264 again if the user explicitly picks the game gear.
+    if (!m_h264FallbackRequested && m_h264FailStreak >= 30) {
+        m_h264FallbackRequested = true;
+        LOG_WARNING("[Decode] " + QString::number(m_h264FailStreak) +
+                    " consecutive H264 decode failures - requesting host switch to JPEG");
+        sendQualityLevel(QualityLevel::MEDIUM, false);
+    }
 }
 
 void RemoteController::handleAuthResponse(const QByteArray& data) {
@@ -768,6 +1157,9 @@ void RemoteController::handleAuthResponse(const QByteArray& data) {
         emit authSuccess();
         requestMonitorList();
         m_heartbeatTimer->start(2000);
+        // New session: clear any prior H264 decode-fallback state.
+        m_h264FailStreak = 0;
+        m_h264FallbackRequested = false;
         LOG_INFO("Authentication successful");
     } else if (responseStr == "NO") {
         // "NOT_AUTHORIZED" check
@@ -885,6 +1277,30 @@ void RemoteController::onBridgeSocketReady(QTcpSocket* socket, const QByteArray&
     }
     LOG_INFO("RemoteController: relay bridge connection established");
     setupConnection(conn, m_pendingDeviceId, TransportType::Relay, m_pendingPassword);
+}
+
+void RemoteController::recordConnectionResult(bool success, const QString& errorMsg, int reconnectAttempts) {
+    if (!m_connectionStartTime.isValid()) {
+        return;
+    }
+
+    qint64 duration = m_connectionStartTime.msecsTo(QDateTime::currentDateTime());
+    
+    xrk::ConnectionRecord record = m_currentConnectionRecord;
+    record.success = success;
+    record.errorMessage = errorMsg;
+    record.duration = duration;
+    record.reconnectAttempts = reconnectAttempts;
+    record.bytesSent = m_connection ? m_connection->bytesWritten() : 0;
+    record.bytesReceived = m_connection ? m_connection->bytesAvailable() : 0;
+    // Try to get bytes from TcpConnection history if available
+    if (m_connection) {
+        record.bytesSent = m_connection->bytesWritten();
+        // bytesReceived is not directly accessible, use 0
+    }
+
+    m_historyManager->recordConnection(record);
+    m_connectionStartTime = QDateTime();  // Reset
 }
 
 } // namespace xrk

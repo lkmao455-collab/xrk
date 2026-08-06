@@ -203,7 +203,14 @@ QString ClipboardHistory::generateId() const {
 }
 
 QString ClipboardHistory::createPreview(const QString& mimeType, const QByteArray& data) const {
-    if (mimeType.startsWith("text/")) {
+    if (mimeType == "text/uri-list") {
+        QString text = QString::fromUtf8(data);
+        QStringList urls = text.split("\n", Qt::SkipEmptyParts);
+        if (urls.size() == 1) {
+            return urls.first().trimmed();
+        }
+        return QString("[%1 files/items]").arg(urls.size());
+    } else if (mimeType.startsWith("text/")) {
         QString text = QString::fromUtf8(data);
         text.replace("\n", " ");
         text.replace("\r", "");
@@ -213,13 +220,6 @@ QString ClipboardHistory::createPreview(const QString& mimeType, const QByteArra
         return text;
     } else if (mimeType == "image/png" || mimeType == "image/jpeg") {
         return "[Image " + QString::number(data.size()) + " bytes]";
-    } else if (mimeType == "text/uri-list") {
-        QString text = QString::fromUtf8(data);
-        QStringList urls = text.split("\n", Qt::SkipEmptyParts);
-        if (urls.size() == 1) {
-            return urls.first().trimmed();
-        }
-        return QString("[%1 files/items]").arg(urls.size());
     }
     return "[" + mimeType + " " + QString::number(data.size()) + " bytes]";
 }

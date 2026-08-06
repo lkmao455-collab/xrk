@@ -10,12 +10,13 @@
 #include "core/types.h"
 #include "core/encryption.h"
 #include "core/frame_queue.h"
+#include "core/tcp_connection.h"
+#include "connection_history_manager.h"
 
 namespace xrk {
 
 class NetworkManager;
 class SessionManager;
-class TcpConnection;
 class AudioPlayer;
 class AudioCapture;
 class NatTraversal;
@@ -58,6 +59,16 @@ public:
     void sendTerminalStop();
     void requestScreenshot();
     void sendChatMessage(const QString& message);
+    void sendVoiceMessageProtocol(const QByteArray& voiceData, int duration);
+    void sendVideoMessageProtocol(const QByteArray& videoData, int duration, double width, double height);
+    void sendLocationMessageProtocol(double latitude, double longitude, const QString& name);
+    void sendCardMessageProtocol(const QString& vCardData);
+    void sendMergeForwardMessageProtocol(const QList<ForwardedMessage>& messages);
+    void initiateCall(const QString& callType, const QString& sdp);
+    void acceptCall(const QString& callId, const QString& sdp);
+    void rejectCall(const QString& callId, const QString& reason);
+    void endCall(const QString& callId);
+    void sendIceCandidate(const QString& callId, const QString& candidate);
     void requestFileBrowser(const QString& path);
     void requestSystemInfo();
     void startRecording(const QString& filePath = QString(), int fps = 30);
@@ -72,6 +83,13 @@ public:
     void requestMonitorList();
     void switchMonitor(int index);
     TcpConnection* connection() const { return m_connection.get(); }
+
+    // Observable latch for the H264-decide self-heal: true once the controller
+    // has asked the host to switch to JPEG after repeated H264 decode failures.
+    bool h264DecodeFallbackRequested() const { return m_h264FallbackRequested; }
+
+    // Connection history
+    ConnectionHistoryManager* historyManager() const { return m_historyManager; }
 
 signals:
     void remoteStarted(const QString& deviceId);
@@ -103,6 +121,36 @@ signals:
     void monitorListReceived(const QList<MonitorInfo>& monitors);
     void latencyUpdated(qint64 ms);
 
+    // VoIP signaling
+    void incomingCall(const QString& callId, const QString& callerName, const QString& callType, const QString& sdp);
+    void callAccepted(const QString& callId, const QString& sdp);
+    void callRejected(const QString& callId, const QString& reason);
+    void callEnded(const QString& callId);
+    void iceCandidateReceived(const QString& callId, const QString& candidate);
+
+    // Video call media
+    void videoCallStarted(const QString& callId, int width, int height, int fps);
+    void videoCallStopped(const QString& callId);
+    void videoCallFrameReceived(const QString& callId, const QByteArray& frameData, uint64_t timestamp, uint32_t sequenceNumber, bool isKeyFrame, qint64 captureTime);
+
+    // Screen sharing
+    void screenShareStarted(const QString& sessionId, int width, int height, int fps);
+    void screenShareStopped(const QString& sessionId);
+    void screenShareFrameReceived(const QString& sessionId, const QByteArray& frameData, uint64_t timestamp, uint32_t sequenceNumber, bool isKeyFrame, qint64 captureTime);
+
+    // Group chat advanced
+    void groupAnnouncementReceived(const QString& groupId, const QString& groupName, const QString& announcement, const QString& announcerId, const QString& announcerName);
+    void groupMentionReceived(const QString& groupId, const QString& groupName, const QString& message, const QStringList& mentionedMemberIds, const QStringList& mentionedMemberNames, const QString& senderId, const QString& senderName);
+    void groupVoteReceived(const QString& groupId, const QString& groupName, const QString& voteTitle, const QStringList& options, int durationSeconds, const QString& creatorId, const QString& creatorName);
+
+    // Group files/albums
+    void groupFileReceived(const QString& groupId, const QString& groupName, const QString& fileId, const QString& fileName, qint64 fileSize, const QString& md5, const QString& uploaderId, const QString& uploaderName);
+    void groupAlbumReceived(const QString& groupId, const QString& groupName, const QString& albumId, const QString& albumName, const QStringList& fileIds, const QStringList& fileNames, const QString& creatorId, const QString& creatorName);
+
+    // Group todos
+    void groupTodoReceived(const QString& groupId, const QString& groupName, const QString& todoId, const QString& title, const QString& description, int status, int priority, const QString& assigneeId, const QString& assigneeName, const QString& creatorId, const QString& creatorName, qint64 dueDate);
+    void groupTodoUpdated(const QString& groupId, const QString& groupName, const QString& todoId, int status);
+
 private slots:
     void onMessageReceived(const QByteArray& data);
     void onConnectionLost(const QString& deviceId);
@@ -118,6 +166,10 @@ private slots:
     void onPunchFailed();
     void onBridgeSocketReady(QTcpSocket* socket, const QByteArray& initialData);
     void onRelayFallbackTimeout();
+
+    // Track consecutive H264 decode failures; once a threshold is hit, ask the
+    // host to switch to the JPEG encoder so the desktop becomes visible.
+    void reportFrameDecodeResult(FrameFormat format, bool ok);
 
 private:
     void processMessage(MessageType type, const QByteArray& payload);
@@ -137,6 +189,7 @@ private:
                          TransportType transport, const QString& password);
     void beginP2PConnect(const QString& deviceId, const QString& password);
     void fallbackToRelay();
+    void recordConnectionResult(bool success, const QString& errorMsg = "", int reconnectAttempts = 0);
 
     NetworkManager* m_network = nullptr;
     SessionManager* m_session = nullptr;
@@ -159,6 +212,12 @@ private:
     QObject* m_decodeWorkerCtx = nullptr;
     std::atomic<bool> m_decodeRunning{false};
 
+    // H264 decode self-healing: if the host is sending H264 but our decoder
+    // cannot ingest the stream, ask the host to switch to JPEG so the desktop
+    // becomes visible instead of staying black.
+    int m_h264FailStreak = 0;
+    bool m_h264FallbackRequested = false;
+
     // P2P / relay state
     NatTraversal* m_nat = nullptr;
     P2PManager* m_p2p = nullptr;
@@ -172,6 +231,11 @@ private:
     QString m_pendingPassword;
     bool m_p2pInProgress = false;
     TransportType m_transport = TransportType::Unknown;
+    
+    // Connection tracking
+    ConnectionHistoryManager* m_historyManager = nullptr;
+    QDateTime m_connectionStartTime;
+    xrk::ConnectionRecord m_currentConnectionRecord;
 };
 
 } // namespace xrk

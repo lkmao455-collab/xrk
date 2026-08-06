@@ -3,6 +3,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #include <pdh.h>
 #include <psapi.h>
 #include <QDir>
@@ -98,12 +99,17 @@ SysInfo SystemInfoCollector::collect() {
 
     // Process count
     info.processCount = 0;
-    DWORD cbNeeded = 0;
-    if (EnumProcesses(nullptr, 0, &cbNeeded) && cbNeeded > 0) {
-        QVector<DWORD> processes(cbNeeded / sizeof(DWORD));
-        if (EnumProcesses(processes.data(), cbNeeded, &cbNeeded)) {
-            info.processCount = static_cast<int>(cbNeeded / sizeof(DWORD));
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(snapshot, &pe)) {
+            info.processCount = 1;
+            while (Process32NextW(snapshot, &pe)) {
+                ++info.processCount;
+            }
         }
+        CloseHandle(snapshot);
     }
 
     LOG_DEBUG("SysInfo collected: CPU=" + QString::number(info.cpuUsage, 'f', 1) +

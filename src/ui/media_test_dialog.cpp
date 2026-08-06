@@ -350,8 +350,28 @@ void MediaTestDialog::processFrame(const QImage& frame) {
 }
 
 QImage MediaTestDialog::applyBackgroundBlur(const QImage& frame) {
-    // Simplified blur - just return original for now
-    return frame;
+    // Simple 3x3 box blur for background effect
+    QImage result = frame.convertToFormat(QImage::Format_RGB32);
+    int w = result.width();
+    int h = result.height();
+    if (w < 3 || h < 3) return result;
+
+    QImage temp = result;
+    for (int y = 1; y < h - 1; ++y) {
+        for (int x = 1; x < w - 1; ++x) {
+            int r = 0, g = 0, b = 0;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    QRgb pixel = temp.pixel(x + dx, y + dy);
+                    r += qRed(pixel);
+                    g += qGreen(pixel);
+                    b += qBlue(pixel);
+                }
+            }
+            result.setPixel(x, y, qRgb(r / 9, g / 9, b / 9));
+        }
+    }
+    return result;
 }
 
 QImage MediaTestDialog::applyGlassEffect(const QImage& frame) {

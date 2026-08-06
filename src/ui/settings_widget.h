@@ -26,6 +26,7 @@ public:
     QString deviceName() const;
     int fps() const;
     bool privacyScreenEnabled() const;
+    bool autoGrantConsentEnabled() const;
     bool trueColorEnabled() const;
 
     // Relay
@@ -49,6 +50,7 @@ private:
     QCheckBox* m_autoDiscoveryCheckBox = nullptr;
     QCheckBox* m_encryptionCheckBox = nullptr;
     QCheckBox* m_privacyScreenCheckBox = nullptr;
+    QCheckBox* m_autoGrantConsentCheckBox = nullptr;
     QCheckBox* m_trueColorCheckBox = nullptr;
     QSpinBox* m_fpsSpinBox = nullptr;
 

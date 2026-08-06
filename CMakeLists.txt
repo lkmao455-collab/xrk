@@ -9,22 +9,30 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Core Gui Multimedia MultimediaWidgets Test)
+# Optimize for faster builds
+if(MSVC)
+    # Enable multi-processor compilation (/MP) and UTF-8 source charset
+    add_compile_options(/permissive- /Zc:__cplusplus /utf-8 /MP)
+endif()
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Core Gui Multimedia MultimediaWidgets Sql Test WebSockets)
 
 enable_testing()
+set(XRK_GTEST_AVAILABLE FALSE)
 find_package(GTest QUIET)
-if(NOT GTest_FOUND)
-    message(STATUS "GTest not found via find_package; fetching from source via FetchContent")
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.14.0
-    )
-    # For Windows: prevent overriding the parent project's compiler/linker settings
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-    set(GTest_FOUND TRUE)
+if(GTest_FOUND)
+    set(XRK_GTEST_AVAILABLE TRUE)
+    message(STATUS "GTest found via find_package")
+else()
+    # Check if source was already fetched
+    if(EXISTS "${CMAKE_BINARY_DIR}/_deps/googletest-src/CMakeLists.txt")
+        message(STATUS "GTest source already fetched, reusing cached version")
+        add_subdirectory("${CMAKE_BINARY_DIR}/_deps/googletest-src"
+                         "${CMAKE_BINARY_DIR}/_deps/googletest-build")
+        set(XRK_GTEST_AVAILABLE TRUE)
+    else()
+        message(STATUS "GTest not found; tests will be skipped (fetching from GitHub timed out previously)")
+    endif()
 endif()
 
 # Translation files
@@ -56,4 +64,9 @@ else()
 endif()
 
 add_subdirectory(src)
-add_subdirectory(tests)
+add_subdirectory(tools)
+if(XRK_GTEST_AVAILABLE)
+    add_subdirectory(tests)
+else()
+    message(STATUS "Skipping tests (GTest not available)")
+endif()

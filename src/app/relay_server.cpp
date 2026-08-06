@@ -60,6 +60,17 @@ void RelayServer::setSecret(const QString& secret) {
 
 void RelayServer::setDeviceRegistry(DeviceRegistry* registry) {
     m_deviceRegistry = registry;
+    if (m_deviceRegistry) {
+        connect(m_deviceRegistry, &DeviceRegistry::deviceListChanged, this, [this]() {
+            LOG_DEBUG("RelayServer: device list changed, peers: " + QString::number(m_registeredPeers.size()));
+        });
+        connect(m_deviceRegistry, &DeviceRegistry::deviceRegistered, this, [this](const QString& deviceId) {
+            LOG_INFO("RelayServer: device registered: " + deviceId);
+        });
+        connect(m_deviceRegistry, &DeviceRegistry::deviceRemoved, this, [this](const QString& deviceId) {
+            LOG_INFO("RelayServer: device removed: " + deviceId);
+        });
+    }
 }
 
 DeviceRegistry* RelayServer::deviceRegistry() const {

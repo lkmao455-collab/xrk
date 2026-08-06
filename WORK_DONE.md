@@ -43,7 +43,7 @@
 | DeviceManager | device_manager.h/cpp | 设备列表管理，增删改查 |
 | SessionManager | session_manager.h/cpp | 会话管理，创建/关闭/过期清理 |
 | RemoteController | remote_controller.h/cpp | 远程控制客户端，连接/发送输入/接收画面 |
-| SecurityManager | security_manager.h/cpp | 安全管理，设备ID/Token生成 |
+| SecurityManager | security_manager.h/cpp | 安全管理，设备ID/Token生成，端到端加密（ECDH+AES-256-GCM）|
 | FileTransferManager | file_transfer_manager.h/cpp | 文件传输，支持上传/下载/暂停/取消 |
 | Host | host.h/cpp | 被控端服务，多线程架构（采集/编码/网络分离）|
 | ClipboardManager | clipboard_manager.h/cpp | 剪贴板同步，监控系统剪贴板变化并自动同步 |
@@ -134,6 +134,14 @@
 - [x] 传输速度显示
 - [x] 暂停/恢复传输
 - [x] 取消传输
+- [x] 断点续传（Phase A4）
+  - SHA-256校验和计算与验证
+  - 传输偏移量追踪与恢复
+  - 会话ID用于传输追踪
+  - 数据库持久化（checksum、resume_offset、session_id字段）
+  - FILE_CHECKSUM协议消息（MessageType 43）编解码
+  - 数据库模式迁移v3（新增checksum/resume_offset/session_id列）
+  - 单元测试（7个新用例：偏移量查询、校验和查询、恢复检查、恢复传输、协议往返、校验和验证、传输记录）
 
 ### 连接历史
 - [x] 保存连接历史到配置文件
@@ -345,7 +353,7 @@
 | 设备发现 | ✅ UDP广播 |
 | 连接认证 | ✅ 密码验证 |
 | 断线重连 | ✅ 自动重连 |
-| 文件传输 | ✅ 上传/下载 |
+| 文件传输 | ✅ 上传/下载/暂停/取消/断点续传 |
 | 连接历史 | ✅ 保存/加载 |
 | 性能优化 | ✅ 帧间差分 |
 | 用户体验 | ✅ 快捷键 |
@@ -381,6 +389,82 @@
 | 飞鸽传书单元测试 | ✅ test_database_manager(17)+test_ipmsg_crypto(13)=30用例全通过 |
 | 飞鸽传书E1多设备同步 | ✅ 同账号多PC同步: 快照协议(SYNC_REQUEST/SNAPSHOT/ACK)+LWW合并+密钥鉴权+同步UI+8新用例(38用例全通过) |
 | 全量测试修复 | ✅ 全量189用例无崩溃(NetworkTest ARP悬垂this→QPointer) + 修复3个环境性失败(Microphone音量float EXPECT_NEAR / Clipboard先clear再setMimeData+轮询 / HostAuth先grantConsent再等AUTH_RESP), 全量188用例通过 |
+| 文件断点续传Phase A4 | ✅ 文件断点续传: SHA-256校验和、偏移量追踪、会话ID、数据库持久化、协议编解码、单元测试 |
+| 飞鸽传书UI图标优化 | ✅ IPMsgWidget工具栏/聊天头部按钮: 13个SVG图标替换emoji、QIcon集成、qrc注册、工具提示、图标尺寸统一 |
+| 群组实时统计面板 | ✅ GroupStatisticsWidget: 核心指标(成员/在线/离线/管理员/活跃度/消息/文件/时长/活跃率)、活动图表、成员分布、性能指标、智能洞察、自动刷新、平滑动画、仅群聊显示 |
+| 群组成员管理面板 | ✅ GroupMemberManagementWidget: 成员列表(头像/在线状态/角色徽标)、在线统计、角色管理(设/撤管理员/踢出)、私聊/资料、搜索过滤、邀请成员、空状态、列表动画、仅群聊显示 |
+| 消息搜索增强 | ✅ ChatSearchWidget悬浮搜索面板 + Ctrl+F快捷键 + 内存消息存储 + QTextBrowser高亮匹配 + 上下导航 + 匹配计数 + 联系人切换自动清除搜索状态 |
+| 群聊设置增强 | ✅ 消息免打扰开关(群级DND) + 查看群公告历史 + 分区UI(基本信息/成员管理/通知设置/快捷操作) |
+| 消息多选增强 | ✅ 批量操作实际生效(内存删除/转发/复制) + 全选按钮 + 点击消息选择(select://链接) + 选中高亮 |
+| 群公告置顶展示 | ✅ 进入群聊时自动在聊天顶部显示最新群公告(渐变卡片+左侧蓝色边框) |
+| 面板布局修复 | ✅ 统计面板/成员管理面板插入rightLayout + 修复自引用bug + 投票选项bug修复 |
+| 富文本消息渲染 | ✅ 语音消息卡片(绿色渐变+播放提示) + 视频消息卡片(紫色渐变+分辨率) + 位置消息卡片(蓝色渐变+地图链接) + 名片消息卡片(橙色渐变+添加好友) |
+| 合并转发消息渲染 | ✅ 合并转发消息卡片(靛蓝渐变+JSON解析+折叠显示) + 信号连接 + 消息持久化 |
+| 文件夹拖拽发送 | ✅ dropEvent支持文件夹拖拽识别 + emit sendFolder信号 + 文件夹消息显示 |
+| 语音/视频通话类型区分 | ✅ IPMsgManager::initiateCall新增callType参数(voice/video/screen) + UI按钮正确传递类型 + 修复视频通话不可达问题 |
+| 投票响应反馈 | ✅ 连接groupVoteResponseReceived信号 + onGroupVoteResponseReceived槽 + 聊天区显示系统消息"[用户 投票了: 选项X]" |
+| 数据同步反馈 | ✅ 连接dataSynced信号 + onDataSynced槽 + 状态栏显示"多端数据同步完成" + 刷新联系人列表 |
+| VoIP通话窗口增强 | ✅ 通话计时器(00:00格式每秒更新) + 静音/取消静音切换按钮 + 开启/关闭摄像头切换按钮 + 窗口扩展至320x180 + endCallInternal正确清理计时器 |
+| Web客户端AES解密修复 | ✅ 新增crypto.ts: importSessionKey+decryptFrame(Web Crypto AES-256-CBC) + useWebSocket.ts集成AUTH_RESP提取密钥/IV、SCREEN_FRAME解密再decode + protocol.ts修正decodeScreenFrame字节偏移(dataSize@offset16, data@offset20) |
+| Web客户端部署更新 | ✅ web-client/dist部署到resources/web + xrk.qrc已包含最新资源hash(index-ChLrSEVe.js/index-FtecoFfX.css) + 重新编译xrk.exe包含新Web资源 |
+| 控制端黑屏修复 | ✅ 根因: consent授权流程阻断画面发送 (clients=0). 修复: 自动授权私有IP范围(127.0.0.1/8, 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) + 自动授权设置 + H264空帧自动回退JPEG + 增强日志 |
+ 
+## 📊 群组实时统计面板 ✅
+ 
+### 已完成
+1. ✅ `GroupStatisticsWidget` 核心组件（group_statistics_widget.h/cpp）
+2. ✅ 核心指标面板：总成员、在线、离线、管理员、活跃度、消息数、文件分享、平均时长、活跃率
+3. ✅ 实时动画更新：数值变化时平滑淡入淡出+颜色过渡动画
+4. ✅ 24小时活跃度趋势图：柱状图可视化
+5. ✅ 成员分布可视化：在线/离线/管理员/普通成员分布
+6. ✅ 性能指标面板：响应时间、吞吐量、错误率、在线率
+7. ✅ 智能洞察：AI驱动的群组运营建议
+8. ✅ 自动刷新：每5秒自动更新，支持手动刷新
+9. ✅ 仅群聊显示：智能切换，私聊时自动隐藏
+10. ✅ IPMsgWidget集成：聊天头部统计按钮、面板滑入/滑出、群切换自动更新数据
+ 
+### 技术实现
+- 新增文件：`src/ui/group_statistics_widget.h/cpp`
+- 集成到 `IPMsgWidget`：统计按钮、面板切换、群组切换自动更新数据
+- 动画系统：基于 QPropertyAnimation + QGraphicsOpacityEffect 的平滑过渡
+- 自动定时器：QTimer 每5秒更新，支持启用/禁用动画
+- 响应式布局：适配不同面板尺寸
+ 
+### UI/UX 特性
+- 暗色主题 + 玻璃态效果 + 渐变色彩
+- 数值变化时平滑淡入淡出 + 颜色脉冲
+- 悬停效果 + 悬停提示
+- 响应式网格布局，自适应宽度
+  
+---
+
+## 🎯 群组成员管理面板 ✅
+
+### 已完成
+1. ✅ `GroupMemberManagementWidget` 核心组件（group_member_management_widget.h/cpp）
+2. ✅ 成员列表：头像（渐变底色+首字母）、在线状态点、名称、角色徽标（群主/管理员）、在线/离线状态
+3. ✅ 实时在线统计：成员总数、在线数、在线进度条
+4. ✅ 角色管理：右键菜单（设为/取消管理员、踢出群聊）
+5. ✅ 快捷操作：私聊消息、查看资料
+6. ✅ 成员搜索：关键字实时过滤（按名称）
+7. ✅ 邀请成员：在线联系人选择对话框（排除已入群成员）
+8. ✅ 空状态提示：无成员时友好提示
+9. ✅ 列表项动画：数据变化时平滑过渡（淡入淡出）
+10. ✅ IPMsgWidget集成：聊天头部成员管理按钮、面板切换、群切换自动更新
+
+### 技术实现
+- 新增文件：`src/ui/group_member_management_widget.h/cpp`
+- 集成到 `IPMsgWidget`：成员管理按钮、`onMemberManagementToggled` 切换、`onGroupClicked` 群切换刷新、`selectContact` 私聊隐藏
+- 数据来源：`IPMsgManager::getOnlineDevices()` 匹配群成员在线状态
+- 邀请逻辑：`getOnlineDevices()` 过滤已在群成员，QInputDialog 选择
+
+### UI/UX 特性
+- 暗色主题 + 渐变背景
+- 头像自适应颜色 + 首字母
+- 角色徽标（群主橙色 / 管理员绿色）
+- 状态点（在线绿色 / 离线灰色）
+- 悬停高亮 + 右键上下文菜单
+  
 ---
 
 ## 🎯 微信对标差距分析 (新增)
@@ -391,22 +475,327 @@
 | **离线消息** | 服务器存储离线推送 | 必须在线 | 🔴 严重 | Phase A2 |
 | **端到端加密** | 端到端加密 | 明文传输 | 🔴 严重 | Phase A3 |
 | **文件断点续传** | 秒传/断点续传/大文件 | 基础TCP传输 | 🟠 高 | Phase A4 |
-| **语音消息** | 录音/播放/转文字 | 无 | 🟠 高 | Phase B1 |
-| **视频消息** | 视频压缩/预览/播放 | 无 | 🟠 高 | Phase B2 |
-| **位置/名片** | 地图选点/联系人分享 | 无 | 🟡 中 | Phase B3/B4 |
-| **合并转发** | 多条消息合并转发 | 单条转发 | 🟡 中 | Phase B5 |
-| **语音通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C1 |
-| **视频通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C2 |
-| **屏幕共享** | 会议共享屏幕 | 远程桌面能力复用 | 🟡 中 | Phase C3 |
-| **群@/公告** | @提醒/群公告置顶 | 无 | 🟡 中 | Phase D1 |
-| **群文件/相册** | 群共享文件/图片墙 | 无 | 🟡 中 | Phase D2 |
-| **群待办/投票** | 协作工具 | 无 | 🟢 低 | Phase D3 |
+| **语音消息** | 录音/播放/转文字 | 无 | 🟠 高 | Phase B1 ✅ |
+| **视频消息** | 视频压缩/预览/播放 | 无 | 🟠 高 | Phase B2 ✅ |
+| **位置/名片** | 地图选点/联系人分享 | 无 | 🟡 中 | Phase B3/B4 ✅ |
+| **合并转发** | 多条消息合并转发 | 单条转发 | 🟡 中 | Phase B5 ✅ |
+| **语音通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C1 ✅ |
+| **视频通话** | 实时音视频通话 | 无 | 🔴 严重 | Phase C2 ✅ |
+| **屏幕共享** | 会议共享屏幕 | 远程桌面能力复用 | 🟡 中 | Phase C3 ✅ |
+| **群@/公告** | @提醒/群公告置顶 | 无 | 🟡 中 | Phase D1 ✅ |
+| **群文件/相册** | 群共享文件/图片墙 | 无 | 🟡 中 | Phase D2 ✅ |
+| **群待办/投票** | 协作工具 | 无 | 🟢 低 | Phase D3 ✅ |
 | **多设备同步** | 手机/电脑/网页/平板 | 仅单PC实例 | 🔴 严重 | Phase E1 |
 | **网页/移动端** | Web/小程序/移动端 | 无 | 🟠 高 | Phase E2 |
 
 ---
 
+## Phase B3/B4 - 位置/名片消息 ✅
+
+### 已完成
+1. ✅ `LOCATION_MSG` (147) / `LOCATION_ACK` (148) / `CARD_MSG` (149) / `CARD_ACK` (150) 消息类型定义（types.h）
+2. ✅ `LocationMessage` 结构体（messageId, senderId, senderName, latitude, longitude, locationName, timestamp, isRead）
+3. ✅ `CardMessage` 结构体（messageId, senderId, senderName, vCardData, timestamp, isRead）
+4. ✅ 协议编解码 `encodeLocationMessage`/`decodeLocationMessage`、`encodeCardMessage`/`decodeCardMessage`（protocol_manager.h/cpp）
+5. ✅ 位置/名片消息数据库存储（database_manager.h/cpp: location_messages/card_messages表, CRUD操作）
+6. ✅ Host 端 LOCATION_MSG/CARD_MSG 处理：发送 ACK（host.cpp）
+7. ✅ RemoteController 端 `sendLocationMessageProtocol`/`sendCardMessageProtocol` + 接收处理（remote_controller.h/cpp）
+8. ✅ IPMsgManager 端 `sendLocationMessageProtocol`/`sendCardMessageProtocol` + `handleLocationMessage`/`handleCardMessage`（ipmsg_manager.h/cpp）
+9. ✅ 单元测试（test_voice_messages.cpp：新增 10 个位置/名片消息用例，覆盖编解码往返、协议消息、类型验证）
+
+### 位置消息功能说明
+- 控制器发送位置（经纬度+名称） → 编码为 LocationMessage → 发送 LOCATION_MSG 协议消息
+- 被控端收到 LOCATION_MSG → 回复 LOCATION_ACK
+- 控制器收到 LOCATION_ACK → 确认消息送达
+- 位置消息持久化到 SQLite（location_messages 表）
+
+### 名片消息功能说明
+- 控制器发送 vCard 格式联系人信息 → 编码为 CardMessage → 发送 CARD_MSG 协议消息
+- 被控端收到 CARD_MSG → 回复 CARD_ACK
+- 控制器收到 CARD_ACK → 确认消息送达
+- 名片消息持久化到 SQLite（card_messages 表）
+
+---
+
+## Phase B5 - 合并转发 ✅
+
+### 已完成
+1. ✅ `MERGE_FORWARD` (151) / `MERGE_FORWARD_ACK` (152) 消息类型定义（types.h）
+2. ✅ `ForwardedMessage` 结构体（messageId, senderId, senderName, content, timestamp, msgType）
+3. ✅ `MergeForwardMessage` 结构体（messageId, senderId, senderName, messages[], timestamp, isRead）
+4. ✅ 协议编解码 `encodeMergeForwardMessage`/`decodeMergeForwardMessage`（protocol_manager.h/cpp）
+5. ✅ 合并转发消息数据库存储（database_manager.h/cpp: merge_forward_messages表, CRUD操作）
+6. ✅ Host 端 MERGE_FORWARD 处理：发送 ACK（host.cpp）
+7. ✅ RemoteController 端 `sendMergeForwardMessageProtocol` + 接收处理（remote_controller.h/cpp）
+8. ✅ IPMsgManager 端 `sendMergeForwardMessageProtocol` + `handleMergeForwardMessage`（ipmsg_manager.h/cpp）
+9. ✅ 单元测试（test_voice_messages.cpp：新增 5 个合并转发消息用例，覆盖编解码往返、协议消息、类型验证）
+
+### 合并转发功能说明
+- 控制器选择多条消息 → 编码为 MergeForwardMessage（包含 ForwardedMessage 列表） → 发送 MERGE_FORWARD 协议消息
+- 被控端收到 MERGE_FORWARD → 回复 MERGE_FORWARD_ACK
+- 控制器收到 MERGE_FORWARD_ACK → 确认消息送达
+- 合并转发消息持久化到 SQLite（merge_forward_messages 表）
+- 支持文本、图片、语音、视频、位置、名片等多种消息类型混合转发
+
+---
+
+## Phase B2 - 视频消息 ✅
+
+### 已完成
+1. ✅ `VIDEO_MSG` (145) / `VIDEO_ACK` (146) 消息类型定义（types.h）
+2. ✅ `VideoMessage` 结构体（messageId, senderId, senderName, videoData, videoFileName, duration, width, height, timestamp, isRead）
+3. ✅ 协议编解码 `encodeVideoMessage` / `decodeVideoMessage`（protocol_manager.h/cpp）
+4. ✅ 视频消息数据库存储（database_manager.h/cpp: video_messages表, saveVideoMessage, loadVideoMessages, markVideoMessageRead）
+5. ✅ Host 端 VIDEO_MSG 处理：发送 ACK（host.cpp）
+6. ✅ RemoteController 端 `sendVideoMessageProtocol` 方法（remote_controller.h/cpp）
+7. ✅ RemoteController 端 VIDEO_MSG/VIDEO_ACK 接收处理（remote_controller.cpp）
+8. ✅ IPMsgManager 端 `sendVideoMessageProtocol` / `handleVideoMessage`（ipmsg_manager.h/cpp）
+9. ✅ 单元测试（test_voice_messages.cpp：新增 5 个视频消息用例，覆盖编解码往返、协议消息、类型验证）
+
+### 视频消息功能说明
+- 控制器录制/选择视频 → 编码为 VideoMessage → 发送 VIDEO_MSG 协议消息
+- 被控端收到 VIDEO_MSG → 回复 VIDEO_ACK
+- 控制器收到 VIDEO_ACK → 确认消息送达
+- 视频消息持久化到 SQLite（video_messages 表）
+- 支持视频消息查询和标记已读
+
+---
+
+## Phase B1 - 语音消息 ✅
+
+### 已完成
+1. ✅ `VOICE_MSG` (143) / `VOICE_ACK` (144) 消息类型定义（types.h）
+2. ✅ `VoiceMessage` 结构体（messageId, senderId, senderName, voiceData, voiceFileName, duration, timestamp, isRead）
+3. ✅ 协议编解码 `encodeVoiceMessage` / `decodeVoiceMessage`（protocol_manager.h/cpp）
+4. ✅ 语音消息数据库存储（database_manager.h/cpp: voice_messages表, saveVoiceMessage, loadVoiceMessages, markVoiceMessageRead）
+5. ✅ Host 端 VOICE_MSG 处理：播放音频 + 发送 ACK（host.cpp）
+6. ✅ RemoteController 端 `sendVoiceMessageProtocol` 方法（remote_controller.h/cpp）
+7. ✅ RemoteController 端 VOICE_MSG 接收处理：播放音频 + 发送 ACK（remote_controller.cpp）
+8. ✅ RemoteController 端 VOICE_ACK 接收处理（remote_controller.cpp）
+9. ✅ `sendToClient` 辅助方法修复（host.h/cpp，用于 VOICE_ACK 发送）
+10. ✅ 单元测试（test_voice_messages.cpp：5个用例，覆盖编解码往返、协议消息、类型验证）
+
+### 语音消息功能说明
+- 控制器录制音频 → 编码为 VoiceMessage → 发送 VOICE_MSG 协议消息
+- 被控端收到 VOICE_MSG → 播放音频 → 回复 VOICE_ACK
+- 控制器收到 VOICE_ACK → 确认消息送达
+- 语音消息持久化到 SQLite（voice_messages 表）
+- 支持语音消息查询和标记已读
+
+---
+
+---
+
+## Phase C1 - 语音通话 (VoIP) ✅
+
+### 已完成
+1. ✅ `CALL_INVITE` (153) / `CALL_ACCEPT` (154) / `CALL_REJECT` (155) / `CALL_END` (156) / `ICE_CANDIDATE` (157) 消息类型定义（types.h）
+2. ✅ VoIP 信令结构体：`CallInvite`、`CallAccept`、`CallReject`、`CallEnd`、`IceCandidate`
+3. ✅ 协议编解码：`encode/decodeCallInvite`、`encode/decodeCallAccept`、`encode/decodeCallReject`、`encode/decodeCallEnd`、`encode/decodeIceCandidate`（protocol_manager.h/cpp）
+4. ✅ Host 端 VoIP 信令处理：接收 CALL_INVITE/CALL_ACCEPT/CALL_REJECT/CALL_END/ICE_CANDIDATE 并发射信号（host.cpp）
+5. ✅ RemoteController 端 VoIP 方法：`initiateCall`、`acceptCall`、`rejectCall`、`endCall`、`sendIceCandidate` + 接收处理（remote_controller.h/cpp）
+6. ✅ 单元测试（test_voice_messages.cpp：新增 25 个 VoIP 信令用例，覆盖编解码往返、协议消息、类型验证）
+
+### VoIP 信令功能说明
+- 呼叫发起方发送 CALL_INVITE（含 SDP offer） → 被叫方收到 incomingCall 信号
+- 被叫方接受发送 CALL_ACCEPT（含 SDP answer）→ 发起方收到 callAccepted 信号
+- 被叫方拒绝发送 CALL_REJECT → 发起方收到 callRejected 信号
+- 任意一方结束通话发送 CALL_END → 对方收到 callEnded 信号
+- ICE 候选交换：双方发送 ICE_CANDIDATE → 对方收到 iceCandidateReceived 信号
+- 支持语音/视频通话类型区分
+- 支持 SDP 协商和 ICE 穿透
+
+---
+
+## Phase C2 - 视频通话 ✅
+
+### 已完成
+1. ✅ `VIDEO_CALL_START` (250) / `VIDEO_CALL_STOP` (251) / `VIDEO_CALL_FRAME` (252) / `VIDEO_CALL_ACK` (253) 消息类型定义（types.h）
+2. ✅ 视频通话结构体：`VideoCallStart`、`VideoCallStop`、`VideoCallFrame`
+3. ✅ 协议编解码：`encode/decodeVideoCallStart`、`encode/decodeVideoCallStop`、`encode/decodeVideoCallFrame`（protocol_manager.h/cpp）
+4. ✅ Host 端视频通话处理：接收 VIDEO_CALL_START/VIDEO_CALL_STOP/VIDEO_CALL_FRAME 并发射信号（host.cpp）
+5. ✅ RemoteController 端视频通话处理：接收并发射 videoCallStarted/videoCallStopped/videoCallFrameReceived 信号（remote_controller.h/cpp）
+6. ✅ 单元测试（test_voice_messages.cpp：新增 12 个视频通话用例，覆盖编解码往返、协议消息、类型验证）
+
+### 视频通话功能说明
+- 复用 VoIP 信令（CALL_INVITE callType="video"）建立会话
+- 发起方发送 VIDEO_CALL_START（含分辨率/帧率） → 接收方收到 videoCallStarted 信号
+- 视频流通过 VIDEO_CALL_FRAME 传输（H.264 编码帧，含序列号、时间戳、关键帧标记、采集时间）
+- 任意一方结束视频发送 VIDEO_CALL_STOP → 对方收到 videoCallStopped 信号
+- 支持关键帧/非关键帧区分，支持序列号重排和时间戳同步
+- 复用 VoIP 信令的 SDP 协商和 ICE 穿透
+
+---
+
+## Phase C3 - 屏幕共享 ✅
+
+### 已完成
+1. ✅ `SCREEN_SHARE_START` (254) / `SCREEN_SHARE_STOP` (255) / `SCREEN_SHARE_FRAME` (256) / `SCREEN_SHARE_ACK` (257) 消息类型定义（types.h）
+2. ✅ 屏幕共享结构体：`ScreenShareStart`、`ScreenShareStop`、`ScreenShareFrame`
+3. ✅ 协议编解码：`encode/decodeScreenShareStart`、`encode/decodeScreenShareStop`、`encode/decodeScreenShareFrame`（protocol_manager.h/cpp）
+4. ✅ Host 端屏幕共享处理：接收 SCREEN_SHARE_START/SCREEN_SHARE_STOP/SCREEN_SHARE_FRAME 并发射信号（host.cpp）
+5. ✅ RemoteController 端屏幕共享处理：接收并发射 screenShareStarted/screenShareStopped/screenShareFrameReceived 信号（remote_controller.h/cpp）
+6. ✅ 单元测试（test_voice_messages.cpp：新增 12 个屏幕共享用例，覆盖编解码往返、协议消息、类型验证）
+
+### 屏幕共享功能说明
+- 复用 VoIP 信令（CALL_INVITE callType="screen"）建立会话，或直接发起屏幕共享
+- 发起方发送 SCREEN_SHARE_START（含分辨率/帧率） → 接收方收到 screenShareStarted 信号
+- 屏幕流通过 SCREEN_SHARE_FRAME 传输（H.264 编码帧，含序列号、时间戳、关键帧标记、采集时间）
+- 任意一方结束共享发送 SCREEN_SHARE_STOP → 对方收到 screenShareStopped 信号
+- 支持关键帧/非关键帧区分，支持序列号重排和时间戳同步
+- 复用现有 H.264 编码器和 VoIP 信令的 SDP 协商、ICE 穿透
+- 与远程桌面能力复用，实现会议式屏幕共享
+
+---
+
+## Phase D1 - 群@/公告/投票 ✅
+
+### 已完成
+1. ✅ `GROUP_ANNOUNCEMENT` (258) / `GROUP_MENTION` (259) / `GROUP_VOTE` (260) 消息类型定义（types.h）
+2. ✅ 群聊高级结构体：`GroupAnnouncement`、`GroupMention`、`GroupVote`
+3. ✅ 协议编解码：`encode/decodeGroupAnnouncement`、`encode/decodeGroupMention`、`encode/decodeGroupVote`（protocol_manager.h/cpp）
+4. ✅ 数据库存储：`group_announcements`、`group_mentions`、`group_votes` 表，支持 CRUD 和索引
+4. ✅ Host 端处理：接收 GROUP_ANNOUNCEMENT/GROUP_MENTION/GROUP_VOTE 并发射信号（host.cpp）
+5. ✅ RemoteController 端接收处理：发射 groupAnnouncementReceived/groupMentionReceived/groupVoteReceived 信号（remote_controller.h/cpp）
+6. ✅ IPMsgManager 端复用现有 JSON 实现，支持离线消息
+7. ✅ 单元测试（test_voice_messages.cpp：新增 9 个群聊高级用例，覆盖编解码往返、协议消息、类型验证）
+
+### 群聊高级功能说明
+- **群公告**：群主/管理员发送 GROUP_ANNOUNCEMENT（群ID、群名、公告内容、发布者） → 群成员收到 groupAnnouncementReceived 信号
+- **群@提及**：发送 GROUP_MENTION（群ID、群名、消息内容、@的成员ID/名称列表、发送者） → 被@成员收到 groupMentionReceived 信号
+- **群投票**：发送 GROUP_VOTE（群ID、群名、投票标题、选项列表、持续时间、创建者） → 群成员收到 groupVoteReceived 信号
+- 消息持久化到 SQLite，支持查询和标记已读
+- 支持离线消息存储（复用现有 OfflineMessage 机制）
+- 复用现有群组管理（IPMsgGroup、createGroup、inviteToGroup 等）
+
+---
+
+## Phase D2 - 群文件/相册 ✅
+
+### 已完成
+1. ✅ `GROUP_FILE` (261) / `GROUP_FILE_ACK` (262) / `GROUP_ALBUM` (263) / `GROUP_ALBUM_ACK` (264) 消息类型定义（types.h）
+2. ✅ 群文件/相册结构体：`GroupFile`、`GroupAlbum`
+3. ✅ 协议编解码：`encode/decodeGroupFile`、`encode/decodeGroupAlbum`（protocol_manager.h/cpp）
+4. ✅ 数据库存储：`group_files`、`group_albums` 表，支持 CRUD 和索引
+5. ✅ Host 端处理：接收 GROUP_FILE/GROUP_ALBUM 并发射 groupFileReceived/groupAlbumReceived 信号（host.cpp）
+6. ✅ RemoteController 端接收处理：发射 groupFileReceived/groupAlbumReceived 信号（remote_controller.h/cpp）
+7. ✅ 单元测试（test_voice_messages.cpp：新增 4 个群文件/相册用例，覆盖编解码往返、协议消息、类型验证）
+
+### 群文件/相册功能说明
+- **群文件**：上传文件到群 → 发送 GROUP_FILE（群ID、群名、文件ID、文件名、大小、MD5、上传者） → 群成员收到 groupFileReceived 信号
+- **群相册**：创建相册 → 发送 GROUP_ALBUM（群ID、群名、相册ID、相册名、文件ID/名称列表、创建者） → 群成员收到 groupAlbumReceived 信号
+- 消息持久化到 SQLite（group_files、group_albums 表）
+- 支持文件元数据（大小、MD5、上传者、时间戳）
+- 支持相册包含多个文件（文件ID/名称列表）
+- 复用现有群组管理（IPMsgGroup）
+
+---
+
+## Phase D3 - 群待办/投票 ✅
+
+### 已完成
+1. ✅ `GROUP_TODO` (265) / `GROUP_TODO_ACK` (266) / `GROUP_TODO_UPDATE` (267) 消息类型定义（types.h）
+2. ✅ `GroupTodo` 结构体（groupId, groupName, todoId, title, description, status, priority, assigneeId, assigneeName, creatorId, creatorName, dueDate, timestamp）
+3. ✅ 协议编解码：`encode/decodeGroupTodo`（protocol_manager.h/cpp）
+4. ✅ 数据库存储：`group_todos` 表，支持 CRUD、状态更新、索引
+5. ✅ Host 端处理：接收 GROUP_TODO/GROUP_TODO_UPDATE 并发射 groupTodoReceived/groupTodoUpdated 信号（host.cpp）
+6. ✅ RemoteController 端接收处理：发射 groupTodoReceived/groupTodoUpdated 信号（remote_controller.h/cpp）
+7. ✅ 单元测试（test_voice_messages.cpp：新增 3 个群待办用例，覆盖编解码往返、协议消息、类型验证）
+
+### 群待办功能说明
+- **创建待办**：发送 GROUP_TODO（群ID、群名、待办ID、标题、描述、状态、优先级、指派人、创建者、截止日期） → 群成员收到 groupTodoReceived 信号
+- **更新待办状态**：发送 GROUP_TODO_UPDATE（待办ID、新状态） → 群成员收到 groupTodoUpdated 信号
+- 支持状态：0=待办、1=进行中、2=已完成
+- 支持优先级：0=低、1=中、2=高
+- 支持指派人、创建者、截止日期
+- 消息持久化到 SQLite（group_todos 表，支持状态/群组索引）
+- 复用现有群组管理（IPMsgGroup）
+
+---
+
 ## 下一步执行计划
 
-**当前**: Phase A1 - SQLite持久化存储 (预估3天)
-**目标**: 完成消息/联系人/群组/设置的本地持久化，支持启动加载历史
+**当前**: Phase E1 - 多设备同步 ✅ 已完成
+**目标**: 完成 Phase E2 - Web/移动端
+
+### Phase E1 已完成
+1. ✅ `SYNC_REQUEST` (203) / `SYNC_SNAPSHOT` (204) / `SYNC_ACK` (205) 消息类型定义（types.h）
+2. ✅ `SyncRequest` / `SyncSnapshot` / `SyncAck` 结构体及协议编解码（protocol_manager.h/cpp）
+3. ✅ 数据库存储：sync_requests/sync_snapshots/sync_acks 表 + SyncSnapshotRow/SyncRequestRow/SyncAckRow 结构体（database_manager.h/cpp）
+4. ✅ LWW合并逻辑：buildSyncSnapshot() / applySyncSnapshot() - 基于 updatedAt 的最后写入胜出
+5. ✅ IPMsgManager 端：setAccount/hasAccountConfigured/syncWith/sameAccountDevices + SYNC消息处理 + 同步信号（syncCompleted/syncFailed/sameAccountDeviceFound/dataSynced）
+6. ✅ 单元测试：DatabaseManagerTest (5个同步用例) + IpmsgCryptoTest (2个快照序列化用例) 全绿
+
+### Phase D3 已完成
+1. ✅ 群待办协议（GROUP_TODO/GROUP_TODO_ACK/GROUP_TODO_UPDATE，MessageType 265-267）
+2. ✅ GroupTodo 结构体及协议编解码
+3. ✅ 数据库存储（group_todos 表，含状态/群组索引）
+4. ✅ Host/RemoteController 端处理 + 信号发射
+5. ✅ 单元测试（test_voice_messages.cpp：新增 3 个群待办用例全绿）
+
+### Phase D2 已完成
+1. ✅ 群文件/相册协议（GROUP_FILE/ALBUM，MessageType 261-264）
+2. ✅ GroupFile/GroupAlbum 结构体及协议编解码
+3. ✅ 数据库存储（group_files/group_albums 表）
+4. ✅ Host/RemoteController 端处理 + 信号发射
+5. ✅ 单元测试（test_voice_messages.cpp：新增 4 个群文件/相册用例全绿）
+
+### Phase D1 已完成
+1. ✅ 群公告/群@/群投票协议（GROUP_ANNOUNCEMENT/MENTION/VOTE，MessageType 258-260）
+2. ✅ GroupAnnouncement/GroupMention/GroupVote 结构体及协议编解码
+3. ✅ 数据库存储（group_announcements/group_mentions/group_votes 表）
+4. ✅ Host/RemoteController 端处理 + 信号发射
+5. ✅ 单元测试（test_voice_messages.cpp：新增 9 个群聊高级用例全绿）
+
+### Phase C3 已完成
+1. ✅ 屏幕共享协议（SCREEN_SHARE_START/STOP/FRAME/ACK，MessageType 254-257）
+2. ✅ ScreenShareStart/ScreenShareStop/ScreenShareFrame 结构体及协议编解码
+3. ✅ Host/RemoteController 端屏幕帧接收处理
+4. ✅ 单元测试（test_voice_messages.cpp：新增 12 个屏幕共享用例全绿）
+
+### Phase C2 已完成
+1. ✅ 视频通话媒体协议（VIDEO_CALL_START/STOP/FRAME/ACK，MessageType 250-253）
+2. ✅ VideoCallStart/VideoCallStop/VideoCallFrame 结构体及协议编解码
+3. ✅ Host/RemoteController 端视频帧接收处理
+4. ✅ 单元测试（test_voice_messages.cpp：新增 12 个视频通话用例全绿）
+
+### Phase C1 已完成
+1. ✅ VoIP 信令协议（CALL_INVITE/ACCEPT/REJECT/END/ICE，MessageType 153-157）
+2. ✅ 5 个信令结构体及协议编解码
+3. ✅ Host/RemoteController 端完整信令处理
+4. ✅ 单元测试（test_voice_messages.cpp：新增 25 个 VoIP 用例全绿）
+
+### Phase B5 已完成
+1. ✅ 合并转发协议（MERGE_FORWARD / MERGE_FORWARD_ACK，MessageType 151/152）
+2. ✅ ForwardedMessage/MergeForwardMessage 结构体
+3. ✅ 合并转发消息数据库存储（merge_forward_messages 表）
+4. ✅ Host 端处理 + ACK 回复
+5. ✅ RemoteController 端发送/接收
+6. ✅ IPMsgManager 端协议支持
+7. ✅ 单元测试（test_voice_messages.cpp：新增 5 个用例全绿）
+
+### Phase B3/B4 已完成
+1. ✅ 位置消息协议（LOCATION_MSG / LOCATION_ACK，MessageType 147/148）
+2. ✅ 名片消息协议（CARD_MSG / CARD_ACK，MessageType 149/150）
+3. ✅ LocationMessage/CardMessage 结构体
+4. ✅ 位置/名片消息数据库存储（location_messages/card_messages 表）
+5. ✅ Host 端处理 + ACK 回复
+6. ✅ RemoteController 端发送/接收
+7. ✅ IPMsgManager 端协议支持
+8. ✅ 单元测试（test_voice_messages.cpp：新增 10 个用例全绿）
+
+### Phase B2 已完成
+1. ✅ 视频消息协议（VIDEO_MSG / VIDEO_ACK，MessageType 145/146）
+2. ✅ VideoMessage 结构体（含 width/height 元数据）
+3. ✅ 视频消息数据库存储（video_messages 表）
+4. ✅ Host 端 VIDEO_MSG 处理 + ACK 回复
+5. ✅ RemoteController 端 `sendVideoMessageProtocol` + VIDEO_MSG/VIDEO_ACK 接收
+6. ✅ IPMsgManager 端视频消息协议支持
+7. ✅ 单元测试（test_voice_messages.cpp：新增 5 个视频消息用例全绿）
+
+### Phase B1 已完成
+1. ✅ 语音录制（AudioCapture Microphone 模式）
+2. ✅ 语音消息协议（VOICE_MSG / VOICE_ACK，MessageType 143/144）
+3. ✅ 语音播放（AudioPlayer）
+4. ✅ 语音消息数据库存储（voice_messages 表）
+5. ✅ 单元测试（test_voice_messages.cpp，5用例全绿）

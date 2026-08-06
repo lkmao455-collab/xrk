@@ -33,6 +33,8 @@ signals:
     void messageReceived(const QString& deviceId, const QByteArray& data);
     void discoveryReceived(const DeviceInfo& info);
 
+    QString deviceId() const;  // Get local device ID
+
 private slots:
     void onNewConnection();
     void onTcpMessageReceived(const QByteArray& data);
@@ -45,6 +47,7 @@ private:
 
     bool m_running = false;
     uint16_t m_port = 0;
+    QString m_deviceId;
     class QTcpServer* m_tcpServer = nullptr;
     class QUdpSocket* m_udpSocket = nullptr;
     QHash<QString, std::shared_ptr<TcpConnection>> m_connections;

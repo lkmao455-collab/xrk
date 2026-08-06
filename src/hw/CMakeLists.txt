@@ -18,6 +18,7 @@ set(HW_HEADERS
     h264_encoder.h
     video_decoder.h
     camera_capture.h
+    camera_control.h
     audio_capture.h
     audio_player.h
 )

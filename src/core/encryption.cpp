@@ -1,5 +1,6 @@
 #include "encryption.h"
 #include "logger.h"
+#include <QRandomGenerator>
 
 extern "C" {
 #include <libavutil/aes.h>
@@ -33,11 +34,12 @@ bool Encryption::generateKey() {
     m_key.resize(32);
     m_iv.resize(16);
 
+    QRandomGenerator* rng = QRandomGenerator::global();
     for (int i = 0; i < m_key.size(); ++i) {
-        m_key[i] = static_cast<char>(rand() % 256);
+        m_key[i] = static_cast<char>(rng->generate() & 0xFF);
     }
     for (int i = 0; i < m_iv.size(); ++i) {
-        m_iv[i] = static_cast<char>(rand() % 256);
+        m_iv[i] = static_cast<char>(rng->generate() & 0xFF);
     }
 
     return setKey(m_key, m_iv);
@@ -129,10 +131,13 @@ QByteArray Encryption::decrypt(const QByteArray& data) const {
     const uint8_t* currentIv = iv;
 
     for (int i = 0; i < blockCount; ++i) {
+        // NOTE: FFmpeg's av_aes_crypt ignores its `decrypt` argument; the
+        // operation is fixed at av_aes_init time (decCtx was initialized with
+        // decrypt=1, so it always decrypts). We pass 1 anyway to document intent.
         av_aes_crypt(m_ctx->decCtx,
                      reinterpret_cast<uint8_t*>(result.data()) + i * 16,
                      reinterpret_cast<const uint8_t*>(data.constData()) + i * 16,
-                     1, nullptr, 0);
+                     1, nullptr, 1);
         for (int j = 0; j < 16; ++j) {
             result[i * 16 + j] = static_cast<char>(result[i * 16 + j] ^ currentIv[j]);
         }

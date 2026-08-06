@@ -43,6 +43,48 @@ QString ArpResolver::resolveMac(const QString& ipAddress, unsigned long timeoutM
             .toUpper();
     }
     return {};
+#elif defined(Q_OS_LINUX)
+    Q_UNUSED(timeoutMs);
+    if (ipAddress.isEmpty()) {
+        return {};
+    }
+
+    // Linux: parse /proc/net/arp or use `arp -n`
+    QFile file("/proc/net/arp");
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        in.readLine(); // Skip header
+        while (!in.atEnd()) {
+            QString line = in.readLine().trimmed();
+            QStringList parts = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+            if (parts.size() >= 4 && parts[0] == ipAddress) {
+                QString mac = parts[3];
+                if (mac != "00:00:00:00:00:00" && mac.contains(':')) {
+                    return mac.toUpper();
+                }
+            }
+        }
+    }
+    return {};
+#elif defined(Q_OS_MACOS)
+    Q_UNUSED(timeoutMs);
+    if (ipAddress.isEmpty()) {
+        return {};
+    }
+
+    // macOS: use `arp -n` command
+    QProcess process;
+    process.start("arp", QStringList() << "-n" << ipAddress);
+    if (process.waitForFinished(1000)) {
+        QString output = process.readAllStandardOutput().trimmed();
+        // Output format: "? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]"
+        QRegularExpression re("at\\s+([0-9a-fA-F:]{17})");
+        QRegularExpressionMatch match = re.match(output);
+        if (match.hasMatch()) {
+            return match.captured(1).toUpper();
+        }
+    }
+    return {};
 #else
     Q_UNUSED(ipAddress);
     Q_UNUSED(timeoutMs);

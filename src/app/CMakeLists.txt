@@ -19,6 +19,9 @@ set(APP_SOURCES
     address_book.cpp
     device_registry.cpp
     ipmsg_manager.cpp
+    database_manager.cpp
+    web_socket_gateway.cpp
+    connection_history_manager.cpp
 )
 
 set(APP_HEADERS
@@ -42,13 +45,16 @@ set(APP_HEADERS
     address_book.h
     device_registry.h
     ipmsg_manager.h
+    database_manager.h
+    web_socket_gateway.h
+    connection_history_manager.h
 )
 
 add_library(xrk_app STATIC ${APP_SOURCES} ${APP_HEADERS})
 
 target_include_directories(xrk_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(xrk_app PUBLIC xrk_core xrk_hw Qt6::Widgets)
+target_link_libraries(xrk_app PUBLIC xrk_core xrk_hw Qt6::Widgets Qt6::Sql Qt6::WebSockets)
 
 if(WIN32)
     target_link_libraries(xrk_app PRIVATE pdh.lib advapi32.lib)

@@ -44,7 +44,9 @@ TEST(MicrophoneTest, CreateAudioOutput) {
 
     QAudioOutput audioOutput;
     audioOutput.setVolume(0.8);
-    EXPECT_DOUBLE_EQ(audioOutput.volume(), 0.8);
+    // volume() is float (single precision); 0.8f != double 0.8 exactly, so use
+    // a tolerance instead of EXPECT_DOUBLE_EQ.
+    EXPECT_NEAR(audioOutput.volume(), 0.8, 1e-6);
 }
 
 // Test audio format

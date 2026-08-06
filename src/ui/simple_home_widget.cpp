@@ -340,6 +340,51 @@ void SimpleHomeWidget::onHostButtonClicked() {
     emit startHostService();
 }
 
+void SimpleHomeWidget::setHostButtonState(bool running) {
+    if (running) {
+        m_hostButton->setText("停止服务（被控端）");
+        m_hostButton->setStyleSheet(
+            "#hostButton {"
+            "    background-color: #E53E3E;"
+            "    color: white;"
+            "    border: none;"
+            "    border-radius: 8px;"
+            "    padding: 14px 24px;"
+            "    font-size: 15px;"
+            "    font-weight: 600;"
+            "}"
+            "#hostButton:hover {"
+            "    background-color: #C53030;"
+            "}"
+            "#hostButton:pressed {"
+            "    background-color: #9B2C2C;"
+            "}"
+        );
+    } else {
+        m_hostButton->setText("启动服务（被控端）");
+        m_hostButton->setStyleSheet(
+            "#hostButton {"
+            "    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            "        stop:0 #4FD1C5, stop:1 #38B2AC);"
+            "    color: white;"
+            "    border: none;"
+            "    border-radius: 8px;"
+            "    padding: 14px 24px;"
+            "    font-size: 15px;"
+            "    font-weight: 600;"
+            "}"
+            "#hostButton:hover {"
+            "    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            "        stop:0 #68D3C9, stop:1 #4FD1C5);"
+            "}"
+            "#hostButton:pressed {"
+            "    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            "        stop:0 #38B2AC, stop:1 #319795);"
+            "}"
+        );
+    }
+}
+
 void SimpleHomeWidget::refreshDevices() {
     if (!m_manager) return;
 

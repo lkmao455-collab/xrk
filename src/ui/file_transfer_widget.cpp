@@ -186,6 +186,12 @@ FileTransferWidget::FileTransferWidget(FileTransferManager* manager, QWidget* pa
         connect(m_manager, &FileTransferManager::transferProgress, this, &FileTransferWidget::onTransferProgress);
         connect(m_manager, &FileTransferManager::transferCompleted, this, &FileTransferWidget::onTransferCompleted);
         connect(m_manager, &FileTransferManager::transferFailed, this, &FileTransferWidget::onTransferFailed);
+        connect(m_manager, &FileTransferManager::transferCancelled, this, [this](const QString& fileId) {
+            onTransferFailed(fileId, tr("传输已取消"));
+        });
+        connect(m_manager, &FileTransferManager::transferResumed, this, [this](const QString& fileId, uint64_t offset) {
+            LOG_INFO("File transfer resumed: " + fileId + " from " + QString::number(offset) + " bytes");
+        });
     }
 
     // Task 27: real-time file sync. The manager is decoupled from the transfer

@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QMetaObject>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <thread>
 
 namespace xrk {
@@ -134,7 +135,12 @@ void DeviceDiscovery::resolveMacAsync(const DeviceInfo& info) {
     m_arpPending.insert(deviceId);
 
     const QString ip = info.ipAddress;
-    std::thread([this, ip, deviceId]() {
+    // Guard against the object being destroyed while the detached worker is
+    // still running (e.g. a test/UI closes during a slow ARP lookup). A raw
+    // 'this' capture would leave a queued functor that dereferences freed
+    // memory the next time the event loop spins.
+    QPointer<DeviceDiscovery> self(this);
+    std::thread([self, ip, deviceId]() {
         QElapsedTimer timer;
         timer.start();
         const QString mac = ArpResolver::resolveMac(ip);
@@ -142,10 +148,13 @@ void DeviceDiscovery::resolveMacAsync(const DeviceInfo& info) {
 
         // Marshal the outcome back onto the discovery thread so all access to
         // m_devices / m_arpPending stays single-threaded.
-        QMetaObject::invokeMethod(this, [this, deviceId, mac, timedOut]() {
-            m_arpPending.remove(deviceId);
-            auto it = m_devices.find(deviceId);
-            if (it == m_devices.end()) {
+        QMetaObject::invokeMethod(self, [self, deviceId, mac, timedOut]() {
+            if (!self) {
+                return; // DeviceDiscovery was destroyed while resolving
+            }
+            self->m_arpPending.remove(deviceId);
+            auto it = self->m_devices.find(deviceId);
+            if (it == self->m_devices.end()) {
                 return; // device was removed while resolving
             }
             if (!it->macAddress.isEmpty()) {
@@ -157,7 +166,7 @@ void DeviceDiscovery::resolveMacAsync(const DeviceInfo& info) {
                 it->macAddress = mac;
                 it->arpStatus = DeviceInfo::ArpStatus::Resolved;
             }
-            emit deviceUpdated(*it);
+            emit self->deviceUpdated(*it);
         });
     }).detach();
 }

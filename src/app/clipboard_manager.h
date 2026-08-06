@@ -43,7 +43,6 @@ private slots:
     void onCheckTimer();
 
 private:
-    void setupConnections();
     QByteArray getClipboardContent(QString& mimeType);
     void setClipboardContent(const QByteArray& data, const QString& mimeType);
 

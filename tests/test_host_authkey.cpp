@@ -27,6 +27,13 @@ TEST(HostAuth, SendsKeyOnAutoAuth) {
     const uint16_t port = 19997;
     ASSERT_TRUE(host.start(port));
 
+    // Phase 5 consent: the Host with no password auto-authenticates the client
+    // but does NOT send the session key until the host user grants consent.
+    // Auto-grant it as soon as the host asks.
+    QObject::connect(&host, &Host::consentRequested, &host, [&](const QString& clientId, const QString&) {
+        host.grantConsent(clientId);
+    });
+
     QTcpSocket sock;
     sock.connectToHost(QHostAddress::LocalHost, port);
     ASSERT_TRUE(sock.waitForConnected(5000));

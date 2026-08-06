@@ -12,6 +12,9 @@ set(UI_SOURCES
     clipboard_history_widget.cpp
     media_test_dialog.cpp
     ipmsg_widget.cpp
+    group_statistics_widget.cpp
+    group_member_management_widget.cpp
+    chat_search_widget.cpp
 )
 
 set(UI_HEADERS
@@ -28,6 +31,9 @@ set(UI_HEADERS
     clipboard_history_widget.h
     media_test_dialog.h
     ipmsg_widget.h
+    group_statistics_widget.h
+    group_member_management_widget.h
+    chat_search_widget.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})

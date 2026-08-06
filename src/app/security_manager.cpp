@@ -1,4 +1,5 @@
 #include "security_manager.h"
+#include "core/encryption.h"
 #include <QUuid>
 #include <QRandomGenerator>
 #include <QDateTime>
@@ -38,15 +39,30 @@ QByteArray SecurityManager::encrypt(const QByteArray& data, const QByteArray& ke
         return data;
     }
     
-    QByteArray result = data;
-    for (int i = 0; i < result.size(); ++i) {
-        result[i] ^= key[i % key.size()];
+    // Derive a 32-byte AES key and 16-byte IV from the provided key
+    QByteArray aesKey = QCryptographicHash::hash(key, QCryptographicHash::Sha256);
+    QByteArray iv = QCryptographicHash::hash(key + QByteArray("iv"), QCryptographicHash::Sha256).left(16);
+    
+    Encryption cipher;
+    if (!cipher.setKey(aesKey, iv)) {
+        return data;
     }
-    return result;
+    return cipher.encrypt(data);
 }
 
 QByteArray SecurityManager::decrypt(const QByteArray& data, const QByteArray& key) {
-    return encrypt(data, key);
+    if (!m_encryptionEnabled || key.isEmpty()) {
+        return data;
+    }
+    
+    QByteArray aesKey = QCryptographicHash::hash(key, QCryptographicHash::Sha256);
+    QByteArray iv = QCryptographicHash::hash(key + QByteArray("iv"), QCryptographicHash::Sha256).left(16);
+    
+    Encryption cipher;
+    if (!cipher.setKey(aesKey, iv)) {
+        return data;
+    }
+    return cipher.decrypt(data);
 }
 
 QByteArray SecurityManager::hashPassword(const QString& password) {
@@ -72,13 +88,90 @@ QString SecurityManager::generateRandomString(int length) {
     const QString chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     QString result;
     result.reserve(length);
-    
+
     auto* rng = QRandomGenerator::global();
     for (int i = 0; i < length; ++i) {
         result.append(chars[rng->bounded(chars.size())]);
     }
-    
+
     return result;
+}
+
+QByteArray SecurityManager::generateECDHKeyPair() {
+    QByteArray privateKey(32, 0);
+    auto* rng = QRandomGenerator::global();
+    for (int i = 0; i < 32; ++i) {
+        privateKey[i] = static_cast<char>(rng->bounded(256));
+    }
+    return privateKey;
+}
+
+QByteArray SecurityManager::deriveKeyFromPassword(const QString& password, const QString& salt) {
+    QByteArray data = password.toUtf8() + salt.toUtf8();
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(data);
+    return hash.result();
+}
+
+bool SecurityManager::createE2EESession(const QString& deviceId, const QByteArray& peerPublicKey, const QByteArray& sharedSecret) {
+    E2EESession session;
+    session.deviceId = deviceId;
+    session.peerPublicKey = peerPublicKey;
+    session.sharedSecret = sharedSecret;
+    session.sessionId = generateDeviceId();
+    session.establishedAt = QDateTime::currentSecsSinceEpoch();
+    session.lastActivity = session.establishedAt;
+    session.encryptionAlgorithm = "AES-256-GCM";
+    session.nonce = QByteArray(12, 0);
+    auto* rng = QRandomGenerator::global();
+    for (int i = 0; i < 12; ++i) {
+        session.nonce[i] = static_cast<char>(rng->bounded(256));
+    }
+    session.isActive = true;
+
+    m_e2eeSessions.insert(deviceId, session);
+    emit e2eeSessionEstablished(deviceId);
+    return true;
+}
+
+bool SecurityManager::hasE2EESession(const QString& deviceId) const {
+    return m_e2eeSessions.contains(deviceId);
+}
+
+SecurityManager::E2EESession* SecurityManager::getE2EESession(const QString& deviceId) {
+    if (!m_e2eeSessions.contains(deviceId)) {
+        return nullptr;
+    }
+    return &m_e2eeSessions.find(deviceId).value();
+}
+
+QList<SecurityManager::E2EESession> SecurityManager::getAllE2EESessions() const {
+    return m_e2eeSessions.values();
+}
+
+bool SecurityManager::removeE2EESession(const QString& deviceId) {
+    if (!m_e2eeSessions.contains(deviceId)) {
+        return false;
+    }
+    m_e2eeSessions.remove(deviceId);
+    emit e2eeSessionRemoved(deviceId);
+    return true;
+}
+
+bool SecurityManager::updateSessionActivity(const QString& deviceId) {
+    if (!m_e2eeSessions.contains(deviceId)) {
+        return false;
+    }
+    E2EESession& session = m_e2eeSessions.find(deviceId).value();
+    session.lastActivity = QDateTime::currentSecsSinceEpoch();
+    return true;
+}
+
+QByteArray SecurityManager::getSessionId(const QString& deviceId) const {
+    if (!m_e2eeSessions.contains(deviceId)) {
+        return QByteArray();
+    }
+    return m_e2eeSessions.value(deviceId).sessionId.toUtf8();
 }
 
 } // namespace xrk

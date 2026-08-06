@@ -5,10 +5,13 @@
 #include "logger.h"
 #include <QHostInfo>
 #include <QNetworkInterface>
+#include <QUuid>
 
 namespace xrk {
 
 NetworkManager::NetworkManager(QObject* parent) : QObject(parent) {
+    // Generate a unique device ID
+    m_deviceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
 NetworkManager::~NetworkManager() {

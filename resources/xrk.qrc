@@ -2,6 +2,11 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file>theme.qss</file>
+        <file>web/index.html</file>
+        <file>web/favicon.svg</file>
+        <file>web/icons.svg</file>
+        <file>web/assets/index-FtecoFfX.css</file>
+        <file>web/assets/index-ChLrSEVe.js</file>
         <file>icons/xrk_window.png</file>
         <file>icons/home.svg</file>
         <file>icons/desktop.svg</file>
@@ -11,6 +16,19 @@
         <file>icons/monitor.svg</file>
         <file>icons/clipboard.svg</file>
         <file>icons/settings.svg</file>
+        <file>icons/send.svg</file>
+        <file>icons/file.svg</file>
+        <file>icons/image.svg</file>
+        <file>icons/emoji.svg</file>
+        <file>icons/group.svg</file>
+        <file>icons/background.svg</file>
+        <file>icons/search.svg</file>
+        <file>icons/export.svg</file>
+        <file>icons/multi-select.svg</file>
+        <file>icons/voice-call.svg</file>
+        <file>icons/video-call.svg</file>
+        <file>icons/sync.svg</file>
+        <file>icons/refresh.svg</file>
     </qresource>
     <qresource prefix="/themes">
         <file>themes/pink_bg.svg</file>

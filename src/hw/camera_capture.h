@@ -8,9 +8,9 @@
 #include <QMutex>
 #include <QVideoFrame>
 
-namespace xrk {
+#include "camera_control.h"
 
-class CameraControl;  // camera lifecycle worker (owns its own thread)
+namespace xrk {
 
 class CameraCapture : public QObject {
     Q_OBJECT

@@ -1,4 +1,5 @@
 #include "camera_capture.h"
+#include "camera_control.h"
 #include "core/logger.h"
 
 #include <QCamera>
@@ -10,91 +11,69 @@
 
 namespace xrk {
 
-// Camera lifecycle worker. Created and moved to the dedicated camera thread so
-// that QCamera::start()/stop() -- which notify state changes through the Qt
-// event loop -- always execute on a thread that has a live event loop running.
-// Without this, stop() blocks forever waiting for a signal that never arrives
-// when the caller (Host) has no running event loop (headless tests, app
-// teardown), which previously hung Host destruction.
-class CameraControl : public QObject {
-    Q_OBJECT
-public:
-    explicit CameraControl(CameraCapture* owner, QObject* parent = nullptr)
-        : QObject(parent), m_owner(owner) {}
+CameraControl::CameraControl(CameraCapture* owner, QObject* parent)
+    : QObject(parent), m_owner(owner) {
+}
 
-    bool isInitialized() const { return m_initialized; }
+bool CameraControl::isInitialized() const { return m_initialized; }
 
-signals:
-    void frameReady(const QVideoFrame& frame);
-
-public slots:
-    void start(int cameraIndex) {
-        QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
-        if (cameras.isEmpty()) {
-            LOG_ERROR("Camera: No cameras found");
-            m_initialized = false;
-            return;
-        }
-
-        if (cameraIndex < 0 || cameraIndex >= cameras.size()) {
-            cameraIndex = 0;
-        }
-
-        m_cameraIndex = cameraIndex;
-        QCameraDevice device = cameras[cameraIndex];
-
-        // Parent to nullptr: these live on the camera thread and are deleted in
-        // stop() on the same thread.
-        m_camera = new QCamera(device, nullptr);
-        m_sink = new QVideoSink(nullptr);
-        m_session = new QMediaCaptureSession(nullptr);
-
-        static_cast<QMediaCaptureSession*>(m_session)->setCamera(static_cast<QCamera*>(m_camera));
-        static_cast<QMediaCaptureSession*>(m_session)->setVideoSink(static_cast<QVideoSink*>(m_sink));
-
-        connect(static_cast<QVideoSink*>(m_sink), &QVideoSink::videoFrameChanged,
-                this, &CameraControl::onSinkFrame);
-
-        static_cast<QCamera*>(m_camera)->start();
-        m_initialized = true;
-        LOG_INFO("Camera initialized: " + device.description());
-    }
-
-    void stop() {
-        if (m_camera) {
-            static_cast<QCamera*>(m_camera)->stop();
-            delete static_cast<QCamera*>(m_camera);
-            m_camera = nullptr;
-        }
-        if (m_sink) {
-            delete static_cast<QVideoSink*>(m_sink);
-            m_sink = nullptr;
-        }
-        if (m_session) {
-            delete static_cast<QMediaCaptureSession*>(m_session);
-            m_session = nullptr;
-        }
+void CameraControl::start(int cameraIndex) {
+    QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    if (cameras.isEmpty()) {
+        LOG_ERROR("Camera: No cameras found");
         m_initialized = false;
-        LOG_INFO("Camera shutdown");
+        return;
     }
 
-private slots:
-    void onSinkFrame() {
-        if (!m_sink) return;
-        QVideoFrame frame = static_cast<QVideoSink*>(m_sink)->videoFrame();
-        if (frame.isValid()) {
-            emit frameReady(frame);
-        }
+    if (cameraIndex < 0 || cameraIndex >= cameras.size()) {
+        cameraIndex = 0;
     }
 
-private:
-    CameraCapture* m_owner;
-    bool m_initialized = false;
-    int m_cameraIndex = 0;
-    void* m_camera = nullptr;       // QCamera*
-    void* m_sink = nullptr;         // QVideoSink*
-    void* m_session = nullptr;      // QMediaCaptureSession*
-};
+    m_cameraIndex = cameraIndex;
+    QCameraDevice device = cameras[cameraIndex];
+
+    // Parent to nullptr: these live on the camera thread and are deleted in
+    // stop() on the same thread.
+    m_camera = new QCamera(device, nullptr);
+    m_sink = new QVideoSink(nullptr);
+    m_session = new QMediaCaptureSession(nullptr);
+
+    static_cast<QMediaCaptureSession*>(m_session)->setCamera(static_cast<QCamera*>(m_camera));
+    static_cast<QMediaCaptureSession*>(m_session)->setVideoSink(static_cast<QVideoSink*>(m_sink));
+
+    connect(static_cast<QVideoSink*>(m_sink), &QVideoSink::videoFrameChanged,
+            this, &CameraControl::onSinkFrame);
+
+    static_cast<QCamera*>(m_camera)->start();
+    m_initialized = true;
+    LOG_INFO("Camera initialized: " + device.description());
+}
+
+void CameraControl::stop() {
+    if (m_camera) {
+        static_cast<QCamera*>(m_camera)->stop();
+        delete static_cast<QCamera*>(m_camera);
+        m_camera = nullptr;
+    }
+    if (m_sink) {
+        delete static_cast<QVideoSink*>(m_sink);
+        m_sink = nullptr;
+    }
+    if (m_session) {
+        delete static_cast<QMediaCaptureSession*>(m_session);
+        m_session = nullptr;
+    }
+    m_initialized = false;
+    LOG_INFO("Camera shutdown");
+}
+
+void CameraControl::onSinkFrame() {
+    if (!m_sink) return;
+    QVideoFrame frame = static_cast<QVideoSink*>(m_sink)->videoFrame();
+    if (frame.isValid()) {
+        emit frameReady(frame);
+    }
+}
 
 CameraCapture::CameraCapture(QObject* parent) : QObject(parent) {
     // Dedicated thread with a live event loop for camera start()/stop().
@@ -128,7 +107,11 @@ bool CameraCapture::initialize(int cameraIndex) {
     // visible to the caller without needing a running event loop here.
     QMetaObject::invokeMethod(m_control, "start", Qt::BlockingQueuedConnection,
                               Q_ARG(int, cameraIndex));
-    return m_control->isInitialized();
+    bool ok = m_control->isInitialized();
+    if (!ok) {
+        emit cameraError(tr("摄像头初始化失败 (index: %1)").arg(cameraIndex));
+    }
+    return ok;
 }
 
 void CameraCapture::shutdown() {
@@ -194,5 +177,3 @@ void CameraCapture::onFrameCaptured(const QVideoFrame& frame) {
 }
 
 } // namespace xrk
-
-#include "camera_capture.moc"

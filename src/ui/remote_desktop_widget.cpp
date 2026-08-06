@@ -366,12 +366,15 @@ void RemoteDesktopWidget::keyPressEvent(QKeyEvent* event) {
     // Use nativeVirtualKey() which gives the platform VK code (Windows VK_*, Linux KeySym, macOS CGKeyCode).
     // nativeScanCode() gives hardware scan codes which are NOT virtual key codes
     // and the host's InputControl::keyEvent expects VK codes.
-    sendKeyEventToRemote(event->nativeVirtualKey(), true, event->modifiers());
+    // Also forward the typed character(s) so the host can inject the exact
+    // Unicode text (KEYEVENTF_UNICODE), keeping remote typing correct even when
+    // the host uses a different keyboard layout or an active IME.
+    sendKeyEventToRemote(event->nativeVirtualKey(), true, event->modifiers(), event->text());
 }
 
 void RemoteDesktopWidget::keyReleaseEvent(QKeyEvent* event) {
     if (!m_active) return;
-    sendKeyEventToRemote(event->nativeVirtualKey(), false, event->modifiers());
+    sendKeyEventToRemote(event->nativeVirtualKey(), false, event->modifiers(), event->text());
 }
 
 void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
@@ -382,17 +385,34 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
 
     QImage image;
     if (frame.format == FrameFormat::JPEG) {
-        image.loadFromData(frame.data, "JPEG");
+        bool loaded = image.loadFromData(frame.data, "JPEG");
+        if (!loaded) {
+            LOG_WARNING("[Widget] frame#" + QString::number(receivedCount) + 
+                        " JPEG loadFromData failed, dataSz=" + QString::number(frame.data.size()) +
+                        " first4=0x" + frame.data.left(4).toHex());
+        }
     } else if (frame.format == FrameFormat::H264) {
         if (!m_h264Decoder) {
             m_h264Decoder = std::make_unique<VideoDecoder>();
-            m_h264Decoder->initialize();
+            bool initOk = m_h264Decoder->initialize();
+            if (!initOk) {
+                LOG_ERROR("[Widget] H264 decoder initialization FAILED - "
+                          "H.264 frames will not be displayed! "
+                          "Check FFmpeg libavcodec H264 decoder support. "
+                          "Falling back to JPEG if available.");
+            } else {
+                LOG_INFO("[Widget] H264 decoder initialized successfully");
+            }
         }
         if (m_h264Decoder->isInitialized()) {
             image = m_h264Decoder->decode(frame.data);
+            if (image.isNull()) {
+                LOG_WARNING("[Widget] frame#" + QString::number(receivedCount) + 
+                            " H264 decode returned null image, dataSz=" + QString::number(frame.data.size()));
+            }
         } else {
             if (decodeFailCount < 5) {
-                LOG_WARNING("[Widget] H264 decoder not initialized");
+                LOG_WARNING("[Widget] H264 decoder not initialized - cannot decode H264 frames");
             }
         }
     } else {
@@ -405,6 +425,12 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
         ++decodeOkCount;
         m_currentFrame = image;
         m_frameCount++;
+        static bool firstDisplay = false;
+        if (!firstDisplay) {
+            firstDisplay = true;
+            LOG_INFO("[DIAG] Widget: FIRST frame DECODED and displayed " +
+                     QString::number(image.width()) + "x" + QString::number(image.height()));
+        }
         update();
         if (decodeOkCount <= 5 || decodeOkCount % 300 == 0) {
             LOG_INFO("[Widget] frame#" + QString::number(receivedCount) +
@@ -419,7 +445,9 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
                         " DECODE FAIL#" + QString::number(decodeFailCount) +
                         " dataSz=" + QString::number(frame.data.size()) +
                         " fmt=" + QString::number(static_cast<int>(frame.format)) +
-                        " first4=0x" + frame.data.left(4).toHex());
+                        " first4=0x" + frame.data.left(4).toHex() +
+                        " | TROUBLESHOOTING: If H264, check decoder init. If JPEG, check data corruption. "
+                        "If all frames fail, check host encoder (H264 MF_E_NO_SAMPLE_TIMESTAMP?) and screen capture.");
         }
     }
 }
@@ -609,7 +637,8 @@ void RemoteDesktopWidget::sendMouseEventToRemote(MouseAction action, MouseButton
     emit mouseEventSent(event);
 }
 
-void RemoteDesktopWidget::sendKeyEventToRemote(uint32_t keyCode, bool pressed, uint32_t modifiers) {
+void RemoteDesktopWidget::sendKeyEventToRemote(uint32_t keyCode, bool pressed, uint32_t modifiers,
+                                                const QString& text) {
     if (!m_controller) return;
 
     static int sendKeyCount = 0;
@@ -618,14 +647,16 @@ void RemoteDesktopWidget::sendKeyEventToRemote(uint32_t keyCode, bool pressed, u
         LOG_INFO("[Widget] key#" + QString::number(sendKeyCount) +
                  " vk=0x" + QString::number(keyCode, 16) +
                  (pressed ? " DOWN" : " UP") +
-                 " mod=0x" + QString::number(modifiers, 16));
+                 " mod=0x" + QString::number(modifiers, 16) +
+                 " text=\"" + text + "\"");
     }
 
     KeyEvent event;
     event.keyCode = keyCode;
     event.pressed = pressed;
     event.modifiers = modifiers;
-    
+    event.text = text;
+
     m_controller->sendKeyEvent(event);
     emit keyEventSent(event);
 }

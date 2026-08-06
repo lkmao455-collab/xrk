@@ -129,4 +129,44 @@ TEST(ControllerScreen, EncryptedScreenFrameDecrypts) {
     EXPECT_TRUE(nonBlack) << "decoded frame is black";
 }
 
+// Regression test for the client-side H264 decode self-heal.
+//
+// When the Host is sending H264 but the client decoder cannot ingest the
+// stream, the desktop would stay black. The controller now tracks consecutive
+// H264 decode failures and, once a threshold (30) is hit, asks the Host to
+// switch to JPEG (h264DecodeFallbackRequested() latch). This test drives the
+// real reportFrameDecodeResult() slot directly and asserts the latch trips
+// exactly once and that a later successful decode does not re-trigger it.
+TEST(ControllerScreen, DecodeSelfHealRequestsJpeg) {
+    RemoteController ctrl(nullptr, nullptr);
+
+    EXPECT_FALSE(ctrl.h264DecodeFallbackRequested())
+        << "self-heal latch must start unset";
+
+    // Drive 30 consecutive H264 decode failures (the trigger threshold).
+    for (int i = 0; i < 30; ++i) {
+        QMetaObject::invokeMethod(&ctrl, "reportFrameDecodeResult",
+                                  Q_ARG(FrameFormat, FrameFormat::H264),
+                                  Q_ARG(bool, false));
+    }
+
+    EXPECT_TRUE(ctrl.h264DecodeFallbackRequested())
+        << "after 30 H264 decode failures the controller must request a JPEG switch";
+
+    // Driving more failures must NOT change the one-shot latch state.
+    for (int i = 0; i < 30; ++i) {
+        QMetaObject::invokeMethod(&ctrl, "reportFrameDecodeResult",
+                                  Q_ARG(FrameFormat, FrameFormat::H264),
+                                  Q_ARG(bool, false));
+    }
+    EXPECT_TRUE(ctrl.h264DecodeFallbackRequested());
+
+    // A successful (JPEG) decode resets the consecutive-failure streak but the
+    // one-shot latch stays set (the host was already asked to switch).
+    QMetaObject::invokeMethod(&ctrl, "reportFrameDecodeResult",
+                              Q_ARG(FrameFormat, FrameFormat::JPEG),
+                              Q_ARG(bool, true));
+    EXPECT_TRUE(ctrl.h264DecodeFallbackRequested());
+}
+
 } // namespace xrk

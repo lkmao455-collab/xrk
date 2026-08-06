@@ -2,6 +2,7 @@
 #include "app/clipboard_manager.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QElapsedTimer>
 #include <QTest>
 
 using namespace xrk;
@@ -46,17 +47,29 @@ TEST_F(ClipboardManagerTest, ApplyRemoteDoesNotBroadcast) {
 }
 
 TEST_F(ClipboardManagerTest, LocalChangeBroadcasts) {
-    // Simulate a local clipboard change: set text locally, then drive the
-    // manager's monitoring. We cannot easily trigger QClipboard::changed in a
-    // headless test, so assert the broadcast callback is wired and that the
-    // manager prefers it over a (null) connection.
-    EXPECT_NE(manager, nullptr);
-    // A local change through the timer path would broadcast; we just confirm
-    // the callback is stored/used by sending via the public path indirectly:
-    // set local clipboard then call onCheckTimer through the public timer.
-    QApplication::clipboard()->setText("local-change");
-    // Allow the internal check timer (500ms) to fire once.
-    QTest::qWait(700);
+    // Simulate a local clipboard change: write text to the local clipboard and
+    // let the manager's monitoring detect and broadcast it.
+    //
+    // On Windows a clipboard write can silently fail if a prior write still
+    // owns the clipboard, so clear it first. setMimeData is used rather than
+    // setText because setText alone was observed to leave the clipboard empty
+    // in this headless test environment.
+    QApplication::clipboard()->clear();
+    QApplication::processEvents();
+
+    QMimeData* mime = new QMimeData();
+    mime->setText("local-change");
+    QApplication::clipboard()->setMimeData(mime);
+
+    // Poll up to 2s for the broadcast: the 500ms check timer plus Windows
+    // clipboard propagation latency can exceed a fixed wait in a busy suite,
+    // which would make this test flaky.
+    QElapsedTimer timer;
+    timer.start();
+    while (broadcastCount < 1 && timer.elapsed() < 2000) {
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+        QTest::qWait(50);
+    }
     EXPECT_GE(broadcastCount, 1);
     EXPECT_EQ(lastBroadcast.mimeType, QString("text/plain"));
 }

@@ -119,6 +119,7 @@ bool ScreenCapture::initialize() {
 #endif
 
     LOG_ERROR("ScreenCapture initialization failed");
+    emit captureError(tr("屏幕采集初始化失败"));
     return false;
 }
 

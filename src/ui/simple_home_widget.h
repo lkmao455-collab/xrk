@@ -39,6 +39,9 @@ signals:
     void startHostService();
     void openSettings();
 
+public slots:
+    void setHostButtonState(bool running);
+
 private slots:
     void onConnectClicked();
     void onDeviceCardClicked(int index);

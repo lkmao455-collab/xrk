@@ -76,6 +76,7 @@ public:
     void setEncoderAsync(std::unique_ptr<VideoEncoder> encoder);
     VideoEncoder* encoder() const;
     void setEncryptionKey(const QByteArray& key, const QByteArray& iv);
+    void requestFallbackToJpeg();
 
 public slots:
     void start();
@@ -84,6 +85,7 @@ public slots:
 
 signals:
     void error(const QString& message);
+    void encoderChanged(EncoderType newType);
 
 private:
     FrameQueue<QImage>* m_inputQueue;
@@ -94,6 +96,8 @@ private:
     std::unique_ptr<Encryption> m_encryption;
     QThread* m_thread;
     std::atomic<bool> m_running;
+    std::atomic<int> m_consecutiveEmptyEncodes{0};
+    bool m_fallbackRequested = false;
 };
 
 class NetworkWorker : public QObject {
@@ -131,6 +135,10 @@ public:
     void stop();
     bool isRunning() const;
 
+    // Get last error message from start() failure
+    QString errorString() const { return m_lastError; }
+    void clearError() { m_lastError.clear(); }
+
     void setCaptureFps(int fps);
     int captureFps() const;
 
@@ -147,6 +155,12 @@ public:
 
     void setPrivacyScreenEnabled(bool enabled);
     bool isPrivacyScreenEnabled() const;
+
+    void setAutoGrantConsent(bool enabled);
+    bool isAutoGrantConsent() const;
+
+    // Auto-grant for private/LAN IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+    bool isPrivateIp(const QString& ip) const;
 
     // Local "lock this console now" action: shows the privacy overlay and
     // blocks all local physical input for `seconds`, then auto-unlocks. This is
@@ -209,6 +223,38 @@ signals:
     // Emitted after a successful auth so the host UI can ask the user to approve.
     void consentRequested(const QString& clientId, const QString& peerAddress);
     void frameSent(int bytes);
+    // Error signal for detailed error reporting
+    void errorOccurred(const QString& message);
+
+    // VoIP signaling
+    void incomingCall(const QString& clientId, const QString& callId, const QString& callerName, const QString& callType, const QString& sdp);
+    void callAccepted(const QString& clientId, const QString& callId, const QString& sdp);
+    void callRejected(const QString& clientId, const QString& callId, const QString& reason);
+    void callEnded(const QString& clientId, const QString& callId);
+    void iceCandidateReceived(const QString& clientId, const QString& callId, const QString& candidate);
+
+    // Video call media
+    void videoCallStarted(const QString& clientId, const QString& callId, int width, int height, int fps);
+    void videoCallStopped(const QString& clientId, const QString& callId);
+    void videoCallFrameReceived(const QString& clientId, const QString& callId, const QByteArray& frameData, uint64_t timestamp, uint32_t sequenceNumber, bool isKeyFrame, qint64 captureTime);
+
+    // Screen sharing
+    void screenShareStarted(const QString& clientId, const QString& sessionId, int width, int height, int fps);
+    void screenShareStopped(const QString& clientId, const QString& sessionId);
+    void screenShareFrameReceived(const QString& clientId, const QString& sessionId, const QByteArray& frameData, uint64_t timestamp, uint32_t sequenceNumber, bool isKeyFrame, qint64 captureTime);
+
+    // Group chat advanced
+    void groupAnnouncementReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& announcement, const QString& announcerId, const QString& announcerName);
+    void groupMentionReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& message, const QStringList& mentionedMemberIds, const QStringList& mentionedMemberNames, const QString& senderId, const QString& senderName);
+    void groupVoteReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& voteTitle, const QStringList& options, int durationSeconds, const QString& creatorId, const QString& creatorName);
+
+    // Group files/albums
+    void groupFileReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& fileId, const QString& fileName, qint64 fileSize, const QString& md5, const QString& uploaderId, const QString& uploaderName);
+    void groupAlbumReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& albumId, const QString& albumName, const QStringList& fileIds, const QStringList& fileNames, const QString& creatorId, const QString& creatorName);
+
+    // Group todos
+    void groupTodoReceived(const QString& clientId, const QString& groupId, const QString& groupName, const QString& todoId, const QString& title, const QString& description, int status, int priority, const QString& assigneeId, const QString& assigneeName, const QString& creatorId, const QString& creatorName, qint64 dueDate);
+    void groupTodoUpdated(const QString& clientId, const QString& groupId, const QString& groupName, const QString& todoId, int status);
 
 private slots:
     void onNewConnection();
@@ -217,6 +263,7 @@ private slots:
     void onDiscoveryRequest();
     void onCaptureWorkerError(const QString& message);
     void onEncodeWorkerError(const QString& message);
+    void onEncoderChanged(EncoderType newType);
     void onNetworkWorkerError(const QString& message);
     void onAudioDataCaptured(const QByteArray& pcmData);
 
@@ -245,9 +292,11 @@ private:
     void loadTrustedIps();
     void saveTrustedIps();
 
-    void sendSyncNotify(const QString& clientId, const QString& hostDir,
-                        const QString& hostFilePath, const QString& localDir,
-                        uint64_t size, int64_t mtime);
+void sendSyncNotify(const QString& clientId, const QString& hostDir,
+                         const QString& hostFilePath, const QString& localDir,
+                         uint64_t size, int64_t mtime);
+
+    void sendToClient(const QString& clientId, const QByteArray& data);
 
     // P2P / relay path
     void acceptExternalSocket(QTcpSocket* socket);
@@ -260,6 +309,7 @@ private:
     int m_captureFps = 60;
     QString m_password;
     QString m_accessCode;
+    QString m_lastError;
 
     QTcpServer* m_tcpServer = nullptr;
     QUdpSocket* m_udpSocket = nullptr;
@@ -317,6 +367,9 @@ private:
     ClipboardManager* m_clipboardManager = nullptr;
 
     bool m_audioEnabled = true;
+
+    // Auto-grant consent for trusted/local connections (no UI prompt)
+    bool m_autoGrantConsent = false;
 
     AuditLogger* m_auditLogger = nullptr;
     void logAudit(const QString& clientId, const QString& event, const QString& details = QString());

@@ -17,7 +17,7 @@ bool VideoDecoder::initialize() {
 
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) {
-        LOG_ERROR("H264 decoder not found");
+        LOG_ERROR("H264 decoder not found - libavcodec may not have H264 decoder support");
         return false;
     }
 
@@ -32,7 +32,9 @@ bool VideoDecoder::initialize() {
 
     int ret = avcodec_open2(m_codecCtx, codec, nullptr);
     if (ret < 0) {
-        LOG_ERROR("Failed to open H264 decoder: " + QString::number(ret));
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR("Failed to open H264 decoder: " + QString::number(ret) + " (" + QString(errbuf) + ")");
         avcodec_free_context(&m_codecCtx);
         return false;
     }
@@ -49,7 +51,7 @@ bool VideoDecoder::initialize() {
     }
 
     m_initialized = true;
-    LOG_INFO("H264 decoder initialized");
+    LOG_INFO("H264 decoder initialized (codec: " + QString(codec->name) + ")");
     return true;
 }
 
@@ -80,6 +82,9 @@ QImage VideoDecoder::decode(const QByteArray& data) {
 
     int ret = avcodec_send_packet(m_codecCtx, m_packet);
     if (ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_WARNING("VideoDecoder: avcodec_send_packet failed: " + QString::number(ret) + " (" + QString(errbuf) + ")");
         return QImage();
     }
 
@@ -90,6 +95,9 @@ QImage VideoDecoder::decode(const QByteArray& data) {
             break;
         }
         if (rcv < 0) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(rcv, errbuf, sizeof(errbuf));
+            LOG_WARNING("VideoDecoder: avcodec_receive_frame failed: " + QString::number(rcv) + " (" + QString(errbuf) + ")");
             break;
         }
 
@@ -97,6 +105,7 @@ QImage VideoDecoder::decode(const QByteArray& data) {
         int height = m_frame->height;
 
         if (width <= 0 || height <= 0) {
+            LOG_WARNING("VideoDecoder: invalid frame dimensions " + QString::number(width) + "x" + QString::number(height));
             continue;
         }
 
@@ -116,6 +125,7 @@ QImage VideoDecoder::decode(const QByteArray& data) {
                 SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
             );
             if (!m_swsCtx) {
+                LOG_ERROR("VideoDecoder: failed to create SwsContext for " + QString::number(width) + "x" + QString::number(height));
                 return QImage();
             }
         }
@@ -127,12 +137,15 @@ QImage VideoDecoder::decode(const QByteArray& data) {
         sws_scale(m_swsCtx, m_frame->data, m_frame->linesize, 0, height, dstSlice, dstStride);
 
         result = image;
+
+        // Only return the first complete frame (real-time streaming)
+        break;
     }
 
-    return result;
-}
+return result;
+    }
 
-bool VideoDecoder::isInitialized() const {
+    bool VideoDecoder::isInitialized() const {
     return m_initialized;
 }
 

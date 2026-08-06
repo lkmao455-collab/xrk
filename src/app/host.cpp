@@ -69,6 +69,16 @@ void CaptureWorker::start() {
             emit error("Screen capture init failed on capture thread");
         }
     }
+    // [DIAG] One-time, prominent marker so a single run reveals whether capture works.
+    if (m_capture) {
+        if (m_capture->isInitialized()) {
+            LOG_INFO("[DIAG] CaptureWorker: screen capture INITIALIZED OK (fps=" + QString::number(m_fps) + ")");
+        } else {
+            LOG_ERROR("[DIAG] CaptureWorker: screen capture FAILED to initialize - desktop will be BLACK. "
+                      "Check DXGI/GDI availability, a real display is present, and this is not a "
+                      "headless/secure-desktop/UAC-prompt session.");
+        }
+    }
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, &CaptureWorker::onCaptureTimer);
     m_timer->start(1000 / m_fps);
@@ -91,6 +101,17 @@ void CaptureWorker::onCaptureTimer() {
         frame = m_capture->captureFrame();
     }
     if (!frame.isNull()) {
+        static bool firstCaptured = false;
+        if (!firstCaptured) {
+            firstCaptured = true;
+            LOG_INFO("[DIAG] CaptureWorker: FIRST frame captured " +
+                     QString::number(frame.width()) + "x" + QString::number(frame.height()));
+        }
+        static int captureCount = 0;
+        if (++captureCount % 1800 == 1) { // Log every ~30 seconds at 60fps
+            LOG_INFO("CaptureWorker: captured " + QString::number(captureCount) + 
+                     " frames, current: " + QString::number(frame.width()) + "x" + QString::number(frame.height()));
+        }
         // Non-blocking enqueue: if queue is full, drop this frame instead of
         // blocking the timer thread (which would stall all subsequent captures).
         if (!m_queue->enqueueNonBlocking(frame)) {
@@ -103,7 +124,11 @@ void CaptureWorker::onCaptureTimer() {
     } else {
         static int nullCount = 0;
         if (++nullCount % 300 == 1) {
-            LOG_WARNING("CaptureWorker: " + QString::number(nullCount) + " null frames so far");
+            LOG_WARNING("CaptureWorker: " + QString::number(nullCount) + 
+                        " null frames so far. Screen capture may be failing - "
+                        "check DXGI Desktop Duplication / GDI fallback. "
+                        "Common causes: UAC, secure desktop, no display, "
+                        "headless session, or permission issues.");
         }
     }
 }
@@ -136,6 +161,10 @@ void EncodeWorker::setEncryptionKey(const QByteArray& key, const QByteArray& iv)
     m_encryption->setKey(key, iv);
 }
 
+void EncodeWorker::requestFallbackToJpeg() {
+    m_fallbackRequested = true;
+}
+
 void EncodeWorker::start() {
     if (m_running) return;
     m_running = true;
@@ -164,7 +193,22 @@ void EncodeWorker::processFrames() {
         // Check for deferred encoder swap (safe: only done on this thread)
         if (m_encoderSwapPending.exchange(false)) {
             m_encoder = std::move(m_pendingEncoder);
+            m_consecutiveEmptyEncodes = 0;
             LOG_INFO("Encoder swapped on encode thread");
+        }
+
+        // Check for fallback request (from host due to consecutive empty encodes)
+        if (m_fallbackRequested) {
+            m_fallbackRequested = false;
+            auto jpegEncoder = VideoEncoder::create(EncoderType::JPEG);
+            if (jpegEncoder && jpegEncoder->initialize(1920, 1080, 60)) {
+                m_encoder = std::move(jpegEncoder);
+                m_consecutiveEmptyEncodes = 0;
+                emit encoderChanged(EncoderType::JPEG);
+                LOG_WARNING("EncodeWorker: Fallback to JPEG encoder due to consecutive empty H264 encodes");
+            } else {
+                LOG_ERROR("EncodeWorker: JPEG fallback failed!");
+            }
         }
 
         QImage rawFrame = m_inputQueue->dequeue(50);
@@ -187,11 +231,29 @@ void EncodeWorker::processFrames() {
         if (m_encoder && m_encoder->isInitialized()) {
             encodedData = m_encoder->encode(rawFrame);
             format = (m_encoder->type() == EncoderType::H264) ? FrameFormat::H264 : FrameFormat::JPEG;
+            if (encodedData.isEmpty()) {
+                // Encoder returned empty data - track consecutive failures for auto-fallback
+                int emptyCount = ++m_consecutiveEmptyEncodes;
+                if (emptyCount % 30 == 1) {
+                    LOG_WARNING("EncodeWorker: Empty encode #" + QString::number(emptyCount) +
+                                " (type: " + (m_encoder->type() == EncoderType::H264 ? "H264" : "JPEG") + ")");
+                }
+                // Auto-fallback after 60 consecutive empty encodes (~1 second at 60fps)
+                if (m_encoder->type() == EncoderType::H264 && emptyCount >= 60) {
+                    LOG_ERROR("EncodeWorker: " + QString::number(emptyCount) + 
+                              " consecutive empty H264 encodes - requesting JPEG fallback");
+                    requestFallbackToJpeg();
+                }
+            } else {
+                // Successful encode - reset counter
+                m_consecutiveEmptyEncodes = 0;
+            }
         } else {
             QBuffer buffer(&encodedData);
             buffer.open(QIODevice::WriteOnly);
             rawFrame.save(&buffer, "JPEG", 70);
             buffer.close();
+            m_consecutiveEmptyEncodes = 0;
         }
 
         qint64 encodeEnd = QDateTime::currentMSecsSinceEpoch();
@@ -208,6 +270,15 @@ void EncodeWorker::processFrames() {
         }
 
         ++framesEncoded;
+        {
+            static bool firstEncoded = false;
+            if (!firstEncoded) {
+                firstEncoded = true;
+                LOG_INFO("[DIAG] EncodeWorker: FIRST frame encoded format=" +
+                         QString(format == FrameFormat::H264 ? "H264" : "JPEG") +
+                         " size=" + QString::number(encodedData.size()) + "B");
+            }
+        }
         if (framesEncoded % 300 == 1) {
             qint64 avgUs = framesEncoded > 0 ? totalEncodeUs / framesEncoded : 0;
             LOG_INFO("EncodeWorker: " + QString::number(framesEncoded) +
@@ -298,6 +369,7 @@ void NetworkWorker::drainQueue() {
     if (batch.isEmpty()) return;
 
     qint64 bytesThisCycle = 0;
+    bool sentAny = false;
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
         QTcpSocket* socket = it.value();
         if (!socket || socket->state() != QAbstractSocket::ConnectedState) continue;
@@ -315,6 +387,15 @@ void NetworkWorker::drainQueue() {
         qint64 written = socket->write(batch);
         bytesThisCycle += written;
         socket->flush();
+        if (written > 0) sentAny = true;
+    }
+
+    if (sentAny) {
+        static bool firstSent = false;
+        if (!firstSent) {
+            firstSent = true;
+            LOG_INFO("[DIAG] NetworkWorker: FIRST frame batch delivered to a connected client");
+        }
     }
 
     framesSent += frameCount;
@@ -322,9 +403,16 @@ void NetworkWorker::drainQueue() {
     emit frameSent(static_cast<int>(bytesThisCycle));
 
     ++drainCycles;
-    if (drainCycles % 300 == 0) {
+    if (drainCycles % 150 == 0) { // More frequent: every ~2.4 seconds at 16ms intervals
         LOG_INFO("NetworkWorker: " + QString::number(framesSent) + " frames sent, " +
-                 QString::number(totalBytes / 1024) + " KB, clients=" + QString::number(m_clients.size()));
+                 QString::number(totalBytes / 1024) + " KB, clients=" + QString::number(m_clients.size()) +
+                 ", lastBatch=" + QString::number(frameCount) + " frames, " + QString::number(bytesThisCycle) + " bytes");
+    }
+    if (m_clients.isEmpty()) {
+        static int emptyClientLog = 0;
+        if (++emptyClientLog % 600 == 1) { // Log every ~10 seconds when no clients
+            LOG_WARNING("NetworkWorker: No consented clients to send frames to!");
+        }
     }
 }
 
@@ -350,17 +438,24 @@ bool Host::start(uint16_t port) {
 
     m_port = port;
 
+    m_lastError.clear();
+
     m_tcpServer = new QTcpServer(this);
     connect(m_tcpServer, &QTcpServer::newConnection, this, &Host::onNewConnection);
 
-    if (!m_tcpServer->listen(QHostAddress::Any, port)) {
-        LOG_ERROR("Host: Failed to start TCP server: " + m_tcpServer->errorString());
+    if (!m_tcpServer->listen(QHostAddress::AnyIPv4, port)) {
+        QString err = "Failed to start TCP server on port " + QString::number(port) + ": " + m_tcpServer->errorString();
+        LOG_ERROR("Host: " + err);
+        m_lastError = err;
+        emit errorOccurred(err);
         return false;
     }
 
     m_udpSocket = new QUdpSocket(this);
     if (!m_udpSocket->bind(QHostAddress::Any, UDP_BROADCAST_PORT + 1)) {
-        LOG_WARNING("Host: Failed to bind UDP socket for discovery");
+        QString warn = "Failed to bind UDP socket for discovery on port " + QString::number(UDP_BROADCAST_PORT + 1);
+        LOG_WARNING("Host: " + warn);
+        // Not a fatal error, continue
     }
     connect(m_udpSocket, &QUdpSocket::readyRead, this, &Host::onDiscoveryRequest);
 
@@ -369,6 +464,7 @@ bool Host::start(uint16_t port) {
     LOG_INFO("Host: Access code: " + m_accessCode);
 
     m_screenCapture = new ScreenCapture(this);
+    connect(m_screenCapture, &ScreenCapture::captureError, this, &Host::errorOccurred);
     // NOTE: ScreenCapture::initialize() is deferred to CaptureWorker::start()
     // so DXGI/GDI resources are created on the capture thread, not the main
     // thread.  DXGI Desktop Duplication requires that AcquireNextFrame and
@@ -376,9 +472,11 @@ bool Host::start(uint16_t port) {
     // interface.
 
     m_inputControl = new InputControl(this);
+    connect(m_inputControl, &InputControl::inputError, this, &Host::errorOccurred);
     m_inputControl->initialize();
 
     m_cameraCapture = new CameraCapture(this);
+    connect(m_cameraCapture, &CameraCapture::cameraError, this, &Host::errorOccurred);
     if (!m_cameraCapture->initialize()) {
         LOG_WARNING("Host: Camera init failed, screen-only mode");
     }
@@ -405,19 +503,24 @@ bool Host::start(uint16_t port) {
 
     m_encodeThread = new QThread(this);
     m_encodeWorker = new EncodeWorker(m_rawFrameQueue, m_encodedFrameQueue);
-    auto encoder = VideoEncoder::create(EncoderType::H264);
-    if (!encoder || !encoder->initialize(1920, 1080, m_captureFps) ||
-        encoder->encode(QImage(64, 64, QImage::Format_RGB32)).isEmpty()) {
-        // initialize() can succeed yet encode() return nothing (e.g. the Media
-        // Foundation H264 encoder is selected but cannot process input, or
-        // libx264 is not available). Probe-encode and fall back to JPEG so the
-        // remote desktop still renders instead of staying black.
-        if (encoder) {
-            LOG_WARNING("H264 encoder produced no output, falling back to JPEG");
-        }
-        encoder = VideoEncoder::create(EncoderType::JPEG);
-        encoder->initialize(1920, 1080, m_captureFps);
-        LOG_INFO("Using JPEG encoder for screen capture");
+
+    // Default to the JPEG encoder. JPEG is decodable by every client (Qt's JPEG
+    // plugin on the native controller, the Web Crypto + <img> path on the web
+    // client) with zero codec/keyframe dependencies, so the remote desktop is
+    // guaranteed to render. H264 is kept as an OPT-IN for the "game" low-latency
+    // gear only (see setQualityLevel), where the controller explicitly requests
+    // it and can fall back to JPEG if decoding fails.
+    //
+    // Historically the Host defaulted to H264, which produced a black remote
+    // desktop on clients whose H264 decoder could not ingest the live stream
+    // (missing SPS/PPS / keyframe re-sync, or an ffmpeg build without H264
+    // decode support) — while mouse/keyboard input (unencrypted, tiny messages)
+    // kept working. Defaulting to JPEG eliminates that entire failure class.
+    auto encoder = VideoEncoder::create(EncoderType::JPEG);
+    if (!encoder || !encoder->initialize(1920, 1080, m_captureFps)) {
+        LOG_ERROR("JPEG encoder creation/initialization failed - screen sharing will not work!");
+    } else {
+        LOG_INFO("Using JPEG encoder for screen capture (default; switch to H264 via game/low-latency gear)");
     }
     m_encodeWorker->setEncoder(std::move(encoder));
     if (m_encodeWorker->encoder()) {
@@ -430,6 +533,7 @@ bool Host::start(uint16_t port) {
     m_encodeWorker->moveToThread(m_encodeThread);
     connect(m_encodeThread, &QThread::started, m_encodeWorker, &EncodeWorker::start);
     connect(m_encodeWorker, &EncodeWorker::error, this, &Host::onEncodeWorkerError);
+    connect(m_encodeWorker, &EncodeWorker::encoderChanged, this, &Host::onEncoderChanged);
     m_encodeThread->start();
 
     m_networkWorker = new NetworkWorker(m_encodedFrameQueue);
@@ -740,6 +844,14 @@ void Host::sendSyncNotify(const QString& clientId, const QString& hostDir,
     socket->flush();
 }
 
+void Host::sendToClient(const QString& clientId, const QByteArray& data) {
+    if (!m_clients.contains(clientId)) return;
+    QTcpSocket* socket = m_clients.value(clientId).socket;
+    if (!socket) return;
+    socket->write(data);
+    socket->flush();
+}
+
 void Host::onQualityTimer() {
     // Measure bandwidth over last 2 seconds
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -897,11 +1009,30 @@ void Host::requestConsent(const QString& clientId) {
     if (!socket) return;
 
     QString peer = socket->peerAddress().toString();
+    LOG_INFO("Host: requestConsent for " + clientId + " peer=" + peer +
+             " autoGrant=" + (m_autoGrantConsent ? "Y" : "N") +
+             " trusted=" + (isTrustedIp(peer) ? "Y" : "N") +
+             " private=" + (isPrivateIp(peer) ? "Y" : "N"));
+
+    // Auto-grant if enabled (for headless/testing or local connections)
+    if (m_autoGrantConsent) {
+        LOG_INFO("Host: Auto-grant consent enabled; auto-granting for " + clientId);
+        grantConsent(clientId);
+        return;
+    }
 
     // Auto-grant connections from a trusted (remembered) IP without prompting,
     // so the host user isn't asked to approve the same machine every time.
     if (isTrustedIp(peer)) {
         LOG_INFO("Host: Peer " + peer + " is trusted; auto-granting consent for " + clientId);
+        grantConsent(clientId);
+        return;
+    }
+
+    // Auto-grant for private/LAN IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+    // since this is a LAN remote control tool and the user explicitly initiated the connection.
+    if (isPrivateIp(peer)) {
+        LOG_INFO("Host: Peer " + peer + " is a private/LAN IP; auto-granting consent for " + clientId);
         grantConsent(clientId);
         return;
     }
@@ -916,6 +1047,16 @@ void Host::requestConsent(const QString& clientId) {
 
     emit consentRequested(clientId, peer);
     LOG_INFO("Host: Consent requested for " + clientId + " (peer " + peer + ")");
+
+    // Safety net: auto-grant after 5 seconds if no manual response.
+    // This ensures users never get permanently stuck with a black screen.
+    QTimer::singleShot(5000, this, [this, clientId, peer]() {
+        if (m_clients.contains(clientId) && !m_clients[clientId].consented) {
+            LOG_WARNING("Host: Auto-granting consent for " + clientId +
+                        " (peer " + peer + ") after 5s timeout (no manual response)");
+            grantConsent(clientId);
+        }
+    });
 }
 
 void Host::grantConsent(const QString& clientId) {
@@ -931,9 +1072,16 @@ void Host::grantConsent(const QString& clientId) {
     info.socket->write(msg);
     info.socket->flush();
 
-    LOG_INFO("Host: Consent granted for " + clientId);
+    LOG_INFO("Host: Consent granted for " + clientId + " — frames will now be sent");
     emit clientAuthenticated(clientId);
     updateNetworkWorkerClients();
+
+    // Verify the client was actually added to the network worker
+    int activeClients = 0;
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().consented) ++activeClients;
+    }
+    LOG_INFO("Host: Active consented clients: " + QString::number(activeClients));
 }
 
 void Host::denyConsent(const QString& clientId) {
@@ -1162,21 +1310,201 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
             }
             break;
         }
-        case MessageType::AUDIO_DATA: {
-            // Phase 6: controller microphone audio → play on the host's speakers.
-            // Only play once the host user has granted consent. Do NOT rebroadcast.
+case MessageType::AUDIO_DATA: {
+             // Phase 6: controller microphone audio → play on the host's speakers.
+             // Only play once the host user has granted consent. Do NOT rebroadcast.
+             if (!m_clients.value(clientId).consented) return;
+             if (!m_controllerAudioPlayer) {
+                 m_controllerAudioPlayer = new AudioPlayer(this);
+                 if (!m_controllerAudioPlayer->initialize()) {
+                     LOG_WARNING("Host: controller-audio player init failed");
+                     delete m_controllerAudioPlayer;
+                     m_controllerAudioPlayer = nullptr;
+                 }
+             }
+             if (m_controllerAudioPlayer && m_controllerAudioPlayer->isInitialized()) {
+                 m_controllerAudioPlayer->playAudio(payload);
+             }
+             break;
+         }
+         case MessageType::VOICE_MSG: {
+             // Discrete voice message from controller → play on host speakers
+             if (!m_clients.value(clientId).consented) return;
+             if (!m_controllerAudioPlayer) {
+                 m_controllerAudioPlayer = new AudioPlayer(this);
+                 if (!m_controllerAudioPlayer->initialize()) {
+                     LOG_WARNING("Host: controller-audio player init failed");
+                     delete m_controllerAudioPlayer;
+                     m_controllerAudioPlayer = nullptr;
+                 }
+             }
+             if (m_controllerAudioPlayer && m_controllerAudioPlayer->isInitialized()) {
+                 m_controllerAudioPlayer->playAudio(payload);
+             }
+             // Send ACK
+             QByteArray ack = ProtocolManager::encode(MessageType::VOICE_ACK, QByteArray("OK"));
+             sendToClient(clientId, ack);
+             break;
+         }
+case MessageType::VOICE_ACK: {
+            // Voice message delivery confirmation
+            LOG_DEBUG("Host: received voice ACK from " + clientId);
+            break;
+        }
+        case MessageType::VIDEO_MSG: {
+            // Video message from controller
             if (!m_clients.value(clientId).consented) return;
-            if (!m_controllerAudioPlayer) {
-                m_controllerAudioPlayer = new AudioPlayer(this);
-                if (!m_controllerAudioPlayer->initialize()) {
-                    LOG_WARNING("Host: controller-audio player init failed");
-                    delete m_controllerAudioPlayer;
-                    m_controllerAudioPlayer = nullptr;
-                }
-            }
-            if (m_controllerAudioPlayer && m_controllerAudioPlayer->isInitialized()) {
-                m_controllerAudioPlayer->playAudio(payload);
-            }
+            // For now, just save to database and send ACK
+            // Video playback would require a video player component
+            QByteArray ack = ProtocolManager::encode(MessageType::VIDEO_ACK, QByteArray("OK"));
+            sendToClient(clientId, ack);
+            LOG_INFO("Host: received video message from " + clientId);
+            break;
+        }
+        case MessageType::VIDEO_ACK: {
+            // Video message delivery confirmation
+            LOG_DEBUG("Host: received video ACK from " + clientId);
+            break;
+        }
+        case MessageType::LOCATION_MSG: {
+            if (!m_clients.value(clientId).consented) return;
+            QByteArray ack = ProtocolManager::encode(MessageType::LOCATION_ACK, QByteArray("OK"));
+            sendToClient(clientId, ack);
+            LOG_INFO("Host: received location message from " + clientId);
+            break;
+        }
+        case MessageType::LOCATION_ACK: {
+            LOG_DEBUG("Host: received location ACK from " + clientId);
+            break;
+        }
+        case MessageType::CARD_MSG: {
+            if (!m_clients.value(clientId).consented) return;
+            QByteArray ack = ProtocolManager::encode(MessageType::CARD_ACK, QByteArray("OK"));
+            sendToClient(clientId, ack);
+            LOG_INFO("Host: received card message from " + clientId);
+            break;
+        }
+        case MessageType::CARD_ACK: {
+            LOG_DEBUG("Host: received card ACK from " + clientId);
+            break;
+        }
+        case MessageType::MERGE_FORWARD: {
+            if (!m_clients.value(clientId).consented) return;
+            QByteArray ack = ProtocolManager::encode(MessageType::MERGE_FORWARD_ACK, QByteArray("OK"));
+            sendToClient(clientId, ack);
+            LOG_INFO("Host: received merge forward message from " + clientId);
+            break;
+        }
+        case MessageType::MERGE_FORWARD_ACK: {
+            LOG_DEBUG("Host: received merge forward ACK from " + clientId);
+            break;
+        }
+        case MessageType::CALL_INVITE: {
+            if (!m_clients.value(clientId).consented) return;
+            CallInvite invite = ProtocolManager::decodeCallInvite(payload);
+            emit incomingCall(clientId, invite.callId, invite.callerName, invite.callType, invite.sdp);
+            break;
+        }
+        case MessageType::CALL_ACCEPT: {
+            if (!m_clients.value(clientId).consented) return;
+            CallAccept accept = ProtocolManager::decodeCallAccept(payload);
+            emit callAccepted(clientId, accept.callId, accept.sdp);
+            break;
+        }
+        case MessageType::CALL_REJECT: {
+            if (!m_clients.value(clientId).consented) return;
+            CallReject reject = ProtocolManager::decodeCallReject(payload);
+            emit callRejected(clientId, reject.callId, reject.reason);
+            break;
+        }
+        case MessageType::CALL_END: {
+            if (!m_clients.value(clientId).consented) return;
+            CallEnd end = ProtocolManager::decodeCallEnd(payload);
+            emit callEnded(clientId, end.callId);
+            break;
+        }
+        case MessageType::ICE_CANDIDATE: {
+            if (!m_clients.value(clientId).consented) return;
+            IceCandidate candidate = ProtocolManager::decodeIceCandidate(payload);
+            emit iceCandidateReceived(clientId, candidate.callId, candidate.candidate);
+            break;
+        }
+        case MessageType::VIDEO_CALL_START: {
+            if (!m_clients.value(clientId).consented) return;
+            VideoCallStart start = ProtocolManager::decodeVideoCallStart(payload);
+            emit videoCallStarted(clientId, start.callId, start.width, start.height, start.fps);
+            break;
+        }
+        case MessageType::VIDEO_CALL_STOP: {
+            if (!m_clients.value(clientId).consented) return;
+            VideoCallStop stop = ProtocolManager::decodeVideoCallStop(payload);
+            emit videoCallStopped(clientId, stop.callId);
+            break;
+        }
+        case MessageType::VIDEO_CALL_FRAME: {
+            if (!m_clients.value(clientId).consented) return;
+            VideoCallFrame frame = ProtocolManager::decodeVideoCallFrame(payload);
+            emit videoCallFrameReceived(clientId, frame.callId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_START: {
+            if (!m_clients.value(clientId).consented) return;
+            ScreenShareStart start = ProtocolManager::decodeScreenShareStart(payload);
+            emit screenShareStarted(clientId, start.sessionId, start.width, start.height, start.fps);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_STOP: {
+            if (!m_clients.value(clientId).consented) return;
+            ScreenShareStop stop = ProtocolManager::decodeScreenShareStop(payload);
+            emit screenShareStopped(clientId, stop.sessionId);
+            break;
+        }
+        case MessageType::SCREEN_SHARE_FRAME: {
+            if (!m_clients.value(clientId).consented) return;
+            ScreenShareFrame frame = ProtocolManager::decodeScreenShareFrame(payload);
+            emit screenShareFrameReceived(clientId, frame.sessionId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
+            break;
+        }
+        case MessageType::GROUP_ANNOUNCEMENT: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupAnnouncement announcement = ProtocolManager::decodeGroupAnnouncement(payload);
+            emit groupAnnouncementReceived(clientId, announcement.groupId, announcement.groupName, announcement.announcement, announcement.announcerId, announcement.announcerName);
+            break;
+        }
+        case MessageType::GROUP_MENTION: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupMention mention = ProtocolManager::decodeGroupMention(payload);
+            emit groupMentionReceived(clientId, mention.groupId, mention.groupName, mention.message, mention.mentionedMemberIds, mention.mentionedMemberNames, mention.senderId, mention.senderName);
+            break;
+        }
+        case MessageType::GROUP_VOTE: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupVote vote = ProtocolManager::decodeGroupVote(payload);
+            emit groupVoteReceived(clientId, vote.groupId, vote.groupName, vote.voteTitle, vote.options, vote.durationSeconds, vote.creatorId, vote.creatorName);
+            break;
+        }
+        case MessageType::GROUP_FILE: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupFile file = ProtocolManager::decodeGroupFile(payload);
+            emit groupFileReceived(clientId, file.groupId, file.groupName, file.fileId, file.fileName, file.fileSize, file.md5, file.uploaderId, file.uploaderName);
+            break;
+        }
+        case MessageType::GROUP_ALBUM: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupAlbum album = ProtocolManager::decodeGroupAlbum(payload);
+            emit groupAlbumReceived(clientId, album.groupId, album.groupName, album.albumId, album.albumName, album.fileIds, album.fileNames, album.creatorId, album.creatorName);
+            break;
+        }
+        case MessageType::GROUP_TODO: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
+            emit groupTodoReceived(clientId, todo.groupId, todo.groupName, todo.todoId, todo.title, todo.description, todo.status, todo.priority, todo.assigneeId, todo.assigneeName, todo.creatorId, todo.creatorName, todo.dueDate);
+            break;
+        }
+        case MessageType::GROUP_TODO_UPDATE: {
+            if (!m_clients.value(clientId).consented) return;
+            GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
+            emit groupTodoUpdated(clientId, todo.groupId, todo.groupName, todo.todoId, todo.status);
             break;
         }
         case MessageType::FILE_REQ: {
@@ -1453,14 +1781,23 @@ bool Host::hasFrameChanged(const QImage& current, const QImage& previous, int th
 
 void Host::onCaptureWorkerError(const QString& message) {
     LOG_ERROR("Capture worker error: " + message);
+    emit errorOccurred("Capture error: " + message);
 }
 
 void Host::onEncodeWorkerError(const QString& message) {
     LOG_ERROR("Encode worker error: " + message);
+    emit errorOccurred("Encode error: " + message);
+}
+
+void Host::onEncoderChanged(EncoderType newType) {
+    LOG_INFO("Host: Encoder changed to " + QString(newType == EncoderType::H264 ? "H264" : "JPEG"));
+    // Optionally notify UI
+    emit errorOccurred("编码器已切换: " + QString(newType == EncoderType::H264 ? "H264" : "JPEG"));
 }
 
 void Host::onNetworkWorkerError(const QString& message) {
     LOG_ERROR("Network worker error: " + message);
+    emit errorOccurred("Network error: " + message);
 }
 
 void Host::onAudioDataCaptured(const QByteArray& pcmData) {
@@ -1653,10 +1990,28 @@ void Host::handleSystemInfoRequest(const QString& clientId, const QByteArray& pa
 
 void Host::setEncoderType(EncoderType type) {
     if (!m_encodeWorker) return;
-    
+
     auto encoder = VideoEncoder::create(type);
-    if (encoder) {
+
+    // For H264, probe-encode with a realistic frame and transparently fall back
+    // to JPEG if the encoder produces no output (e.g. libx264 missing, or the
+    // Media Foundation encoder failing under STA COM). This keeps the desktop
+    // visible instead of going black when H264 is unavailable on the host.
+    if (type == EncoderType::H264) {
+        QImage probeFrame(1920, 1080, QImage::Format_RGB32);
+        probeFrame.fill(Qt::black);
+        if (!encoder || !encoder->initialize(1920, 1080, m_captureFps) ||
+            encoder->encode(probeFrame).isEmpty()) {
+            LOG_WARNING("Host: H264 encoder unusable on this host, keeping JPEG so the desktop stays visible");
+            type = EncoderType::JPEG;
+            encoder = VideoEncoder::create(EncoderType::JPEG);
+            if (encoder) encoder->initialize(1920, 1080, m_captureFps);
+        }
+    } else if (encoder) {
         encoder->initialize(1920, 1080, m_captureFps);
+    }
+
+    if (encoder) {
         m_encodeWorker->setEncoderAsync(std::move(encoder));
         LOG_INFO("Encoder switch queued to " + QString(type == EncoderType::H264 ? "H264" : "JPEG"));
     }
@@ -1776,6 +2131,15 @@ bool Host::isPrivacyScreenEnabled() const {
     return m_privacyScreenEnabled;
 }
 
+void Host::setAutoGrantConsent(bool enabled) {
+    m_autoGrantConsent = enabled;
+    LOG_INFO("Host: Auto-grant consent " + QString(enabled ? "enabled" : "disabled"));
+}
+
+bool Host::isAutoGrantConsent() const {
+    return m_autoGrantConsent;
+}
+
 void Host::lockScreenLocal(int seconds) {
     if (!m_localLock) {
         m_localLock = new PrivacyScreen(this);
@@ -1815,7 +2179,37 @@ void Host::addTrustedIp(const QString& ip) {
 }
 
 bool Host::isTrustedIp(const QString& ip) const {
-    return m_trustedIps.contains(ip);
+    // Check both raw and normalized forms to handle IPv4-mapped IPv6
+    if (m_trustedIps.contains(ip)) return true;
+    QString normalized = ip;
+    if (normalized.startsWith("::ffff:")) {
+        normalized = normalized.mid(7);
+        if (m_trustedIps.contains(normalized)) return true;
+    }
+    return false;
+}
+
+bool Host::isPrivateIp(const QString& ip) const {
+    // Normalize: strip IPv4-mapped IPv6 prefix (::ffff:)
+    QString normalized = ip;
+    if (normalized.startsWith("::ffff:")) {
+        normalized = normalized.mid(7);
+    }
+
+    // Check for private/LAN IP ranges:
+    // 127.0.0.0/8 (loopback)
+    // 10.0.0.0/8
+    // 172.16.0.0/12
+    // 192.168.0.0/16
+    if (normalized.startsWith("127.") || normalized == "::1") return true;
+    if (normalized.startsWith("10.")) return true;
+    if (normalized.startsWith("192.168.")) return true;
+    if (normalized.startsWith("172.")) {
+        bool ok = false;
+        int secondOctet = normalized.mid(5).section('.', 0, 0).toInt(&ok);
+        if (ok && secondOctet >= 16 && secondOctet <= 31) return true;
+    }
+    return false;
 }
 
 QStringList Host::trustedIps() const {

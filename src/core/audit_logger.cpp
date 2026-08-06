@@ -71,7 +71,7 @@ QJsonArray AuditLogger::entriesSince(const QDateTime& since, int limit) const {
         QFile file(dir.absoluteFilePath(logFiles[fi]));
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
 
-        while (!file.atEnd() && entries.size() < limit) {
+        while (!file.atEnd()) {
             QByteArray line = file.readLine().trimmed();
             if (line.isEmpty()) continue;
 
