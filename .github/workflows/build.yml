@@ -7,6 +7,11 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+  HOMEBREW_NO_AUTO_UPDATE: 1
+
 jobs:
   build-windows-x64:
     name: Windows x64
@@ -14,17 +19,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          version: '6.7.3'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
+          python-version: '3.11'
+
+      - name: Install aqtinstall
+        run: pip install aqtinstall==3.1.18
+
+      - name: Install Qt6
+        run: aqt install-qt windows desktop 6.7.3 win64_msvc2022_64 --outputdir ${{ github.workspace }}/Qt
+
+      - name: Set Qt Environment
+        shell: pwsh
+        run: |
+          $QtDir = "${{ github.workspace }}/Qt/6.7.3/msvc2022_64"
+          echo "Qt6_DIR=$QtDir" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$QtDir" >> $env:GITHUB_ENV
+          echo "$QtDir/bin" >> $env:GITHUB_PATH
 
       - name: Configure CMake
         run: |
-          cmake -B build_win_x64 -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" -DCMAKE_BUILD_TYPE=Release
+          cmake -B build_win_x64 -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_win_x64 --config Release --target xrk
@@ -44,30 +60,26 @@ jobs:
 
       - name: Install Qt6 via Homebrew
         run: |
-          brew install qt@6
-          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
-          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          brew untap aws/tap 2>/dev/null || true
+          brew install qt@6 ninja
 
-      - name: Install Ninja
-        run: brew install ninja
+      - name: Set Qt Environment
+        run: |
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt@6)" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: |
-          cmake -B build_macos_arm64 -G Ninja \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
-            -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build_macos_arm64 -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_macos_arm64
 
       - name: Create App Bundle
-        run: |
-          $(brew --prefix qt@6)/bin/macdeployqt build_macos_arm64/xrk.app -verbose=2
+        run: $(brew --prefix qt@6)/bin/macdeployqt build_macos_arm64/xrk.app -verbose=2
 
       - name: Zip App Bundle
-        run: |
-          cd build_macos_arm64
-          zip -r ../xrk-macos-arm64.zip xrk.app
+        run: cd build_macos_arm64 && zip -r ../xrk-macos-arm64.zip xrk.app
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -84,30 +96,26 @@ jobs:
 
       - name: Install Qt6 via Homebrew
         run: |
-          brew install qt@6
-          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
-          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          brew untap aws/tap 2>/dev/null || true
+          brew install qt@6 ninja
 
-      - name: Install Ninja
-        run: brew install ninja
+      - name: Set Qt Environment
+        run: |
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt@6)" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: |
-          cmake -B build_macos_x64 -G Ninja \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
-            -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build_macos_x64 -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_macos_x64
 
       - name: Create App Bundle
-        run: |
-          $(brew --prefix qt@6)/bin/macdeployqt build_macos_x64/xrk.app -verbose=2
+        run: $(brew --prefix qt@6)/bin/macdeployqt build_macos_x64/xrk.app -verbose=2
 
       - name: Zip App Bundle
-        run: |
-          cd build_macos_x64
-          zip -r ../xrk-macos-x64.zip xrk.app
+        run: cd build_macos_x64 && zip -r ../xrk-macos-x64.zip xrk.app
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -124,17 +132,18 @@ jobs:
 
       - name: Install Qt6 via Homebrew
         run: |
-          brew install qt@6
-          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
-          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          brew untap aws/tap 2>/dev/null || true
+          brew install qt@6 ninja
 
-      - name: Install Ninja
-        run: brew install ninja
+      - name: Set Qt Environment
+        run: |
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt@6)" >> $GITHUB_ENV
 
       - name: Configure CMake
         run: |
           cmake -B build_macos_universal -G Ninja \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
@@ -142,13 +151,10 @@ jobs:
         run: cmake --build build_macos_universal
 
       - name: Create App Bundle
-        run: |
-          $(brew --prefix qt@6)/bin/macdeployqt build_macos_universal/xrk.app -verbose=2
+        run: $(brew --prefix qt@6)/bin/macdeployqt build_macos_universal/xrk.app -verbose=2
 
       - name: Zip App Bundle
-        run: |
-          cd build_macos_universal
-          zip -r ../xrk-macos-universal.zip xrk.app
+        run: cd build_macos_universal && zip -r ../xrk-macos-universal.zip xrk.app
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -169,20 +175,17 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake ninja-build \
             qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
-            qt6-multimedia-dev qt6-websockets-dev
+            qt6-multimedia-dev qt6-websockets-dev \
+            libqt6sql6-sqlite libqt6test6
 
       - name: Configure CMake
-        run: |
-          cmake -B build_linux -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build_linux -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build_linux
+        run: cmake --build build_linux 2>&1 | tail -50
 
       - name: Package
-        run: |
-          cd build_linux
-          tar -czf ../xrk-linux-x64.tar.gz src/xrk
+        run: cd build_linux && tar -czf ../xrk-linux-x64.tar.gz src/xrk
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -204,6 +207,7 @@ jobs:
             build-essential cmake ninja-build \
             qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
             qt6-multimedia-dev qt6-websockets-dev \
+            libqt6sql6-sqlite libqt6test6 \
             libfuse2 libxcb-cursor0
 
       - name: Configure CMake
@@ -214,7 +218,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build_appimage
+          cmake --build build_appimage 2>&1 | tail -50
           DESTDIR=AppDir cmake --install build_appimage
 
       - name: Download linuxdeploy
