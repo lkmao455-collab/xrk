@@ -17,16 +17,14 @@ jobs:
       - name: Setup Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.*'
+          version: '6.7.3'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
 
       - name: Configure CMake
         run: |
-          cmake -B build_win_x64 -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" `
-            -DCMAKE_BUILD_TYPE=Release
+          cmake -B build_win_x64 -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_win_x64 --config Release --target xrk
@@ -44,31 +42,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.*'
-          host: 'mac'
-          target: 'desktop'
-          arch: 'macos_arm64'
-
-      - name: Install dependencies
+      - name: Install Qt6 via Homebrew
         run: |
-          brew install ninja
+          brew install qt@6
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+
+      - name: Install Ninja
+        run: brew install ninja
 
       - name: Configure CMake
         run: |
           cmake -B build_macos_arm64 -G Ninja \
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES="arm64"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_macos_arm64
 
       - name: Create App Bundle
         run: |
-          macdeployqt build_macos_arm64/xrk.app -verbose=2
+          $(brew --prefix qt@6)/bin/macdeployqt build_macos_arm64/xrk.app -verbose=2
 
       - name: Zip App Bundle
         run: |
@@ -88,31 +82,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.*'
-          host: 'mac'
-          target: 'desktop'
-          arch: 'clang_64'
-
-      - name: Install dependencies
+      - name: Install Qt6 via Homebrew
         run: |
-          brew install ninja
+          brew install qt@6
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+
+      - name: Install Ninja
+        run: brew install ninja
 
       - name: Configure CMake
         run: |
           cmake -B build_macos_x64 -G Ninja \
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES="x86_64"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build_macos_x64
 
       - name: Create App Bundle
         run: |
-          macdeployqt build_macos_x64/xrk.app -verbose=2
+          $(brew --prefix qt@6)/bin/macdeployqt build_macos_x64/xrk.app -verbose=2
 
       - name: Zip App Bundle
         run: |
@@ -132,22 +122,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.*'
-          host: 'mac'
-          target: 'desktop'
-          arch: 'macos_arm64'
-
-      - name: Install dependencies
+      - name: Install Qt6 via Homebrew
         run: |
-          brew install ninja
+          brew install qt@6
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+
+      - name: Install Ninja
+        run: brew install ninja
 
       - name: Configure CMake
         run: |
           cmake -B build_macos_universal -G Ninja \
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
@@ -156,7 +143,7 @@ jobs:
 
       - name: Create App Bundle
         run: |
-          macdeployqt build_macos_universal/xrk.app -verbose=2
+          $(brew --prefix qt@6)/bin/macdeployqt build_macos_universal/xrk.app -verbose=2
 
       - name: Zip App Bundle
         run: |
@@ -176,23 +163,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Qt6 and dependencies
         run: |
-          sudo apt update
-          sudo apt install -y build-essential cmake ninja-build
-
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.*'
-          host: 'linux'
-          target: 'desktop'
-          install-deps: 'true'
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
+            qt6-multimedia-dev qt6-websockets-dev
 
       - name: Configure CMake
         run: |
           cmake -B build_linux -G Ninja \
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
@@ -216,23 +197,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Qt6 and dependencies
         run: |
-          sudo apt update
-          sudo apt install -y build-essential cmake ninja-build libfuse2 libxcb-cursor0
-
-      - name: Setup Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.*'
-          host: 'linux'
-          target: 'desktop'
-          install-deps: 'true'
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
+            qt6-multimedia-dev qt6-websockets-dev \
+            libfuse2 libxcb-cursor0
 
       - name: Configure CMake
         run: |
           cmake -B build_appimage -G Ninja \
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr
 
@@ -241,7 +217,7 @@ jobs:
           cmake --build build_appimage
           DESTDIR=AppDir cmake --install build_appimage
 
-      - name: Download linuxdeployqt
+      - name: Download linuxdeploy
         run: |
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
