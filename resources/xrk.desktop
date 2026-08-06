@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=XRK
+Comment=XRK - Remote Control Application
+Exec=xrk
+Icon=xrk
+Categories=Utility;System;
+Terminal=false
+StartupWMClass=xrk

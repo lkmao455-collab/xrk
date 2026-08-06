@@ -9,13 +9,79 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+# Universal binary option (macOS only)
+option(XRK_BUILD_UNIVERSAL "Build universal binary (arm64 + x86_64) on macOS" OFF)
+
+# macOS architecture detection and configuration
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Detect architecture
+    if(CMAKE_OSX_ARCHITECTURES)
+        message(STATUS "macOS architectures specified: ${CMAKE_OSX_ARCHITECTURES}")
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Target architectures" FORCE)
+        message(STATUS "Detected Apple Silicon (arm64), building for arm64")
+    else()
+        set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Target architectures" FORCE)
+        message(STATUS "Detected Intel (x86_64), building for x86_64")
+    endif()
+
+    # Minimum macOS version
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+    endif()
+    message(STATUS "macOS deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+
+    # Universal binary support (both arm64 and x86_64)
+    if(XRK_BUILD_UNIVERSAL)
+        set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architectures" FORCE)
+        message(STATUS "Building universal binary (arm64 + x86_64)")
+    endif()
+
+    # RPATH for Qt frameworks
+    set(CMAKE_MACOSX_RPATH ON)
+    set(CMAKE_INSTALL_RPATH "@loader_path/../Frameworks")
+    set(BUILD_WITH_INSTALL_RPATH ON)
+endif()
+
 # Optimize for faster builds
 if(MSVC)
     # Enable multi-processor compilation (/MP) and UTF-8 source charset
     add_compile_options(/permissive- /Zc:__cplusplus /utf-8 /MP)
+elseif(APPLE)
+    # macOS specific compiler flags
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    # Hide symbols by default
+    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+    set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+elseif(UNIX)
+    # Linux/Unix compiler flags
+    add_compile_options(-Wall -Wextra -Wpedantic -fPIC)
+endif()
+
+# macOS specific Qt6 find paths
+if(APPLE)
+    # Common Qt6 installation paths on macOS
+    list(APPEND CMAKE_PREFIX_PATH
+        "/opt/homebrew/opt/qt6"      # Apple Silicon Homebrew
+        "/usr/local/opt/qt6"         # Intel Homebrew
+        "/Applications/Qt/6.*/macos" # Qt Online Installer
+        "$ENV{HOME}/Qt/6.*/macos"    # User Qt Online Installer
+    )
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Core Gui Multimedia MultimediaWidgets Sql Test WebSockets)
+
+# macOS app bundle configuration
+if(APPLE)
+    set(MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/resources/Info.plist")
+    set(MACOSX_BUNDLE_ICON_FILE "xrk.icns")
+    set(MACOSX_BUNDLE_BUNDLE_NAME "XRK")
+    set(MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
+    set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+    set(MACOSX_BUNDLE_COPYRIGHT "Copyright (C) 2024")
+    set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.xrk.app")
+    set(MACOSX_BUNDLE_LONG_VERSION_STRING "XRK ${PROJECT_VERSION}")
+endif()
 
 enable_testing()
 set(XRK_GTEST_AVAILABLE FALSE)

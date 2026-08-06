@@ -1,0 +1,253 @@
+name: Build XRK
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build-windows-x64:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_win_x64 -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build_win_x64 --config Release --target xrk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-windows-x64
+          path: build_win_x64/src/Release/xrk.exe
+          retention-days: 30
+
+  build-macos-apple-silicon:
+    name: macOS Apple Silicon (arm64)
+    runs-on: macos-latest  # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'macos'
+
+      - name: Install dependencies
+        run: |
+          brew install ninja
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_macos_arm64 -G Ninja \
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64"
+
+      - name: Build
+        run: cmake --build build_macos_arm64
+
+      - name: Create App Bundle
+        run: |
+          macdeployqt build_macos_arm64/xrk.app -verbose=2
+
+      - name: Zip App Bundle
+        run: |
+          cd build_macos_arm64
+          zip -r ../xrk-macos-arm64.zip xrk.app
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-macos-arm64
+          path: xrk-macos-arm64.zip
+          retention-days: 30
+
+  build-macos-intel:
+    name: macOS Intel (x86_64)
+    runs-on: macos-13  # Intel runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'clang_64'
+
+      - name: Install dependencies
+        run: |
+          brew install ninja
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_macos_x64 -G Ninja \
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64"
+
+      - name: Build
+        run: cmake --build build_macos_x64
+
+      - name: Create App Bundle
+        run: |
+          macdeployqt build_macos_x64/xrk.app -verbose=2
+
+      - name: Zip App Bundle
+        run: |
+          cd build_macos_x64
+          zip -r ../xrk-macos-x64.zip xrk.app
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-macos-x64
+          path: xrk-macos-x64.zip
+          retention-days: 30
+
+  build-macos-universal:
+    name: macOS Universal Binary
+    runs-on: macos-latest  # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'macos'
+
+      - name: Install dependencies
+        run: |
+          brew install ninja
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_macos_universal -G Ninja \
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build_macos_universal
+
+      - name: Create App Bundle
+        run: |
+          macdeployqt build_macos_universal/xrk.app -verbose=2
+
+      - name: Zip App Bundle
+        run: |
+          cd build_macos_universal
+          zip -r ../xrk-macos-universal.zip xrk.app
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-macos-universal
+          path: xrk-macos-universal.zip
+          retention-days: 30
+
+  build-linux:
+    name: Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
+            qt6-multimedia-dev libqt6websockets6-dev \
+            libqt6sql6-sqlite libqt6test6
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build_linux
+
+      - name: Package
+        run: |
+          cd build_linux
+          tar -czf ../xrk-linux-x64.tar.gz src/xrk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-linux-x64
+          path: xrk-linux-x64.tar.gz
+          retention-days: 30
+
+  build-linux-appimage:
+    name: Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
+            qt6-multimedia-dev libqt6websockets6-dev \
+            libqt6sql6-sqlite libqt6test6 \
+            libfuse2 libxcb-cursor0
+
+      - name: Configure CMake
+        run: |
+          cmake -B build_appimage -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build
+        run: |
+          cmake --build build_appimage
+          DESTDIR=AppDir cmake --install build_appimage
+
+      - name: Download linuxdeployqt
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+      - name: Create AppImage
+        run: |
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/xrk.desktop \
+            --icon-file resources/icons/xrk.png \
+            --output appimage
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrk-linux-appimage
+          path: '*.AppImage'
+          retention-days: 30
