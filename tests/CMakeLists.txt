@@ -50,6 +50,8 @@ if(XRK_GTEST_AVAILABLE)
         test_voice_messages.cpp
         test_input_control.cpp
         test_subnet_scanner.cpp
+        test_screen_capture.cpp
+        test_remote_controller_monitor.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)
