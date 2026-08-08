@@ -723,6 +723,15 @@ bool Host::start(uint16_t port) {
     connect(m_discoveryTimer, &QTimer::timeout, this, &Host::onDiscoveryBroadcastTimer);
     m_discoveryTimer->start(3000);
 
+    // Monitor hot-plug detection: check every 5 seconds for monitor changes
+    m_monitorRefreshTimer = new QTimer(this);
+    connect(m_monitorRefreshTimer, &QTimer::timeout, this, &Host::checkMonitorChanges);
+    m_monitorRefreshTimer->start(5000);
+    // Initial snapshot of monitors for change detection
+    if (m_screenCapture) {
+        m_lastKnownMonitors = m_screenCapture->getMonitorList();
+    }
+
     onDiscoveryBroadcastTimer();
 
     if (!m_auditLogger) {
@@ -786,6 +795,12 @@ void Host::stop() {
         m_discoveryTimer->stop();
         m_discoveryTimer->deleteLater();
         m_discoveryTimer = nullptr;
+    }
+
+    if (m_monitorRefreshTimer) {
+        m_monitorRefreshTimer->stop();
+        m_monitorRefreshTimer->deleteLater();
+        m_monitorRefreshTimer = nullptr;
     }
 
     // Stop advertising this host on the discovery channel: either clear the
@@ -2038,6 +2053,21 @@ case MessageType::VOICE_ACK: {
             }
             break;
         }
+        case MessageType::MONITOR_REFRESH: {
+            // Controller requests a fresh monitor list; respond with current state
+            if (m_screenCapture) {
+                QList<MonitorInfo> monitors = m_screenCapture->getMonitorList();
+                int currentMonitorIndex = m_screenCapture->monitorIndex();
+                QByteArray respPayload = ProtocolManager::encodeMonitorList(monitors, currentMonitorIndex);
+                QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_LIST, respPayload);
+                QTcpSocket* socket = m_clients.value(clientId).socket;
+                if (socket) {
+                    socket->write(resp);
+                    socket->flush();
+                }
+            }
+            break;
+        }
         case MessageType::MONITOR_SWITCH: {
             if (payload.size() >= 4 && m_screenCapture) {
                 QDataStream stream(payload);
@@ -2218,6 +2248,50 @@ void Host::onDiscoveryBroadcastTimer() {
     if (m_discovery) {
         m_discovery->broadcastPresence();
     }
+}
+
+void Host::checkMonitorChanges() {
+    if (!m_screenCapture) return;
+
+    QList<MonitorInfo> currentMonitors = m_screenCapture->getMonitorList();
+
+    // Compare with last known state
+    bool changed = false;
+    if (currentMonitors.size() != m_lastKnownMonitors.size()) {
+        changed = true;
+    } else {
+        for (int i = 0; i < currentMonitors.size(); ++i) {
+            if (currentMonitors[i].name != m_lastKnownMonitors[i].name ||
+                currentMonitors[i].width != m_lastKnownMonitors[i].width ||
+                currentMonitors[i].height != m_lastKnownMonitors[i].height) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (changed) {
+        LOG_INFO("Host: Monitor configuration changed (" +
+                 QString::number(m_lastKnownMonitors.size()) + " -> " +
+                 QString::number(currentMonitors.size()) + " monitors)");
+        m_lastKnownMonitors = currentMonitors;
+        broadcastMonitorList();
+    }
+}
+
+void Host::broadcastMonitorList() {
+    // Encode current monitor list with active index
+    QByteArray monitorPayload = ProtocolManager::encodeMonitorList(
+        m_lastKnownMonitors, m_screenCapture->monitorIndex());
+    QByteArray message = ProtocolManager::encode(MessageType::MONITOR_LIST, monitorPayload);
+
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().authenticated && it.value().socket) {
+            it.value().socket->write(message);
+            it.value().socket->flush();
+        }
+    }
+    LOG_INFO("Host: Broadcast monitor list to " + QString::number(m_clients.size()) + " clients");
 }
 
 void Host::setDiscoveryNetwork(NetworkManager* network) {

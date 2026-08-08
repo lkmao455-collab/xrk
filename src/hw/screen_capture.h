@@ -49,6 +49,9 @@ public:
     // Thread-safe monitor switch with result feedback
     bool switchMonitorSafe(int index);
 
+    // Hot-switch DXGI output without full shutdown/initialize (keeps D3D device alive)
+    bool switchDxgiOutput(int index);
+
 signals:
     void frameCaptured(const QImage& frame);
     void captureError(const QString& errorString);

@@ -99,6 +99,7 @@ public:
     void sendSyncRemove(const QString& hostDir);
     void requestMonitorList();
     void switchMonitor(int index);
+    void requestMonitorRefresh();
     TcpConnection* connection() const { return m_connection.get(); }
 
     // Observable latch for the H264-decide self-heal: true once the controller

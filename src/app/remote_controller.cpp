@@ -715,6 +715,12 @@ void RemoteController::switchMonitor(int index) {
     m_connection->send(msg);
 }
 
+void RemoteController::requestMonitorRefresh() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_REFRESH, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendHeartbeat() {
     if (!m_active || !m_connection) return;
     qint64 now = QDateTime::currentMSecsSinceEpoch();

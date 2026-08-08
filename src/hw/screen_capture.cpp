@@ -653,9 +653,19 @@ void ScreenCapture::setMonitorIndex(int index) {
     m_monitorIndex = index;
     lock.unlock();
     
+    // Try hot-switch first
+    if (m_useDxgi && m_dxgiContext && m_dxgiContext->device) {
+        if (switchDxgiOutput(index)) {
+            LOG_INFO("Switched to monitor " + QString::number(index) + " (hot-switch)");
+            return;
+        }
+        LOG_WARNING("Hot-switch failed for monitor " + QString::number(index) + ", falling back to full reinit");
+    }
+    
+    // Fall back to full reinit
     shutdown();
     initialize();
-    LOG_INFO("Switched to monitor " + QString::number(index));
+    LOG_INFO("Switched to monitor " + QString::number(index) + " (full reinit)");
 }
 
 bool ScreenCapture::switchMonitorSafe(int index) {
@@ -675,14 +685,120 @@ bool ScreenCapture::switchMonitorSafe(int index) {
     lock.unlock();
     
     bool success = false;
+    
+    // Try hot-switch first (no black screen)
+    if (m_useDxgi && m_dxgiContext && m_dxgiContext->device) {
+        success = switchDxgiOutput(index);
+        if (success) {
+            emit monitorSwitchCompleted(true, m_monitorIndex);
+            LOG_INFO("switchMonitorSafe: hot-switch to monitor " + QString::number(index) + " OK");
+            return true;
+        }
+        LOG_WARNING("switchMonitorSafe: hot-switch failed, falling back to full reinit");
+    }
+    
+    // Fall back to full shutdown/initialize
     if (shutdown(); true) {
         success = initialize();
     }
     
     emit monitorSwitchCompleted(success, m_monitorIndex);
     LOG_INFO("switchMonitorSafe: switched to monitor " + QString::number(index) + 
-             (success ? " OK" : " FAILED"));
+             (success ? " OK (full reinit)" : " FAILED"));
     return success;
+}
+
+bool ScreenCapture::switchDxgiOutput(int index) {
+#ifdef _WIN32
+    QMutexLocker lock(&m_mutex);
+    if (index < 0 || index >= m_monitors.size()) {
+        LOG_WARNING("switchDxgiOutput: invalid index " + QString::number(index));
+        return false;
+    }
+    if (index == m_monitorIndex) {
+        return true; // Already on this monitor
+    }
+    if (!m_dxgiContext || !m_dxgiContext->device || !m_useDxgi) {
+        // Not in DXGI mode, fall back to full reinit
+        m_monitorIndex = index;
+        lock.unlock();
+        shutdown();
+        initialize();
+        return m_initialized;
+    }
+
+    // Hot-switch: keep D3D device alive, only swap the IDXGIOutputDuplication
+    // This eliminates the black-screen gap of full shutdown/initialize
+
+    // 1. Release current duplication and staging texture
+    m_dxgiContext->stagingTexture.Reset();
+    m_dxgiContext->duplication.Reset();
+    m_dxgiContext->valid = false;
+    m_dirtyRectsStale = true; // Must report full screen after switch
+
+    // 2. Find the target output and create new duplication
+    HRESULT hr;
+    ComPtr<IDXGIDevice> dxgiDevice;
+    hr = m_dxgiContext->device.As(&dxgiDevice);
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: Failed to get IDXGIDevice");
+        return false;
+    }
+
+    ComPtr<IDXGIAdapter> adapter;
+    hr = dxgiDevice->GetAdapter(adapter.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: Failed to get adapter");
+        return false;
+    }
+
+    IDXGIOutput* outputRaw = nullptr;
+    hr = adapter->EnumOutputs(static_cast<UINT>(index), &outputRaw);
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: Failed to enumerate output " + QString::number(index));
+        return false;
+    }
+
+    ComPtr<IDXGIOutput> output;
+    output.Attach(outputRaw);
+
+    DXGI_OUTPUT_DESC outputDesc;
+    hr = output->GetDesc(&outputDesc);
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: Failed to get output desc");
+        return false;
+    }
+
+    ComPtr<IDXGIOutput1> output1;
+    hr = output.As(&output1);
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: Failed to get IDXGIOutput1");
+        return false;
+    }
+
+    hr = output1->DuplicateOutput(
+        m_dxgiContext->device.Get(),
+        m_dxgiContext->duplication.GetAddressOf()
+    );
+
+    if (FAILED(hr)) {
+        LOG_ERROR("switchDxgiOutput: DuplicateOutput failed for monitor " + QString::number(index));
+        return false;
+    }
+
+    // 3. Update dimensions
+    m_dxgiContext->width = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
+    m_dxgiContext->height = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
+    m_monitorIndex = index;
+    m_dxgiContext->valid = true;
+
+    LOG_INFO("switchDxgiOutput: Hot-switched to monitor " + QString::number(index) + ": " +
+             QString::number(m_dxgiContext->width) + "x" + QString::number(m_dxgiContext->height));
+    return true;
+#else
+    Q_UNUSED(index);
+    return false;
+#endif
 }
 
 int ScreenCapture::monitorIndex() const {

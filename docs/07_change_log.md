@@ -15,10 +15,13 @@
 - **切换过渡效果**：切换时保持最后一帧显示，收到新帧后淡入动画
 - **UI增强**：显示器下拉框显示分辨率信息（如 `0 \\.\DISPLAY1 1920x1080 (主屏)`）
 - **新增 `switchMonitorSafe` 方法**：线程安全的显示器切换，返回切换结果
+- **热切换 DXGI Duplication**：保持 D3D 设备存活，仅替换 IDXGIOutputDuplication，消除黑屏间隙
+- **显示器热插拔检测**：Host 每 5 秒检测显示器变化，自动广播 `MONITOR_LIST` 通知所有控制器
 
 #### 协议变更
 - 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
 - `MONITOR_SWITCH` 处理增强：发送 ACK + 重新初始化编码器
+- `MONITOR_REFRESH` 处理：控制器可主动请求刷新显示器列表
 
 #### 开源协议
 - 完善 GPL v3 LICENSE 文件（完整版本）
@@ -27,9 +30,10 @@
 - README.md 许可证章节更新为双授权对比表
 
 #### 修改文件
-- `src/hw/screen_capture.h/cpp`：添加 QMutex、switchMonitorSafe 方法
-- `src/app/host.cpp`：MONITOR_SWITCH 处理增强、编码器重新初始化
-- `src/app/remote_controller.h/cpp`：新增 monitorSwitchCompleted 信号、MONITOR_SWITCH_ACK 处理
+- `src/hw/screen_capture.h/cpp`：添加 QMutex、switchMonitorSafe、switchDxgiOutput 方法
+- `src/app/host.cpp`：MONITOR_SWITCH 处理增强、编码器重新初始化、显示器热插拔检测
+- `src/app/host.h`：新增 m_monitorRefreshTimer、checkMonitorChanges、broadcastMonitorList
+- `src/app/remote_controller.h/cpp`：新增 monitorSwitchCompleted 信号、MONITOR_SWITCH_ACK 处理、requestMonitorRefresh
 - `src/ui/remote_desktop_widget.h/cpp`：过渡效果、快捷键、UI增强
 - `src/core/types.h`：新增 MONITOR_SWITCH_ACK、MONITOR_REFRESH 消息类型
 - `LICENSE`、`COMMERCIAL-LICENSE`、`LICENSE-INFO.md`：协议文档更新

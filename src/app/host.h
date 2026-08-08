@@ -435,6 +435,12 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     // Auto-grant consent for trusted/local connections (no UI prompt)
     bool m_autoGrantConsent = false;
 
+    // Monitor hot-plug detection: periodically refresh monitor list and notify controllers
+    QTimer* m_monitorRefreshTimer = nullptr;
+    QList<MonitorInfo> m_lastKnownMonitors;
+    void checkMonitorChanges();
+    void broadcastMonitorList();
+
     AuditLogger* m_auditLogger = nullptr;
     void logAudit(const QString& clientId, const QString& event, const QString& details = QString());
     void logAuditOp(const QString& clientId, const QString& operation, const QString& details = QString());
