@@ -732,6 +732,10 @@ bool Host::start(uint16_t port) {
         m_lastKnownMonitors = m_screenCapture->getMonitorList();
     }
 
+    // Auto-switch timer (created but not started until requested by controller)
+    m_autoSwitchTimer = new QTimer(this);
+    connect(m_autoSwitchTimer, &QTimer::timeout, this, &Host::performAutoSwitchStep);
+
     onDiscoveryBroadcastTimer();
 
     if (!m_auditLogger) {
@@ -802,6 +806,14 @@ void Host::stop() {
         m_monitorRefreshTimer->deleteLater();
         m_monitorRefreshTimer = nullptr;
     }
+
+    if (m_autoSwitchTimer) {
+        m_autoSwitchTimer->stop();
+        m_autoSwitchTimer->deleteLater();
+        m_autoSwitchTimer = nullptr;
+    }
+    m_autoSwitchActive = false;
+    m_autoSwitchPaused = false;
 
     // Stop advertising this host on the discovery channel: either clear the
     // shared manager's identity (GUI mode) or tear down the owned manager
@@ -2068,6 +2080,32 @@ case MessageType::VOICE_ACK: {
             }
             break;
         }
+        case MessageType::MONITOR_AUTO_SWITCH_START: {
+            startAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_STOP: {
+            stopAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_PAUSE: {
+            pauseAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_RESUME: {
+            resumeAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_CONFIG: {
+            if (payload.size() >= 4) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t intervalMs;
+                stream >> intervalMs;
+                setAutoSwitchInterval(intervalMs);
+            }
+            break;
+        }
         case MessageType::MONITOR_SWITCH: {
             if (payload.size() >= 4 && m_screenCapture) {
                 QDataStream stream(payload);
@@ -2292,6 +2330,113 @@ void Host::broadcastMonitorList() {
         }
     }
     LOG_INFO("Host: Broadcast monitor list to " + QString::number(m_clients.size()) + " clients");
+}
+
+// Auto-switch cycling implementation
+void Host::startAutoSwitch() {
+    if (m_autoSwitchActive) return;
+    if (!m_screenCapture || m_lastKnownMonitors.size() < 2) {
+        LOG_WARNING("Host: Cannot start auto-switch with less than 2 monitors");
+        return;
+    }
+
+    m_autoSwitchActive = true;
+    m_autoSwitchPaused = false;
+    // Start from the next monitor after current
+    m_autoSwitchNextIndex = (m_screenCapture->monitorIndex() + 1) % m_lastKnownMonitors.size();
+    m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch started, interval=" + QString::number(m_autoSwitchIntervalMs) + "ms");
+}
+
+void Host::stopAutoSwitch() {
+    if (!m_autoSwitchActive) return;
+    m_autoSwitchTimer->stop();
+    m_autoSwitchActive = false;
+    m_autoSwitchPaused = false;
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch stopped");
+}
+
+void Host::pauseAutoSwitch() {
+    if (!m_autoSwitchActive || m_autoSwitchPaused) return;
+    m_autoSwitchTimer->stop();
+    m_autoSwitchPaused = true;
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch paused on monitor " + QString::number(m_screenCapture->monitorIndex()));
+}
+
+void Host::resumeAutoSwitch() {
+    if (!m_autoSwitchActive || !m_autoSwitchPaused) return;
+    m_autoSwitchPaused = false;
+    // Resume from next monitor
+    m_autoSwitchNextIndex = (m_screenCapture->monitorIndex() + 1) % m_lastKnownMonitors.size();
+    m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch resumed");
+}
+
+void Host::setAutoSwitchInterval(int intervalMs) {
+    if (intervalMs < 500) intervalMs = 500;  // Minimum 500ms
+    if (intervalMs > 60000) intervalMs = 60000;  // Maximum 60s
+    m_autoSwitchIntervalMs = intervalMs;
+    if (m_autoSwitchActive && !m_autoSwitchPaused) {
+        m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    }
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch interval set to " + QString::number(intervalMs) + "ms");
+}
+
+void Host::performAutoSwitchStep() {
+    if (!m_autoSwitchActive || m_autoSwitchPaused || !m_screenCapture) return;
+
+    int monitorCount = m_lastKnownMonitors.size();
+    if (monitorCount < 2) {
+        stopAutoSwitch();
+        return;
+    }
+
+    // Switch to the next monitor
+    bool success = m_screenCapture->switchMonitorSafe(m_autoSwitchNextIndex);
+
+    if (success) {
+        // Update encoder resolution if needed
+        if (m_encodeWorker && m_encodeWorker->encoder()) {
+            MonitorInfo monitor = m_lastKnownMonitors[m_autoSwitchNextIndex];
+            auto newEncoder = VideoEncoder::create(m_encodeWorker->encoder()->type());
+            if (newEncoder && newEncoder->initialize(monitor.width, monitor.height, m_captureFps)) {
+                if (m_encodeWorker->encoder()->type() == EncoderType::JPEG) {
+                    newEncoder->setJpegQuality(m_jpegQuality);
+                }
+                newEncoder->setTrueColor(m_trueColor);
+                m_encodeWorker->setEncoderAsync(std::move(newEncoder));
+                LOG_INFO("Host: Auto-switch encoder reinitialized for " +
+                         QString::number(monitor.width) + "x" + QString::number(monitor.height));
+            }
+        }
+    }
+
+    // Advance to next monitor for the next cycle
+    m_autoSwitchNextIndex = (m_autoSwitchNextIndex + 1) % monitorCount;
+}
+
+void Host::broadcastAutoSwitchStatus() {
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(m_autoSwitchActive ? (m_autoSwitchPaused ? 2 : 1) : 0);
+    stream << static_cast<int32_t>(m_autoSwitchIntervalMs);
+    stream << static_cast<int32_t>(m_screenCapture ? m_screenCapture->monitorIndex() : 0);
+    stream << static_cast<int32_t>(m_lastKnownMonitors.size());
+    stream << static_cast<int32_t>(m_autoSwitchNextIndex);
+
+    QByteArray message = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_STATUS, payload);
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().authenticated && it.value().socket) {
+            it.value().socket->write(message);
+            it.value().socket->flush();
+        }
+    }
 }
 
 void Host::setDiscoveryNetwork(NetworkManager* network) {

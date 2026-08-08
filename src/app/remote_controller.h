@@ -100,6 +100,11 @@ public:
     void requestMonitorList();
     void switchMonitor(int index);
     void requestMonitorRefresh();
+    void startAutoSwitch();
+    void stopAutoSwitch();
+    void pauseAutoSwitch();
+    void resumeAutoSwitch();
+    void setAutoSwitchInterval(int intervalMs);
     TcpConnection* connection() const { return m_connection.get(); }
 
     // Observable latch for the H264-decide self-heal: true once the controller
@@ -142,6 +147,7 @@ signals:
     void syncNotifyReceived(const SyncNotify& note);
     void monitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
     void monitorSwitchCompleted(bool success, int newIndex);
+    void autoSwitchStatusReceived(bool active, bool paused, int intervalMs, int currentIndex, int monitorCount, int nextIndex);
     void latencyUpdated(qint64 ms);
 
     // VoIP signaling

@@ -6,6 +6,7 @@
 #include <QShortcut>
 #include <QPushButton>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QHBoxLayout>
 #include <QColor>
 #include <QVector>
@@ -66,6 +67,7 @@ private slots:
     void onBlockInputClicked();
     void onMonitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
     void onMonitorSwitchCompleted(bool success, int newIndex);
+    void onAutoSwitchStatusReceived(bool active, bool paused, int intervalMs, int currentIndex, int monitorCount, int nextIndex);
     void onAnnotationToggled(bool checked);
     void onAnnotateColorClicked();
     void onAnnotateClearClicked();
@@ -141,6 +143,16 @@ private:
     QImage m_lastFrameBeforeSwitch;        // preserve last frame during switch
     QTimer* m_switchFadeTimer = nullptr;   // fade-in animation timer
     qreal m_switchFadeOpacity = 0.0;       // current opacity for fade-in
+
+    // Auto-switch cycling controls
+    QPushButton* m_autoSwitchStartButton = nullptr;   // start cycling
+    QPushButton* m_autoSwitchStopButton = nullptr;    // stop cycling
+    QPushButton* m_autoSwitchPauseButton = nullptr;   // pause/resume
+    QSpinBox* m_autoSwitchIntervalSpinBox = nullptr;  // interval in seconds
+    QLabel* m_autoSwitchStatusLabel = nullptr;        // status display
+    bool m_autoSwitchActive = false;
+    bool m_autoSwitchPaused = false;
+    void updateAutoSwitchUI();
 
     // Top toolbar that hosts the action buttons (annotation / color / clear /
     // watermark / mic / privacy) so they no longer overlap the remote desktop.

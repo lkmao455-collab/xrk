@@ -441,6 +441,20 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     void checkMonitorChanges();
     void broadcastMonitorList();
 
+    // Auto-switch cycling: automatically cycle through monitors
+    QTimer* m_autoSwitchTimer = nullptr;
+    bool m_autoSwitchActive = false;
+    bool m_autoSwitchPaused = false;
+    int m_autoSwitchIntervalMs = 3000;  // Default 3 seconds
+    int m_autoSwitchNextIndex = 0;      // Next monitor to switch to
+    void startAutoSwitch();
+    void stopAutoSwitch();
+    void pauseAutoSwitch();
+    void resumeAutoSwitch();
+    void setAutoSwitchInterval(int intervalMs);
+    void performAutoSwitchStep();
+    void broadcastAutoSwitchStatus();
+
     AuditLogger* m_auditLogger = nullptr;
     void logAudit(const QString& clientId, const QString& event, const QString& details = QString());
     void logAuditOp(const QString& clientId, const QString& operation, const QString& details = QString());

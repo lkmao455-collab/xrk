@@ -721,6 +721,40 @@ void RemoteController::requestMonitorRefresh() {
     m_connection->send(msg);
 }
 
+void RemoteController::startAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_START, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::stopAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_STOP, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::pauseAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_PAUSE, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::resumeAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_RESUME, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::setAutoSwitchInterval(int intervalMs) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<int32_t>(intervalMs);
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_CONFIG, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendHeartbeat() {
     if (!m_active || !m_connection) return;
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1031,6 +1065,22 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
                 emit monitorSwitchCompleted(success == 1, static_cast<int>(newIndex));
                 LOG_INFO("Monitor switch " + QString(success ? "succeeded" : "failed") + 
                          " to index " + QString::number(newIndex));
+            }
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_STATUS: {
+            if (payload.size() >= 20) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                uint8_t state;  // 0=stopped, 1=active, 2=paused
+                int32_t intervalMs, currentIndex, monitorCount, nextIndex;
+                stream >> state >> intervalMs >> currentIndex >> monitorCount >> nextIndex;
+                emit autoSwitchStatusReceived(
+                    state > 0, state == 2,
+                    intervalMs, currentIndex, monitorCount, nextIndex);
+                LOG_INFO("Auto-switch status: state=" + QString::number(state) +
+                         " interval=" + QString::number(intervalMs) +
+                         " current=" + QString::number(currentIndex));
             }
             break;
         }

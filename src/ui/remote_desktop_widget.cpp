@@ -110,6 +110,8 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
                 this, &RemoteDesktopWidget::onMonitorListReceived);
         connect(m_controller, &RemoteController::monitorSwitchCompleted,
                 this, &RemoteDesktopWidget::onMonitorSwitchCompleted);
+        connect(m_controller, &RemoteController::autoSwitchStatusReceived,
+                this, &RemoteDesktopWidget::onAutoSwitchStatusReceived);
         connect(m_controller, &RemoteController::consentRequested,
                 this, &RemoteDesktopWidget::onConsentRequested);
         connect(m_controller, &RemoteController::consentGranted,
@@ -117,6 +119,59 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         connect(m_controller, &RemoteController::consentDenied,
                 this, &RemoteDesktopWidget::onConsentDenied);
     }
+
+    // Auto-switch cycling controls
+    m_autoSwitchStartButton = new QPushButton(tr("开始轮巡"), this);
+    m_autoSwitchStartButton->setObjectName("auto-switch-start");
+    m_autoSwitchStartButton->adjustSize();
+    connect(m_autoSwitchStartButton, &QPushButton::clicked, this, [this]() {
+        if (m_controller && m_active) {
+            m_controller->startAutoSwitch();
+        }
+    });
+
+    m_autoSwitchStopButton = new QPushButton(tr("停止轮巡"), this);
+    m_autoSwitchStopButton->setObjectName("auto-switch-stop");
+    m_autoSwitchStopButton->adjustSize();
+    connect(m_autoSwitchStopButton, &QPushButton::clicked, this, [this]() {
+        if (m_controller && m_active) {
+            m_controller->stopAutoSwitch();
+        }
+    });
+
+    m_autoSwitchPauseButton = new QPushButton(tr("暂停"), this);
+    m_autoSwitchPauseButton->setObjectName("auto-switch-pause");
+    m_autoSwitchPauseButton->setCheckable(true);
+    m_autoSwitchPauseButton->adjustSize();
+    connect(m_autoSwitchPauseButton, &QPushButton::clicked, this, [this](bool checked) {
+        if (m_controller && m_active) {
+            if (checked) {
+                m_controller->pauseAutoSwitch();
+            } else {
+                m_controller->resumeAutoSwitch();
+            }
+        }
+    });
+
+    m_autoSwitchIntervalSpinBox = new QSpinBox(this);
+    m_autoSwitchIntervalSpinBox->setObjectName("auto-switch-interval");
+    m_autoSwitchIntervalSpinBox->setRange(1, 60);
+    m_autoSwitchIntervalSpinBox->setValue(3);
+    m_autoSwitchIntervalSpinBox->setSuffix(tr("秒"));
+    m_autoSwitchIntervalSpinBox->setMinimumWidth(80);
+    connect(m_autoSwitchIntervalSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this](int value) {
+        if (m_controller && m_active) {
+            m_controller->setAutoSwitchInterval(value * 1000);
+        }
+    });
+
+    m_autoSwitchStatusLabel = new QLabel(this);
+    m_autoSwitchStatusLabel->setObjectName("auto-switch-status");
+    m_autoSwitchStatusLabel->setText(tr("轮巡: 停止"));
+    m_autoSwitchStatusLabel->adjustSize();
+
+    updateAutoSwitchUI();
 
     // Monitor switching overlay label
     m_switchingLabel = new QLabel(tr("切换中..."), this);
@@ -193,6 +248,11 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     if (m_toolbarLayout) {
         m_toolbarLayout->addWidget(m_monitorCombo);
         m_toolbarLayout->addWidget(m_qualityCombo);
+        m_toolbarLayout->addWidget(m_autoSwitchStartButton);
+        m_toolbarLayout->addWidget(m_autoSwitchStopButton);
+        m_toolbarLayout->addWidget(m_autoSwitchPauseButton);
+        m_toolbarLayout->addWidget(m_autoSwitchIntervalSpinBox);
+        m_toolbarLayout->addWidget(m_autoSwitchStatusLabel);
         m_toolbarLayout->addWidget(m_annotateButton);
         m_toolbarLayout->addWidget(m_annotateColorButton);
         m_toolbarLayout->addWidget(m_annotateClearButton);
@@ -211,12 +271,14 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     for (QPushButton* b : {m_annotateButton, m_annotateColorButton,
                             m_annotateClearButton, m_watermarkButton,
                             m_micButton, m_privacyButton,
-                            m_takeoverButton, m_blockInputButton}) {
+                            m_takeoverButton, m_blockInputButton,
+                            m_autoSwitchStartButton, m_autoSwitchStopButton,
+                            m_autoSwitchPauseButton}) {
         if (b) b->setFocusPolicy(Qt::NoFocus);
     }
-    // The gear selector must also not steal keyboard focus from the remote
-    // desktop, otherwise remote keystrokes stop after changing quality.
+    // The gear selector and spin box must also not steal keyboard focus
     if (m_qualityCombo) m_qualityCombo->setFocusPolicy(Qt::NoFocus);
+    if (m_autoSwitchIntervalSpinBox) m_autoSwitchIntervalSpinBox->setFocusPolicy(Qt::NoFocus);
 }
 
 RemoteDesktopWidget::~RemoteDesktopWidget() {
@@ -680,6 +742,54 @@ void RemoteDesktopWidget::onMonitorSwitchCompleted(bool success, int newIndex) {
         QSignalBlocker blocker(m_monitorCombo);
         m_monitorCombo->setCurrentIndex(newIndex);
     }
+}
+
+void RemoteDesktopWidget::onAutoSwitchStatusReceived(bool active, bool paused, int intervalMs,
+                                                      int currentIndex, int monitorCount, int nextIndex) {
+    m_autoSwitchActive = active;
+    m_autoSwitchPaused = paused;
+
+    // Update interval spin box (block signals to avoid sending config back)
+    if (m_autoSwitchIntervalSpinBox) {
+        QSignalBlocker blocker(m_autoSwitchIntervalSpinBox);
+        m_autoSwitchIntervalSpinBox->setValue(intervalMs / 1000);
+    }
+
+    // Update status label
+    if (m_autoSwitchStatusLabel) {
+        QString status;
+        if (!active) {
+            status = tr("轮巡: 停止");
+        } else if (paused) {
+            status = tr("轮巡: 暂停 (屏%1)").arg(currentIndex + 1);
+        } else {
+            status = tr("轮巡: 运行 (屏%1/%2, 间隔%3s)")
+                     .arg(currentIndex + 1)
+                     .arg(monitorCount)
+                     .arg(intervalMs / 1000);
+        }
+        m_autoSwitchStatusLabel->setText(status);
+        m_autoSwitchStatusLabel->adjustSize();
+    }
+
+    // Update monitor combo to reflect current position during auto-switch
+    if (m_monitorCombo && currentIndex >= 0 && currentIndex < m_monitorCombo->count()) {
+        QSignalBlocker blocker(m_monitorCombo);
+        m_monitorCombo->setCurrentIndex(currentIndex);
+    }
+
+    updateAutoSwitchUI();
+}
+
+void RemoteDesktopWidget::updateAutoSwitchUI() {
+    if (m_autoSwitchStartButton) m_autoSwitchStartButton->setEnabled(!m_autoSwitchActive);
+    if (m_autoSwitchStopButton) m_autoSwitchStopButton->setEnabled(m_autoSwitchActive);
+    if (m_autoSwitchPauseButton) {
+        m_autoSwitchPauseButton->setEnabled(m_autoSwitchActive);
+        m_autoSwitchPauseButton->setChecked(m_autoSwitchPaused);
+        m_autoSwitchPauseButton->setText(m_autoSwitchPaused ? tr("继续") : tr("暂停"));
+    }
+    if (m_autoSwitchIntervalSpinBox) m_autoSwitchIntervalSpinBox->setEnabled(!m_autoSwitchActive || m_autoSwitchPaused);
 }
 
 void RemoteDesktopWidget::onAnnotationToggled(bool checked) {

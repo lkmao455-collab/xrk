@@ -17,9 +17,14 @@
 - **新增 `switchMonitorSafe` 方法**：线程安全的显示器切换，返回切换结果
 - **热切换 DXGI Duplication**：保持 D3D 设备存活，仅替换 IDXGIOutputDuplication，消除黑屏间隙
 - **显示器热插拔检测**：Host 每 5 秒检测显示器变化，自动广播 `MONITOR_LIST` 通知所有控制器
+- **多屏自动轮巡**：控制器可启动自动轮巡，在多个显示器间定时切换
+  - 可配置切换间隔（1-60秒）
+  - 支持暂停/恢复：暂停后停留在当前屏幕，方便观察和干预
+  - 实时状态显示：显示当前轮巡状态、所在屏幕、间隔时间
 
 #### 协议变更
 - 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
+- 新增自动轮巡消息：`MONITOR_AUTO_SWITCH_START (64)`、`MONITOR_AUTO_SWITCH_STOP (65)`、`MONITOR_AUTO_SWITCH_PAUSE (66)`、`MONITOR_AUTO_SWITCH_RESUME (67)`、`MONITOR_AUTO_SWITCH_CONFIG (68)`、`MONITOR_AUTO_SWITCH_STATUS (69)`
 - `MONITOR_SWITCH` 处理增强：发送 ACK + 重新初始化编码器
 - `MONITOR_REFRESH` 处理：控制器可主动请求刷新显示器列表
 
