@@ -465,6 +465,21 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
 void RemoteDesktopWidget::mouseMoveEvent(QMouseEvent* event) {
     if (!m_active) return;
 
+    // Toolbar auto-show in fullscreen: show when mouse near top
+    if (m_fullscreen && m_toolbarAutoHide && !m_toolbarVisible) {
+        if (event->pos().y() < 50) {
+            showToolbar();
+            return;
+        }
+    }
+
+    // Reset hide timer when mouse moves in toolbar area
+    if (m_fullscreen && m_toolbarAutoHide && m_toolbarVisible) {
+        if (event->pos().y() < m_toolbar->height() + 20) {
+            m_toolbarHideTimer->start();
+        }
+    }
+
     // Phase 4: while annotating, capture the stroke locally instead of sending input.
     if (m_annotationEnabled && !m_currentFrame.isNull() && !m_currentStroke.isEmpty()) {
         m_currentStroke.append(mapToRemote(event->pos()));
@@ -1059,6 +1074,24 @@ void RemoteDesktopWidget::setupUI() {
     m_thumbnailTimer = new QTimer(this);
     m_thumbnailTimer->setInterval(1000);
     connect(m_thumbnailTimer, &QTimer::timeout, this, &RemoteDesktopWidget::onThumbnailUpdate);
+
+    // Toolbar auto-hide timer
+    m_toolbarHideTimer = new QTimer(this);
+    m_toolbarHideTimer->setSingleShot(true);
+    m_toolbarHideTimer->setInterval(3000); // 3 seconds before hiding
+    connect(m_toolbarHideTimer, &QTimer::timeout, this, &RemoteDesktopWidget::hideToolbar);
+
+    // Toolbar animations
+    m_toolbarShowAnim = new QPropertyAnimation(m_toolbar, "maximumHeight", this);
+    m_toolbarShowAnim->setDuration(200);
+    m_toolbarShowAnim->setEasingCurve(QEasingCurve::OutCubic);
+
+    m_toolbarHideAnim = new QPropertyAnimation(m_toolbar, "maximumHeight", this);
+    m_toolbarHideAnim->setDuration(200);
+    m_toolbarHideAnim->setEasingCurve(QEasingCurve::InCubic);
+
+    // Apply dark theme
+    applyDarkTheme();
 }
 
 void RemoteDesktopWidget::setupFpsTimer() {
@@ -1193,9 +1226,16 @@ void RemoteDesktopWidget::toggleFullscreen() {
     if (m_fullscreen) {
         showNormal();
         m_fullscreen = false;
+        // Always show toolbar in windowed mode
+        m_toolbarAutoHide = false;
+        showToolbar();
+        m_toolbarHideTimer->stop();
     } else {
         showFullScreen();
         m_fullscreen = true;
+        // Enable auto-hide in fullscreen
+        m_toolbarAutoHide = true;
+        startToolbarHideTimer();
     }
 }
 
@@ -1238,6 +1278,201 @@ void RemoteDesktopWidget::dropEvent(QDropEvent* event) {
     }
     if (!filePaths.isEmpty()) {
         emit filesDropped(filePaths);
+    }
+}
+
+// Toolbar auto-hide methods
+void RemoteDesktopWidget::showToolbar() {
+    if (!m_toolbar || m_toolbarVisible) return;
+
+    m_toolbarHideAnim->stop();
+    m_toolbar->setMaximumHeight(0);
+    m_toolbar->show();
+
+    m_toolbarShowAnim->setStartValue(0);
+    m_toolbarShowAnim->setEndValue(50);
+    m_toolbarShowAnim->start();
+    m_toolbarVisible = true;
+
+    if (m_fullscreen && m_toolbarAutoHide) {
+        startToolbarHideTimer();
+    }
+}
+
+void RemoteDesktopWidget::hideToolbar() {
+    if (!m_toolbar || !m_toolbarVisible) return;
+    if (m_toolbar->findChild<QPushButton*>()->isDown()) return; // don't hide while clicking
+
+    m_toolbarShowAnim->stop();
+    m_toolbarHideAnim->setStartValue(m_toolbar->height());
+    m_toolbarHideAnim->setEndValue(0);
+    m_toolbarHideAnim->start();
+    m_toolbarVisible = false;
+}
+
+void RemoteDesktopWidget::startToolbarHideTimer() {
+    if (m_toolbarAutoHide && m_fullscreen) {
+        m_toolbarHideTimer->start();
+    }
+}
+
+void RemoteDesktopWidget::applyToolbarStyle() {
+    if (!m_toolbar) return;
+
+    // Semi-transparent dark toolbar with blur-like effect
+    m_toolbar->setStyleSheet(
+        "QWidget#remote-toolbar {"
+        "  background-color: rgba(30, 30, 40, 200);"
+        "  border-bottom: 1px solid rgba(255, 255, 255, 30);"
+        "}"
+    );
+
+    // Style all buttons in toolbar
+    for (QPushButton* btn : m_toolbar->findChildren<QPushButton*>()) {
+        btn->setStyleSheet(
+            "QPushButton {"
+            "  background-color: rgba(60, 60, 80, 180);"
+            "  color: #e0e0e0;"
+            "  border: 1px solid rgba(255, 255, 255, 20);"
+            "  border-radius: 6px;"
+            "  padding: 5px 12px;"
+            "  min-height: 24px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: rgba(80, 80, 110, 200);"
+            "  border: 1px solid rgba(100, 150, 255, 100);"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: rgba(50, 50, 70, 220);"
+            "}"
+            "QPushButton:checked {"
+            "  background-color: rgba(70, 130, 200, 200);"
+            "  border: 1px solid rgba(100, 180, 255, 150);"
+            "}"
+        );
+    }
+
+    // Style combo boxes
+    for (QComboBox* combo : m_toolbar->findChildren<QComboBox*>()) {
+        combo->setStyleSheet(
+            "QComboBox {"
+            "  background-color: rgba(50, 50, 70, 180);"
+            "  color: #e0e0e0;"
+            "  border: 1px solid rgba(255, 255, 255, 20);"
+            "  border-radius: 6px;"
+            "  padding: 4px 8px;"
+            "  min-height: 24px;"
+            "}"
+            "QComboBox:hover {"
+            "  background-color: rgba(70, 70, 100, 200);"
+            "}"
+            "QComboBox::drop-down {"
+            "  border: none;"
+            "  width: 20px;"
+            "}"
+            "QComboBox QAbstractItemView {"
+            "  background-color: rgba(40, 40, 55, 240);"
+            "  color: #e0e0e0;"
+            "  selection-background-color: rgba(70, 130, 200, 200);"
+            "  border: 1px solid rgba(255, 255, 255, 20);"
+            "}"
+        );
+    }
+
+    // Style spin box
+    for (QSpinBox* spin : m_toolbar->findChildren<QSpinBox*>()) {
+        spin->setStyleSheet(
+            "QSpinBox {"
+            "  background-color: rgba(50, 50, 70, 180);"
+            "  color: #e0e0e0;"
+            "  border: 1px solid rgba(255, 255, 255, 20);"
+            "  border-radius: 6px;"
+            "  padding: 4px 8px;"
+            "  min-height: 24px;"
+            "}"
+            "QSpinBox:hover {"
+            "  background-color: rgba(70, 70, 100, 200);"
+            "}"
+        );
+    }
+
+    // Style labels
+    for (QLabel* label : m_toolbar->findChildren<QLabel*>()) {
+        label->setStyleSheet(
+            "QLabel {"
+            "  color: #c0c0c0;"
+            "  background: transparent;"
+            "  border: none;"
+            "}"
+        );
+    }
+}
+
+void RemoteDesktopWidget::applyDarkTheme() {
+    // Main widget dark background
+    setStyleSheet(
+        "RemoteDesktopWidget {"
+        "  background-color: #1a1a2e;"
+        "}"
+    );
+
+    applyToolbarStyle();
+
+    // Thumbnail panel style
+    if (m_thumbnailPanel) {
+        m_thumbnailPanel->setStyleSheet(
+            "QWidget#thumbnail-panel {"
+            "  background-color: rgba(25, 25, 40, 220);"
+            "  border-left: 1px solid rgba(255, 255, 255, 20);"
+            "}"
+        );
+    }
+
+    // Thumbnail labels
+    if (m_thumbnailScrollArea) {
+        m_thumbnailScrollArea->setStyleSheet(
+            "QScrollArea {"
+            "  background-color: transparent;"
+            "  border: none;"
+            "}"
+            "QScrollBar:vertical {"
+            "  background-color: rgba(40, 40, 60, 150);"
+            "  width: 8px;"
+            "  border-radius: 4px;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background-color: rgba(100, 100, 140, 150);"
+            "  border-radius: 4px;"
+            "  min-height: 30px;"
+            "}"
+        );
+    }
+
+    // Switching overlay
+    if (m_switchingLabel) {
+        m_switchingLabel->setStyleSheet(
+            "QLabel {"
+            "  background-color: rgba(0, 0, 0, 200);"
+            "  color: #ffffff;"
+            "  font-size: 18px;"
+            "  padding: 20px 40px;"
+            "  border-radius: 12px;"
+            "  border: 1px solid rgba(100, 150, 255, 100);"
+            "}"
+        );
+    }
+
+    // Consent overlay
+    if (m_consentLabel) {
+        m_consentLabel->setStyleSheet(
+            "QLabel {"
+            "  background-color: rgba(0, 0, 0, 180);"
+            "  color: #ffffff;"
+            "  font-size: 14px;"
+            "  padding: 15px 30px;"
+            "  border-radius: 10px;"
+            "}"
+        );
     }
 }
 

@@ -12,6 +12,7 @@
 #include <QColor>
 #include <QVector>
 #include <QScrollArea>
+#include <QPropertyAnimation>
 #include <memory>
 #include "core/types.h"
 
@@ -182,6 +183,20 @@ private:
     // watermark / mic / privacy) so they no longer overlap the remote desktop.
     QWidget* m_toolbar = nullptr;
     QHBoxLayout* m_toolbarLayout = nullptr;
+
+    // Toolbar auto-hide
+    QTimer* m_toolbarHideTimer = nullptr;
+    QPropertyAnimation* m_toolbarShowAnim = nullptr;
+    QPropertyAnimation* m_toolbarHideAnim = nullptr;
+    bool m_toolbarVisible = true;
+    bool m_toolbarAutoHide = true;       // enable auto-hide in fullscreen
+    void showToolbar();
+    void hideToolbar();
+    void startToolbarHideTimer();
+    void applyToolbarStyle();
+
+    // UI theme
+    void applyDarkTheme();
 };
 
 } // namespace xrk

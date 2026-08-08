@@ -33,6 +33,24 @@
   - 扫描结果自动添加到设备列表
   - 适用于UDP广播无法跨子网/防火墙的场景
 
+#### UI体验增强
+- **全屏显示优化**：F11切换全屏，全屏时工具栏自动隐藏
+- **工具栏自动隐藏**：
+  - 全屏模式下工具栏3秒后自动隐藏
+  - 鼠标移到屏幕顶部时工具栏自动显示
+  - 鼠标移开工具栏区域后重新开始计时隐藏
+  - 带平滑动画过渡效果
+- **工具栏半透明主题**：
+  - 深色半透明背景（rgba(30, 30, 40, 200)）
+  - 按钮悬停高亮效果
+  - 选中状态蓝色高亮
+  - 圆角设计（6px border-radius）
+- **现代深色UI主题**：
+  - 主背景深蓝色（#1a1a2e）
+  - 缩略图面板半透明深色
+  - 滚动条自定义样式
+  - 切换overlay毛玻璃效果
+
 #### 协议变更
 - 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
 - 新增自动轮巡消息：`MONITOR_AUTO_SWITCH_START (64)`、`MONITOR_AUTO_SWITCH_STOP (65)`、`MONITOR_AUTO_SWITCH_PAUSE (66)`、`MONITOR_AUTO_SWITCH_RESUME (67)`、`MONITOR_AUTO_SWITCH_CONFIG (68)`、`MONITOR_AUTO_SWITCH_STATUS (69)`
@@ -51,8 +69,10 @@
 - `src/app/host.cpp`：MONITOR_SWITCH 处理增强、编码器重新初始化、显示器热插拔检测
 - `src/app/host.h`：新增 m_monitorRefreshTimer、checkMonitorChanges、broadcastMonitorList
 - `src/app/remote_controller.h/cpp`：新增 monitorSwitchCompleted 信号、MONITOR_SWITCH_ACK 处理、requestMonitorRefresh
-- `src/ui/remote_desktop_widget.h/cpp`：过渡效果、快捷键、UI增强
+- `src/ui/remote_desktop_widget.h/cpp`：过渡效果、快捷键、UI增强、工具栏自动隐藏、深色主题
 - `src/core/types.h`：新增 MONITOR_SWITCH_ACK、MONITOR_REFRESH 消息类型
+- `src/core/subnet_scanner.h/cpp`：新增子网扫描器
+- `src/ui/device_list_widget.h/cpp`：扫描按钮、进度条
 - `LICENSE`、`COMMERCIAL-LICENSE`、`LICENSE-INFO.md`：协议文档更新
 
 ### v1.1.0 (2026-08-07) — 弱网分块传输（Tiled Transport, Phases A–F）
