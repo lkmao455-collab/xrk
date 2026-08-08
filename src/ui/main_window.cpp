@@ -94,6 +94,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
 
     switchToPage(PAGE_HOME);
+
+    // Auto-start host service for silent monitoring discovery
+    QTimer::singleShot(1000, this, [this]() {
+        if (!m_hostMode) {
+            onToggleHost();
+        }
+    });
 }
 
 MainWindow::~MainWindow() {
@@ -184,10 +191,14 @@ void MainWindow::setupUI() {
 
     // Page 0: Simple Home (极简首页)
     auto* simpleHome = new SimpleHomeWidget(m_deviceManager.get());
+    simpleHome->setNetworkManager(m_network.get());
     connect(simpleHome, &SimpleHomeWidget::connectToIp, this, &MainWindow::onConnectToIp);
     connect(simpleHome, &SimpleHomeWidget::connectToCode, this, &MainWindow::onConnectToCode);
     connect(simpleHome, &SimpleHomeWidget::startHostService, this, &MainWindow::onToggleHost);
     connect(simpleHome, &SimpleHomeWidget::openSettings, this, &MainWindow::onSettingsClicked);
+    connect(simpleHome, &SimpleHomeWidget::deviceFound, this, [this](const QString& name, const QString& ip, uint16_t port) {
+        statusBar()->showMessage(QString("发现设备: %1 (%2:%3)").arg(name, ip, QString::number(port)), 5000);
+    });
     // Connect host mode change to update SimpleHomeWidget button
     connect(this, &MainWindow::hostModeChanged, simpleHome, &SimpleHomeWidget::setHostButtonState);
     m_contentStack->addWidget(simpleHome);

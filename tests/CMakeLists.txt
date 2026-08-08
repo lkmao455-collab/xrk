@@ -55,6 +55,8 @@ if(XRK_GTEST_AVAILABLE)
         test_protocol_extended.cpp
         test_connection_history.cpp
         test_tcp_connection.cpp
+        test_tile_encoder.cpp
+        test_tiled_transport.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)

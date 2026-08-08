@@ -2,6 +2,8 @@
 #include "app/device_manager.h"
 #include "core/theme_manager.h"
 #include "core/logger.h"
+#include "core/subnet_scanner.h"
+#include "core/network_manager.h"
 #include <QScrollArea>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
@@ -40,6 +42,10 @@ SimpleHomeWidget::SimpleHomeWidget(DeviceManager* manager, QWidget* parent)
     m_refreshTimer = new QTimer(this);
     connect(m_refreshTimer, &QTimer::timeout, this, &SimpleHomeWidget::refreshDevices);
     m_refreshTimer->start(5000);
+}
+
+void SimpleHomeWidget::setNetworkManager(NetworkManager* network) {
+    m_network = network;
 }
 
 void SimpleHomeWidget::paintEvent(QPaintEvent* event) {
@@ -118,7 +124,38 @@ void SimpleHomeWidget::setupUI() {
     cardCenterLayout->addStretch();
     mainLayout->addLayout(cardCenterLayout);
 
-    mainLayout->addSpacing(20);
+    mainLayout->addSpacing(15);
+
+    // ---- Search Button ----
+    QHBoxLayout* searchLayout = new QHBoxLayout();
+    searchLayout->setAlignment(Qt::AlignCenter);
+    searchLayout->setSpacing(8);
+
+    m_searchButton = new QPushButton("搜索局域网设备", this);
+    m_searchButton->setObjectName("searchButton");
+    m_searchButton->setMinimumHeight(36);
+    m_searchButton->setMinimumWidth(160);
+    searchLayout->addWidget(m_searchButton);
+
+    mainLayout->addLayout(searchLayout);
+
+    // Scan progress
+    m_scanProgress = new QProgressBar(this);
+    m_scanProgress->setObjectName("scanProgress");
+    m_scanProgress->setRange(0, 100);
+    m_scanProgress->setValue(0);
+    m_scanProgress->setFixedHeight(6);
+    m_scanProgress->setTextVisible(false);
+    m_scanProgress->setVisible(false);
+    mainLayout->addWidget(m_scanProgress);
+
+    m_scanStatusLabel = new QLabel("", this);
+    m_scanStatusLabel->setObjectName("scanStatusLabel");
+    m_scanStatusLabel->setAlignment(Qt::AlignCenter);
+    m_scanStatusLabel->setVisible(false);
+    mainLayout->addWidget(m_scanStatusLabel);
+
+    mainLayout->addSpacing(15);
 
     // ---- Quick Actions ----
     QHBoxLayout* quickLayout = new QHBoxLayout();
@@ -177,6 +214,7 @@ void SimpleHomeWidget::setupUI() {
     connect(m_connectButton, &QPushButton::clicked, this, &SimpleHomeWidget::onConnectClicked);
     connect(m_connectInput, &QLineEdit::returnPressed, this, &SimpleHomeWidget::onConnectClicked);
     connect(m_hostButton, &QPushButton::clicked, this, &SimpleHomeWidget::onHostButtonClicked);
+    connect(m_searchButton, &QPushButton::clicked, this, &SimpleHomeWidget::onSearchClicked);
     connect(m_deviceList, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
         int index = m_deviceList->row(item);
         if (index >= 0 && index < m_recentDevices.size()) {
@@ -290,6 +328,48 @@ void SimpleHomeWidget::setupStyle() {
         }
         #deviceScrollArea {
             background-color: transparent;
+        }
+        #searchButton {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #4a90d9,
+                stop:1 #357abd);
+            color: white;
+            border: none;
+            border-radius: 18px;
+            padding: 10px 24px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        #searchButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #5aa0e9,
+                stop:1 #4a90d9);
+        }
+        #searchButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #357abd,
+                stop:1 #2a6099);
+        }
+        #searchButton:disabled {
+            background: #555555;
+            color: #999999;
+        }
+        #scanProgress {
+            border: none;
+            border-radius: 3px;
+            background-color: #1a1a2e;
+        }
+        #scanProgress::chunk {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #4a90d9,
+                stop:1 #ff6b8a);
+            border-radius: 3px;
+        }
+        #scanStatusLabel {
+            font-size: 11px;
+            color: #888888;
+            border: none;
+            background: transparent;
         }
     )");
 }
@@ -588,6 +668,92 @@ void SimpleHomeWidget::saveRecentDevice(const QString& name, const QString& ip, 
     settings.setValue("devices", QJsonDocument(arr).toJson());
 
     updateDeviceCards();
+}
+
+void SimpleHomeWidget::onSearchClicked() {
+    if (m_scanner && m_scanner->isScanning()) {
+        m_scanner->stopScan();
+        updateScanUI(false);
+        return;
+    }
+
+    if (!m_network) {
+        m_statusLabel->setText("网络未初始化");
+        return;
+    }
+
+    // Create scanner if needed
+    if (!m_scanner) {
+        m_scanner = new SubnetScanner(m_network, this);
+        connect(m_scanner, &SubnetScanner::scanProgress, this, &SimpleHomeWidget::onSearchProgress);
+        connect(m_scanner, &SubnetScanner::deviceFound, this, &SimpleHomeWidget::onDeviceFound);
+        connect(m_scanner, &SubnetScanner::scanFinished, this, &SimpleHomeWidget::onScanFinished);
+    }
+
+    updateScanUI(true);
+    m_scanStatusLabel->setText("正在搜索局域网设备...");
+    m_scanner->startScan();
+}
+
+void SimpleHomeWidget::onSearchProgress(int current, int total) {
+    if (total > 0) {
+        int percent = (current * 100) / total;
+        m_scanProgress->setValue(percent);
+        m_scanStatusLabel->setText(QString("正在扫描... %1/%2").arg(current).arg(total));
+    }
+}
+
+void SimpleHomeWidget::onDeviceFound(const DeviceInfo& info) {
+    // Check if already in list
+    for (const auto& existing : m_recentDevices) {
+        if (existing.ip == info.ipAddress) {
+            return;
+        }
+    }
+
+    // Add discovered device
+    QuickConnectDevice device;
+    device.name = info.deviceName;
+    device.ip = info.ipAddress;
+    device.port = info.port;
+    device.accessCode = info.accessCode;
+    device.online = true;
+    device.lastConnected = QDateTime::currentDateTime();
+    m_recentDevices.prepend(device);
+
+    // Keep max 12 devices during scan
+    while (m_recentDevices.size() > 12) {
+        m_recentDevices.removeLast();
+    }
+
+    updateDeviceCards();
+    emit deviceFound(info.deviceName, info.ipAddress, info.port);
+}
+
+void SimpleHomeWidget::onScanFinished(int foundCount) {
+    updateScanUI(false);
+    m_scanStatusLabel->setText(QString("搜索完成，发现 %1 台设备").arg(foundCount));
+
+    // Keep only top 8
+    while (m_recentDevices.size() > 8) {
+        m_recentDevices.removeLast();
+    }
+    updateDeviceCards();
+
+    // Auto-hide status after 3 seconds
+    QTimer::singleShot(3000, this, [this]() {
+        m_scanStatusLabel->setVisible(false);
+    });
+}
+
+void SimpleHomeWidget::updateScanUI(bool scanning) {
+    m_searchButton->setEnabled(!scanning);
+    m_searchButton->setText(scanning ? "停止搜索" : "搜索局域网设备");
+    m_scanProgress->setVisible(scanning);
+    if (!scanning) {
+        m_scanProgress->setValue(0);
+    }
+    m_scanStatusLabel->setVisible(true);
 }
 
 } // namespace xrk
