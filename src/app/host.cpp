@@ -2106,6 +2106,47 @@ case MessageType::VOICE_ACK: {
             }
             break;
         }
+        case MessageType::MONITOR_THUMBNAIL_REQUEST: {
+            // Controller requests a thumbnail frame for a specific monitor
+            if (payload.size() >= 16 && m_screenCapture) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t excludeIndex, targetIndex, thumbWidth, thumbHeight;
+                stream >> excludeIndex >> targetIndex >> thumbWidth >> thumbHeight;
+
+                // Capture frame from target monitor
+                QImage frame = m_screenCapture->captureFrame(targetIndex);
+                if (!frame.isNull()) {
+                    // Scale to thumbnail size
+                    QImage thumbnail = frame.scaled(thumbWidth, thumbHeight,
+                                                    Qt::KeepAspectRatio, Qt::FastTransformation);
+
+                    // Encode as JPEG
+                    QByteArray thumbData;
+                    QBuffer buffer(&thumbData);
+                    buffer.open(QIODevice::WriteOnly);
+                    thumbnail.save(&buffer, "JPEG", 50);  // Low quality for speed
+
+                    // Send thumbnail frame
+                    QByteArray respPayload;
+                    QDataStream respStream(&respPayload, QIODevice::WriteOnly);
+                    respStream.setByteOrder(QDataStream::BigEndian);
+                    respStream << static_cast<int32_t>(targetIndex);
+                    respStream << static_cast<int32_t>(thumbWidth);
+                    respStream << static_cast<int32_t>(thumbHeight);
+                    respStream << static_cast<int32_t>(thumbData.size());
+                    respStream.writeRawData(thumbData.constData(), thumbData.size());
+
+                    QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_THUMBNAIL_FRAME, respPayload);
+                    QTcpSocket* socket = m_clients.value(clientId).socket;
+                    if (socket) {
+                        socket->write(resp);
+                        socket->flush();
+                    }
+                }
+            }
+            break;
+        }
         case MessageType::MONITOR_SWITCH: {
             if (payload.size() >= 4 && m_screenCapture) {
                 QDataStream stream(payload);

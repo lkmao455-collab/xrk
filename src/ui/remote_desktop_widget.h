@@ -8,8 +8,10 @@
 #include <QComboBox>
 #include <QSpinBox>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QColor>
 #include <QVector>
+#include <QScrollArea>
 #include <memory>
 #include "core/types.h"
 
@@ -54,6 +56,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onScreenFrameReceived(const ScreenFrame& frame);
@@ -68,6 +71,8 @@ private slots:
     void onMonitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
     void onMonitorSwitchCompleted(bool success, int newIndex);
     void onAutoSwitchStatusReceived(bool active, bool paused, int intervalMs, int currentIndex, int monitorCount, int nextIndex);
+    void onThumbnailClicked(int monitorIndex);
+    void onThumbnailUpdate();
     void onAnnotationToggled(bool checked);
     void onAnnotateColorClicked();
     void onAnnotateClearClicked();
@@ -153,6 +158,25 @@ private:
     bool m_autoSwitchActive = false;
     bool m_autoSwitchPaused = false;
     void updateAutoSwitchUI();
+
+    // Multi-monitor thumbnail panel
+    QPushButton* m_thumbnailToggleButton = nullptr;   // toggle thumbnail mode
+    bool m_thumbnailMode = false;                     // show thumbnails of other monitors
+    QWidget* m_thumbnailPanel = nullptr;              // side panel for thumbnails
+    QVBoxLayout* m_thumbnailLayout = nullptr;
+    QScrollArea* m_thumbnailScrollArea = nullptr;
+    struct ThumbnailInfo {
+        QLabel* label = nullptr;
+        QImage currentImage;
+        int monitorIndex = -1;
+    };
+    QList<ThumbnailInfo> m_thumbnails;
+    QTimer* m_thumbnailTimer = nullptr;               // 1s update timer
+    int m_mainMonitorIndex = 0;                       // currently shown in main area
+    QList<MonitorInfo> m_monitorList;                 // all monitors
+    void setupThumbnailPanel();
+    void updateThumbnailPanel();
+    void requestThumbnailFrame(int monitorIndex);
 
     // Top toolbar that hosts the action buttons (annotation / color / clear /
     // watermark / mic / privacy) so they no longer overlap the remote desktop.

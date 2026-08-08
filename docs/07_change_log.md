@@ -21,10 +21,15 @@
   - 可配置切换间隔（1-60秒）
   - 支持暂停/恢复：暂停后停留在当前屏幕，方便观察和干预
   - 实时状态显示：显示当前轮巡状态、所在屏幕、间隔时间
+- **多屏缩略图预览**：点击"多屏预览"按钮，侧边栏显示其他屏幕的实时缩略图
+  - 缩略图每秒自动更新
+  - 点击缩略图即可切换到对应屏幕
+  - 缩略图显示屏幕编号和分辨率
 
 #### 协议变更
 - 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
 - 新增自动轮巡消息：`MONITOR_AUTO_SWITCH_START (64)`、`MONITOR_AUTO_SWITCH_STOP (65)`、`MONITOR_AUTO_SWITCH_PAUSE (66)`、`MONITOR_AUTO_SWITCH_RESUME (67)`、`MONITOR_AUTO_SWITCH_CONFIG (68)`、`MONITOR_AUTO_SWITCH_STATUS (69)`
+- 新增缩略图消息：`MONITOR_THUMBNAIL_REQUEST (70)`、`MONITOR_THUMBNAIL_FRAME (71)`
 - `MONITOR_SWITCH` 处理增强：发送 ACK + 重新初始化编码器
 - `MONITOR_REFRESH` 处理：控制器可主动请求刷新显示器列表
 

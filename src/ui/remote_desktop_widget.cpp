@@ -112,6 +112,19 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
                 this, &RemoteDesktopWidget::onMonitorSwitchCompleted);
         connect(m_controller, &RemoteController::autoSwitchStatusReceived,
                 this, &RemoteDesktopWidget::onAutoSwitchStatusReceived);
+        connect(m_controller, &RemoteController::thumbnailFrameReceived,
+                this, [this](int monitorIndex, const QImage& thumbnail) {
+                    // Update thumbnail label
+                    for (auto& thumb : m_thumbnails) {
+                        if (thumb.monitorIndex == monitorIndex && thumb.label) {
+                            // Scale thumbnail to fit label size
+                            QPixmap pixmap = QPixmap::fromImage(thumbnail).scaled(
+                                thumb.label->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                            thumb.label->setPixmap(pixmap);
+                            break;
+                        }
+                    }
+                });
         connect(m_controller, &RemoteController::consentRequested,
                 this, &RemoteDesktopWidget::onConsentRequested);
         connect(m_controller, &RemoteController::consentGranted,
@@ -172,6 +185,17 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     m_autoSwitchStatusLabel->adjustSize();
 
     updateAutoSwitchUI();
+
+    // Thumbnail mode toggle button
+    m_thumbnailToggleButton = new QPushButton(tr("多屏预览"), this);
+    m_thumbnailToggleButton->setObjectName("thumbnail-toggle");
+    m_thumbnailToggleButton->setCheckable(true);
+    m_thumbnailToggleButton->adjustSize();
+    connect(m_thumbnailToggleButton, &QPushButton::toggled, this, [this](bool checked) {
+        m_thumbnailMode = checked;
+        updateThumbnailPanel();
+        LOG_INFO("Thumbnail mode " + QString(checked ? "enabled" : "disabled"));
+    });
 
     // Monitor switching overlay label
     m_switchingLabel = new QLabel(tr("切换中..."), this);
@@ -253,6 +277,7 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         m_toolbarLayout->addWidget(m_autoSwitchPauseButton);
         m_toolbarLayout->addWidget(m_autoSwitchIntervalSpinBox);
         m_toolbarLayout->addWidget(m_autoSwitchStatusLabel);
+        m_toolbarLayout->addWidget(m_thumbnailToggleButton);
         m_toolbarLayout->addWidget(m_annotateButton);
         m_toolbarLayout->addWidget(m_annotateColorButton);
         m_toolbarLayout->addWidget(m_annotateClearButton);
@@ -273,7 +298,7 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
                             m_micButton, m_privacyButton,
                             m_takeoverButton, m_blockInputButton,
                             m_autoSwitchStartButton, m_autoSwitchStopButton,
-                            m_autoSwitchPauseButton}) {
+                            m_autoSwitchPauseButton, m_thumbnailToggleButton}) {
         if (b) b->setFocusPolicy(Qt::NoFocus);
     }
     // The gear selector and spin box must also not steal keyboard focus
@@ -792,6 +817,129 @@ void RemoteDesktopWidget::updateAutoSwitchUI() {
     if (m_autoSwitchIntervalSpinBox) m_autoSwitchIntervalSpinBox->setEnabled(!m_autoSwitchActive || m_autoSwitchPaused);
 }
 
+// Thumbnail panel implementation
+void RemoteDesktopWidget::setupThumbnailPanel() {
+    if (!m_thumbnailPanel || m_monitorList.size() < 2) return;
+
+    // Clear existing thumbnails
+    if (m_thumbnailScrollArea->widget()) {
+        m_thumbnailScrollArea->widget()->deleteLater();
+    }
+
+    auto* container = new QWidget();
+    auto* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    m_thumbnails.clear();
+
+    for (int i = 0; i < m_monitorList.size(); ++i) {
+        if (i == m_mainMonitorIndex) continue; // Skip main monitor
+
+        ThumbnailInfo info;
+        info.monitorIndex = i;
+
+        // Create clickable label
+        auto* label = new QLabel(container);
+        label->setObjectName("thumbnail-label");
+        label->setFixedSize(180, 100);
+        label->setAlignment(Qt::AlignCenter);
+        label->setStyleSheet(
+            "QLabel { border: 2px solid #555; background-color: #2a2a2a; }"
+            "QLabel:hover { border: 2px solid #00aaff; }");
+        label->setToolTip(tr("点击切换到屏幕 %1").arg(i + 1));
+
+        // Add monitor index label overlay
+        auto* indexLabel = new QLabel(
+            QString("屏%1\n%2x%3").arg(i + 1)
+                .arg(m_monitorList[i].width)
+                .arg(m_monitorList[i].height),
+            label);
+        indexLabel->setAlignment(Qt::AlignCenter);
+        indexLabel->setStyleSheet("color: white; background-color: rgba(0,0,0,128); font-size: 10px;");
+
+        // Make label clickable
+        label->installEventFilter(this);
+
+        info.label = label;
+        m_thumbnails.append(info);
+        layout->addWidget(label);
+    }
+
+    layout->addStretch(1);
+    m_thumbnailScrollArea->setWidget(container);
+}
+
+void RemoteDesktopWidget::updateThumbnailPanel() {
+    if (!m_thumbnailMode || m_monitorList.size() < 2) {
+        if (m_thumbnailPanel) m_thumbnailPanel->hide();
+        if (m_thumbnailTimer) m_thumbnailTimer->stop();
+        return;
+    }
+
+    m_thumbnailPanel->show();
+    setupThumbnailPanel();
+
+    // Start thumbnail update timer
+    if (m_thumbnailTimer && !m_thumbnailTimer->isActive()) {
+        m_thumbnailTimer->start();
+    }
+
+    // Request initial thumbnails
+    for (const auto& thumb : m_thumbnails) {
+        if (thumb.monitorIndex >= 0) {
+            requestThumbnailFrame(thumb.monitorIndex);
+        }
+    }
+}
+
+void RemoteDesktopWidget::requestThumbnailFrame(int monitorIndex) {
+    if (!m_controller || !m_active) return;
+
+    m_controller->requestThumbnailFrame(m_mainMonitorIndex, monitorIndex, 180, 100);
+}
+
+void RemoteDesktopWidget::onThumbnailClicked(int monitorIndex) {
+    if (!m_controller || !m_active || monitorIndex == m_mainMonitorIndex) return;
+    if (monitorIndex < 0 || monitorIndex >= m_monitorList.size()) return;
+
+    LOG_INFO("Thumbnail clicked: switching main to monitor " + QString::number(monitorIndex));
+
+    // Switch main monitor
+    m_controller->switchMonitor(monitorIndex);
+    m_mainMonitorIndex = monitorIndex;
+
+    // Refresh thumbnail panel
+    setupThumbnailPanel();
+}
+
+void RemoteDesktopWidget::onThumbnailUpdate() {
+    if (!m_thumbnailMode || m_monitorList.size() < 2) return;
+
+    // Request updated thumbnails for all non-main monitors
+    for (const auto& thumb : m_thumbnails) {
+        if (thumb.monitorIndex >= 0 && thumb.monitorIndex != m_mainMonitorIndex) {
+            requestThumbnailFrame(thumb.monitorIndex);
+        }
+    }
+}
+
+bool RemoteDesktopWidget::eventFilter(QObject* obj, QEvent* event) {
+    // Handle thumbnail click
+    if (event->type() == QEvent::MouseButtonPress) {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            for (int i = 0; i < m_thumbnails.size(); ++i) {
+                if (m_thumbnails[i].label == obj) {
+                    onThumbnailClicked(m_thumbnails[i].monitorIndex);
+                    return true;
+                }
+            }
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
 void RemoteDesktopWidget::onAnnotationToggled(bool checked) {
     m_annotationEnabled = checked;
     setMouseTracking(true);
@@ -865,11 +1013,17 @@ void RemoteDesktopWidget::setupUI() {
     setAcceptDrops(true);
 
     // Host a top toolbar; the remaining area below it is the painting surface.
-    auto* vlay = new QVBoxLayout(this);
+    auto* mainLayout = new QHBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+
+    // Left side: toolbar + main display area
+    auto* leftWidget = new QWidget(this);
+    auto* vlay = new QVBoxLayout(leftWidget);
     vlay->setContentsMargins(0, 0, 0, 0);
     vlay->setSpacing(0);
 
-    m_toolbar = new QWidget(this);
+    m_toolbar = new QWidget(leftWidget);
     m_toolbar->setObjectName("remote-toolbar");
     m_toolbarLayout = new QHBoxLayout(m_toolbar);
     m_toolbarLayout->setContentsMargins(6, 4, 6, 4);
@@ -877,6 +1031,34 @@ void RemoteDesktopWidget::setupUI() {
 
     vlay->addWidget(m_toolbar);
     vlay->addStretch(1);
+
+    mainLayout->addWidget(leftWidget, 1);
+
+    // Right side: thumbnail panel (hidden by default)
+    m_thumbnailPanel = new QWidget(this);
+    m_thumbnailPanel->setObjectName("thumbnail-panel");
+    m_thumbnailPanel->setFixedWidth(200);
+    m_thumbnailPanel->hide();
+    m_thumbnailLayout = new QVBoxLayout(m_thumbnailPanel);
+    m_thumbnailLayout->setContentsMargins(4, 4, 4, 4);
+    m_thumbnailLayout->setSpacing(4);
+
+    auto* thumbTitle = new QLabel(tr("其他屏幕"), m_thumbnailPanel);
+    thumbTitle->setObjectName("thumbnail-title");
+    thumbTitle->setAlignment(Qt::AlignCenter);
+    m_thumbnailLayout->addWidget(thumbTitle);
+
+    m_thumbnailScrollArea = new QScrollArea(m_thumbnailPanel);
+    m_thumbnailScrollArea->setWidgetResizable(true);
+    m_thumbnailScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_thumbnailLayout->addWidget(m_thumbnailScrollArea);
+
+    mainLayout->addWidget(m_thumbnailPanel, 0);
+
+    // Thumbnail update timer (1 second)
+    m_thumbnailTimer = new QTimer(this);
+    m_thumbnailTimer->setInterval(1000);
+    connect(m_thumbnailTimer, &QTimer::timeout, this, &RemoteDesktopWidget::onThumbnailUpdate);
 }
 
 void RemoteDesktopWidget::setupFpsTimer() {

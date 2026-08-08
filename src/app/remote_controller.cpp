@@ -755,6 +755,19 @@ void RemoteController::setAutoSwitchInterval(int intervalMs) {
     m_connection->send(msg);
 }
 
+void RemoteController::requestThumbnailFrame(int excludeIndex, int targetIndex, int width, int height) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<int32_t>(excludeIndex);
+    stream << static_cast<int32_t>(targetIndex);
+    stream << static_cast<int32_t>(width);
+    stream << static_cast<int32_t>(height);
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_THUMBNAIL_REQUEST, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendHeartbeat() {
     if (!m_active || !m_connection) return;
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1081,6 +1094,24 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
                 LOG_INFO("Auto-switch status: state=" + QString::number(state) +
                          " interval=" + QString::number(intervalMs) +
                          " current=" + QString::number(currentIndex));
+            }
+            break;
+        }
+        case MessageType::MONITOR_THUMBNAIL_FRAME: {
+            if (payload.size() >= 16) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t monitorIndex, thumbWidth, thumbHeight, dataSize;
+                stream >> monitorIndex >> thumbWidth >> thumbHeight >> dataSize;
+
+                if (payload.size() >= 16 + dataSize) {
+                    QByteArray thumbData = payload.mid(16, dataSize);
+                    QImage thumbnail;
+                    thumbnail.loadFromData(thumbData, "JPEG");
+                    if (!thumbnail.isNull()) {
+                        emit thumbnailFrameReceived(monitorIndex, thumbnail);
+                    }
+                }
             }
             break;
         }

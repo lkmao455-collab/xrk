@@ -105,6 +105,7 @@ public:
     void pauseAutoSwitch();
     void resumeAutoSwitch();
     void setAutoSwitchInterval(int intervalMs);
+    void requestThumbnailFrame(int excludeIndex, int targetIndex, int width, int height);
     TcpConnection* connection() const { return m_connection.get(); }
 
     // Observable latch for the H264-decide self-heal: true once the controller
@@ -148,6 +149,7 @@ signals:
     void monitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
     void monitorSwitchCompleted(bool success, int newIndex);
     void autoSwitchStatusReceived(bool active, bool paused, int intervalMs, int currentIndex, int monitorCount, int nextIndex);
+    void thumbnailFrameReceived(int monitorIndex, const QImage& thumbnail);
     void latencyUpdated(qint64 ms);
 
     // VoIP signaling
