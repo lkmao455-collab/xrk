@@ -33,6 +33,7 @@ if(XRK_GTEST_AVAILABLE)
         test_microphone_basic.cpp
         test_database_manager.cpp
         test_ipmsg_crypto.cpp
+        test_ipmsg_transfer.cpp
         test_wake_on_lan.cpp
         test_clipboard_history.cpp
         test_audit_logger.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QToolButton>
 #include <QListWidget>
 #include <QTextEdit>
 #include <QTextBrowser>
@@ -19,10 +20,15 @@
 #include "group_statistics_widget.h"
 #include "group_member_management_widget.h"
 #include "chat_search_widget.h"
+#include "send_preview_dialog.h"
+#include "send_preview_dialog.h"
 
 namespace xrk {
 
 class IPMsgManager;
+class TransferTaskWidget;
+class AudioCapture;
+class CameraCapture;
 
 class IPMsgWidget : public QWidget {
     Q_OBJECT
@@ -42,6 +48,7 @@ signals:
 private slots:
     void onSendClicked();
     void onSendFileClicked();
+    void onSendFolderClicked();
     void onSendImageClicked();
     void onSendEmoji();
     void onMessageReceived(const QString& sender, const QString& message);
@@ -103,6 +110,7 @@ private slots:
     void onSameAccountDeviceFound(const QString& deviceId, const QString& deviceName);
     void onStatsToggled(bool checked);
     void onMemberManagementToggled(bool checked);
+    void onTransferToggled(bool checked);
 
 private:
     // In-memory chat message storage
@@ -141,6 +149,10 @@ private:
     void addFileMessageDirect(const ChatMessage& cm, int msgIndex = -1);
     void addImageMessageDirect(const ChatMessage& cm, int msgIndex = -1);
 
+    // Batch send helpers (Phase 4)
+    bool e2eeActiveForTarget() const;
+    void sendItems(const QList<SendPreviewItem>& items);
+
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
@@ -162,7 +174,7 @@ protected:
     QLineEdit* m_messageInput = nullptr;
     QPushButton* m_sendBtn = nullptr;
     QPushButton* m_emojiBtn = nullptr;
-    QPushButton* m_fileBtn = nullptr;
+    QToolButton* m_fileBtn = nullptr;
     QPushButton* m_imageBtn = nullptr;
     QPushButton* m_groupSettingsBtn = nullptr;
     QPushButton* m_exportChatBtn = nullptr;
@@ -249,6 +261,8 @@ protected:
     bool m_isMuted = false;
     bool m_isCameraOn = true;
     QString m_callPeerId;
+    AudioCapture* m_callAudioCapture = nullptr;  // microphone capture for the active call
+    CameraCapture* m_callCameraCapture = nullptr;  // camera capture for the active call
     QMap<QString, QList<QByteArray>> m_iceCandidates;  // peerId -> ICE candidates
 
     // Group Statistics
@@ -260,6 +274,13 @@ protected:
     GroupMemberManagementWidget* m_memberManagementWidget = nullptr;
     QWidget* m_memberManagementPanel = nullptr;
     QPushButton* m_memberManagementBtn = nullptr;
+
+    // Transfer task panel (Phase 3)
+    TransferTaskWidget* m_transferPanel = nullptr;
+    QPushButton* m_transferBtn = nullptr;
+
+    // Cached base directories for incoming folder transfers (keyed by sender+top folder)
+    QMap<QString, QString> m_recvFolderBases;
 
     // Chat Search
     ChatSearchWidget* m_chatSearchWidget = nullptr;

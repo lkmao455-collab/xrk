@@ -15,6 +15,8 @@ set(UI_SOURCES
     group_statistics_widget.cpp
     group_member_management_widget.cpp
     chat_search_widget.cpp
+    transfer_task_widget.cpp
+    send_preview_dialog.cpp
 )
 
 set(UI_HEADERS
@@ -34,6 +36,8 @@ set(UI_HEADERS
     group_statistics_widget.h
     group_member_management_widget.h
     chat_search_widget.h
+    transfer_task_widget.h
+    send_preview_dialog.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})

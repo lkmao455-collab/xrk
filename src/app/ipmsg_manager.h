@@ -97,6 +97,42 @@ struct IPMsgTransferState {
     qint64 lastOffset;
 };
 
+enum class TransferStatus {
+    Queued,
+    Transferring,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled
+};
+
+enum class TransferDirection {
+    Send,
+    Receive
+};
+
+// Live transfer task used by the task-management UI. Mirrors IPMsgTransferState
+// but adds runtime fields (status, speed, E2EE flag, retry count).
+struct IPMsgTransferTask {
+    QString fileId;
+    TransferDirection direction = TransferDirection::Send;
+    QString fileName;
+    QString filePath;   // source path (send) or relative path (receive)
+    QString savePath;   // destination path
+    qint64 totalSize = 0;
+    qint64 transferredSize = 0;
+    QString md5;
+    bool isDirectory = false;
+    TransferStatus status = TransferStatus::Queued;
+    QString peerId;
+    bool encrypted = false;
+    qint64 startTime = 0;
+    qint64 lastSampleTime = 0;
+    qint64 lastSampleBytes = 0;
+    int speedBps = 0;
+    int attempts = 0;
+};
+
 class IPMsgManager : public QObject {
     Q_OBJECT
 public:
@@ -104,6 +140,7 @@ public:
     ~IPMsgManager();
 
     friend class IpmsgCryptoTest;
+    friend class IpmsgTransferTest;
 
     bool start(quint16 port = 2425);
     void stop();
@@ -133,7 +170,22 @@ public:
     void acceptFile(const QString& fileId, const QString& savePath);
     void rejectFile(const QString& fileId);
     void resumeFile(const QString& fileId);
+    void pauseFile(const QString& fileId);
+    void cancelFile(const QString& fileId);
+    void retryFile(const QString& fileId);
+    void removeTransfer(const QString& fileId);
+    QList<IPMsgTransferTask> getTransferTasks() const;
+    // Persisted transfers that are incomplete (lastOffset < totalSize) and not
+    // currently active, i.e. ones the UI can offer to resume after a restart.
+    QList<IPMsgTransferState> getResumableTransfers() const;
+    void setMaxConcurrentTransfers(int max);
+    int maxConcurrentTransfers() const;
+    int maxRetries() const { return m_maxRetries; }
     bool verifyFileIntegrity(const QString& filePath, const QString& expectedMd5);
+    // Override the on-disk path used for persisted transfer state (resume).
+    // Setting it reloads any state already present at the new path. Primarily
+    // for tests; in production it defaults to AppDataLocation.
+    void setTransferStateFile(const QString& path);
 
     // Offline messaging
     bool sendOfflineMessage(const QString& targetDeviceId, const QByteArray& payload);
@@ -209,13 +261,20 @@ signals:
     void friendRequestReceived(const QString& senderId, const QString& senderName, const QString& message);
     void friendRequestAccepted(const QString& senderId, const QString& senderName);
     void friendRequestRejected(const QString& senderId, const QString& senderName);
-    void fileReceiveRequest(const QString& fileId, const QString& senderName, 
+    void fileReceiveRequest(const QString& fileId, const QString& senderName,
                            const QString& fileName, qint64 fileSize, bool isDirectory,
-                           const QString& md5);
-    void fileProgress(const QString& fileId, qint64 bytesTransferred, qint64 totalBytes);
+                           const QString& md5, const QString& relativePath);
+    void fileProgress(const QString& fileId, qint64 bytesTransferred, qint64 totalBytes, int speedBps);
     void fileCompleted(const QString& fileId, const QString& filePath, bool integrityOk);
     void fileError(const QString& fileId, const QString& error);
     void fileResuming(const QString& fileId, qint64 resumeOffset);
+    void fileTaskStarted(const QString& fileId);
+    void fileTaskPaused(const QString& fileId);
+    void fileTaskCancelled(const QString& fileId);
+    void fileTaskQueued(const QString& fileId);
+    // Emitted when a send is retried automatically after a transient failure.
+    // attempt = the upcoming retry number (1-based); delayMs = backoff before it.
+    void fileRetryScheduled(const QString& fileId, int attempt, int delayMs);
     void error(const QString& message);
     void offlineMessagesAvailable(const QList<DatabaseManager::OfflineMessage>& messages);
     void keyExchangeNeeded(const QString& deviceId);
@@ -254,10 +313,7 @@ private:
     void processTcpCommand(const QByteArray& data, QTcpSocket* socket);
     void sendUdpBroadcast(const QByteArray& data);
     void sendFileData(const QString& targetIp, const QList<IPMsgFileItem>& items);
-    void receiveFileData(QTcpSocket* socket, const QJsonObject& header);
-    IPMsgFileItem buildFileTree(const QString& path, const QString& basePath);
     qint64 calculateFolderSize(const QString& folderPath);
-    void saveReceivedFile(QTcpSocket* socket, const QString& savePath, qint64 fileSize);
     QString generateFileId();
     QString getLocalIp();
     QList<QByteArray> calculateChunkMd5s(const QString& filePath, qint64 chunkSize = 1024 * 1024);
@@ -266,6 +322,10 @@ private:
     void removeTransferState(const QString& fileId);
     IPMsgTransferState getTransferState(const QString& fileId) const;
     bool hasTransferState(const QString& fileId) const;
+    // Offset to resume from when (re)accepting a download: returns the persisted
+    // lastOffset only if a saved state exists with a matching md5 and total size,
+    // otherwise 0 (start fresh).
+    qint64 resumeOffsetFor(const QString& fileId);
     void sendResumeRequest(const QString& targetIp, const QString& fileId, qint64 offset);
     void handleResumeRequest(const QString& fileId, qint64 offset, QTcpSocket* socket);
 
@@ -316,6 +376,97 @@ private:
     QString deviceIdByIp(const QString& ip) const;
     void sendSyncSnapshotResponse(const QString& targetIp, bool isReply);
     void sendSyncAck(const QString& targetIp, bool success, int applied);
+
+    // File transfer: async chunked sender / receiver
+    struct SendContext {
+        QTcpSocket* socket = nullptr;
+        QFile* file = nullptr;
+        QString fileId;
+        QString targetIp;
+        QString relativePath;
+        QString md5;
+        qint64 totalSize = 0;
+        qint64 transferred = 0;   // plaintext bytes already handed to socket
+        qint64 inFlight = 0;      // bytes written but not yet acked by bytesWritten
+        qint64 offset = 0;        // resume offset
+        bool paused = false;
+        bool finished = false;
+        bool encrypted = false;
+        QByteArray sessionKey;
+        qint64 startTime = 0;
+        qint64 lastSampleTime = 0;
+        qint64 lastSampleBytes = 0;
+        int speedBps = 0;
+        int attempts = 0;
+        bool pendingKey = false;  // waiting for E2EE session before sending
+        IPMsgFileItem item;       // retained so a transient failure can rebuild the job
+    };
+    struct RecvContext {
+        QTcpSocket* socket = nullptr;
+        QFile* file = nullptr;
+        QString fileId;
+        QString savePath;
+        qint64 totalSize = 0;
+        qint64 received = 0;
+        QString md5;
+        bool isDirectory = false;
+        bool encrypted = false;
+        QByteArray sessionKey;
+        qint64 startTime = 0;
+        qint64 lastSampleTime = 0;
+        qint64 lastSampleBytes = 0;
+        int speedBps = 0;
+        QByteArray buffer; // partial incoming framed-chunk data
+        bool paused = false;
+        // Per-chunk MD5 verification
+        QList<QByteArray> chunkMd5s; // sender-provided per-chunk digests
+        qint64 chunkSize = 1024 * 1024;
+        int chunkIndex = 0;          // index of the next chunk to verify
+    };
+
+    struct SendJob {
+        QString fileId;
+        QString targetIp;
+        IPMsgFileItem item;
+        int attempts = 1;     // current attempt number (for retry bookkeeping)
+    };
+
+    void pumpTransferQueue();
+    void startSendJob(const SendJob& job);
+    void connectSendSocket(const SendJob& job);
+    void onEncryptionReadyForTransfer(const QString& deviceId);
+    void pumpSender(const QString& fileId);
+    void finalizeSender(const QString& fileId);
+    void onSendChunkWritten(const QString& fileId, qint64 bytes);
+    void cleanupSender(const QString& fileId);
+    // Called on a transient send failure (connection drop / socket error).
+    // Schedules an automatic retry with exponential backoff, up to m_maxRetries.
+    void handleSendFailure(const QString& fileId, const QString& reason);
+    void writeReceivedData(const QString& fileId, const QByteArray& data);
+    void finishReceive(const QString& fileId, bool success);
+    void handleChunkRequest(const QString& fileId, qint64 offset, qint64 length, QTcpSocket* socket);
+    void updateSendSpeed(SendContext* ctx);
+    void updateRecvSpeed(RecvContext* ctx);
+    void registerTask(const IPMsgTransferTask& task);
+    IPMsgTransferTask* findTask(const QString& fileId);
+
+    QList<SendJob> m_sendQueue;
+    QMap<QString, SendJob> m_pendingKeyJobs; // fileId -> job waiting for E2EE session
+    QMap<QString, SendContext*> m_activeSenders;
+    QMap<QString, RecvContext*> m_recvContexts;
+    QMap<QString, QTcpSocket*> m_incomingFileSockets; // fileId -> receiver-side incoming socket
+    QMap<QString, QString> m_incomingRelativePaths;  // fileId -> relative path (folder transfers)
+    QMap<QTcpSocket*, QString> m_recvSocketToFileId;
+    QMap<QString, IPMsgTransferTask> m_tasks;
+    int m_maxConcurrentTransfers = 3;
+    qint64 m_chunkSize = 1024 * 1024; // 1MB
+    static const qint64 s_maxInFlight = 4 * 1024 * 1024; // 4MB backpressure
+
+    // Reliability: automatic retry with exponential backoff (weak networks)
+    int m_maxRetries = 3;            // total attempts before giving up
+    int m_retryBaseDelayMs = 2000;   // base backoff; attempt N waits base * 2^(N-1)
+    QMap<QString, QList<QByteArray>> m_incomingChunkMd5s; // fileId -> per-chunk digests
+    QMap<QString, qint64> m_incomingChunkSizes;           // fileId -> chunk size
 
     QString m_syncAccountId;
     QString m_syncAccountHash;

@@ -1,5 +1,6 @@
 ﻿#include "ipmsg_manager.h"
 #include "database_manager.h"
+#include <functional>
 #include "core/encryption.h"
 #include "core/logger.h"
 #include "core/protocol_manager.h"
@@ -72,6 +73,7 @@ IPMsgManager::IPMsgManager(QObject* parent)
     , m_port(IPMSG_DEFAULT_PORT)
     , m_userId(QUuid::createUuid().toString().remove('{').remove('}').remove('-').left(8))
     , m_transferStateFile(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/ipmsg_transfers.json") {
+    connect(this, &IPMsgManager::encryptionReady, this, &IPMsgManager::onEncryptionReadyForTransfer);
     loadTransferStates();
 }
 
@@ -1514,6 +1516,8 @@ void IPMsgManager::sendFile(const QString& targetIp, const QString& filePath) {
     item.size = fileInfo.size();
     item.isDirectory = fileInfo.isDir();
     item.md5 = calculateFileMd5(filePath);
+    item.chunkSize = m_chunkSize;
+    item.chunkMd5s = calculateChunkMd5s(filePath, m_chunkSize);
 
     if (fileInfo.isDir()) {
         item.size = calculateFolderSize(filePath);
@@ -1529,6 +1533,8 @@ void IPMsgManager::sendFile(const QString& targetIp, const QString& filePath) {
             child.isDirectory = it.fileInfo().isDir();
             if (!child.isDirectory) {
                 child.md5 = calculateFileMd5(it.filePath());
+                child.chunkSize = m_chunkSize;
+                child.chunkMd5s = calculateChunkMd5s(it.filePath(), m_chunkSize);
             }
             item.children.append(child);
         }
@@ -1543,85 +1549,264 @@ void IPMsgManager::sendFolder(const QString& targetIp, const QString& folderPath
 }
 
 void IPMsgManager::acceptFile(const QString& fileId, const QString& savePath) {
+    QTcpSocket* socket = m_incomingFileSockets.value(fileId);
+    if (!socket || !socket->isOpen()) {
+        emit fileError(fileId, "No incoming connection for file");
+        return;
+    }
+
+    IPMsgTransferTask* task = findTask(fileId);
+    if (!task) {
+        emit fileError(fileId, "Unknown file transfer");
+        return;
+    }
+
+    RecvContext* c = new RecvContext();
+    c->socket = socket;
+    c->fileId = fileId;
+    c->savePath = savePath;
+    c->totalSize = task->totalSize;
+    c->md5 = task->md5;
+    c->isDirectory = task->isDirectory;
+    c->encrypted = task->encrypted;
+    c->startTime = QDateTime::currentMSecsSinceEpoch();
+    c->lastSampleTime = c->startTime;
+    c->chunkMd5s = m_incomingChunkMd5s.value(fileId);
+    c->chunkSize = m_incomingChunkSizes.value(fileId, m_chunkSize);
+    c->chunkIndex = 0;
+
+    if (task->encrypted && m_e2eeSessions.contains(task->peerId)) {
+        c->sessionKey = m_e2eeSessions.value(task->peerId).sharedSecret;
+    } else {
+        c->encrypted = false;
+    }
+
+    if (!task->isDirectory) {
+        // For files belonging to a folder, savePath is the chosen base directory
+        // and the file is written to base + relativePath to recreate structure.
+        QString actualPath = savePath;
+        QString rel = m_incomingRelativePaths.value(fileId);
+        if (!rel.isEmpty()) {
+            actualPath = QDir(savePath).filePath(rel);
+        }
+        QDir().mkpath(QFileInfo(actualPath).dir().absolutePath());
+        QFile* file = new QFile(actualPath, this);
+        if (!file->open(QIODevice::WriteOnly)) {
+            emit fileError(fileId, "Failed to create file: " + actualPath);
+            delete c;
+            return;
+        }
+        c->file = file;
+        c->savePath = actualPath;
+    } else {
+        QDir().mkpath(savePath);
+        c->savePath = savePath;
+    }
+
+    m_recvContexts[fileId] = c;
+    m_recvSocketToFileId[socket] = fileId;
+
     QJsonObject json;
     json["command"] = QString::fromUtf8(IPMSG_FILE_ACCEPT);
     json["fileId"] = fileId;
     json["savePath"] = savePath;
+    // If we already have a partial download for this file, resume from the
+    // persisted offset instead of restarting from zero (断点续传).
+    json["offset"] = resumeOffsetFor(fileId);
 
-    QJsonDocument doc(json);
+    socket->write(QJsonDocument(json).toJson());
+    socket->flush();
 
-    if (m_pendingFiles.contains(fileId)) {
-        QTcpSocket* socket = m_sendingSockets.value(fileId);
-        if (socket && socket->isOpen()) {
-            socket->write(doc.toJson());
-            socket->flush();
-        }
-    }
-
-    m_pendingFiles.remove(fileId);
+    task->status = TransferStatus::Transferring;
+    task->savePath = c->savePath;
+    emit fileTaskStarted(fileId);
+    emit fileProgress(fileId, 0, task->totalSize, 0);
 }
 
 void IPMsgManager::rejectFile(const QString& fileId) {
-    QJsonObject json;
-    json["command"] = QString::fromUtf8(IPMSG_FILE_REJECT);
-    json["fileId"] = fileId;
-
-    QJsonDocument doc(json);
-
-    if (m_pendingFiles.contains(fileId)) {
-        QTcpSocket* socket = m_sendingSockets.value(fileId);
-        if (socket && socket->isOpen()) {
-            socket->write(doc.toJson());
-            socket->flush();
-        }
+    QTcpSocket* socket = m_incomingFileSockets.value(fileId);
+    if (socket && socket->isOpen()) {
+        QJsonObject json;
+        json["command"] = QString::fromUtf8(IPMSG_FILE_REJECT);
+        json["fileId"] = fileId;
+        socket->write(QJsonDocument(json).toJson());
+        socket->flush();
     }
 
-    m_pendingFiles.remove(fileId);
+    m_incomingFileSockets.remove(fileId);
+    IPMsgTransferTask* t = findTask(fileId);
+    if (t) t->status = TransferStatus::Cancelled;
+    emit fileTaskCancelled(fileId);
+}
+
+void IPMsgManager::pauseFile(const QString& fileId) {
+    if (m_activeSenders.contains(fileId)) {
+        SendContext* c = m_activeSenders.value(fileId);
+        c->paused = true;
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Paused;
+        emit fileTaskPaused(fileId);
+    } else if (m_recvContexts.contains(fileId)) {
+        RecvContext* c = m_recvContexts.value(fileId);
+        c->paused = true;
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Paused;
+        emit fileTaskPaused(fileId);
+    }
+}
+
+void IPMsgManager::cancelFile(const QString& fileId) {
+    m_pendingKeyJobs.remove(fileId);
+    if (m_activeSenders.contains(fileId)) {
+        cleanupSender(fileId);
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Cancelled;
+        emit fileTaskCancelled(fileId);
+        removeTransferState(fileId);
+    } else if (m_recvContexts.contains(fileId)) {
+        RecvContext* c = m_recvContexts.take(fileId);
+        if (c->socket) {
+            m_recvSocketToFileId.remove(c->socket);
+            c->socket->disconnect();
+            c->socket->abort();
+            c->socket->deleteLater();
+        }
+        if (c->file) { c->file->close(); delete c->file; }
+        delete c;
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Cancelled;
+        emit fileTaskCancelled(fileId);
+        removeTransferState(fileId);
+    } else {
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Cancelled;
+        emit fileTaskCancelled(fileId);
+        removeTransferState(fileId);
+    }
+}
+
+void IPMsgManager::retryFile(const QString& fileId) {
+    IPMsgTransferTask* t = findTask(fileId);
+    if (!t) {
+        emit fileError(fileId, "No transfer to retry");
+        return;
+    }
+    if (t->direction != TransferDirection::Send || t->filePath.isEmpty()) {
+        emit fileError(fileId, "Cannot retry this transfer");
+        return;
+    }
+    // Re-enqueue a fresh send job from the source path
+    IPMsgFileItem item;
+    item.name = t->fileName;
+    item.absolutePath = t->filePath;
+    item.relativePath = t->fileName;
+    item.size = t->totalSize;
+    item.md5 = t->md5;
+    item.isDirectory = t->isDirectory;
+
+    // Reset task to queued
+    t->status = TransferStatus::Queued;
+    t->transferredSize = 0;
+    t->speedBps = 0;
+    t->attempts = 1;
+    emit fileTaskQueued(fileId);
+
+    IPMsgTransferState state;
+    state.fileId = fileId;
+    state.filePath = t->filePath;
+    state.savePath = "";
+    state.totalSize = t->totalSize;
+    state.transferredSize = 0;
+    state.md5 = t->md5;
+    state.isDirectory = t->isDirectory;
+    state.isSender = true;
+    state.lastOffset = 0;
+    saveTransferState(state);
+
+    QString targetIp;
+    for (auto it = m_devices.constBegin(); it != m_devices.constEnd(); ++it) {
+        if (it.key() == t->peerId) { targetIp = it.value().ip; break; }
+    }
+    if (targetIp.isEmpty()) {
+        emit fileError(fileId, "Peer offline, cannot retry");
+        return;
+    }
+
+    SendJob job;
+    job.fileId = fileId;
+    job.targetIp = targetIp;
+    job.item = item;
+    m_sendQueue.append(job);
+    pumpTransferQueue();
 }
 
 void IPMsgManager::resumeFile(const QString& fileId) {
+    if (m_tasks.contains(fileId)) {
+        retryFile(fileId);
+        return;
+    }
     IPMsgTransferState state = getTransferState(fileId);
     if (state.fileId.isEmpty()) {
         emit fileError(fileId, "No transfer state found for resume");
         return;
     }
+    // Reconstruct a send task from persisted state and retry
+    IPMsgTransferTask task;
+    task.fileId = fileId;
+    task.direction = TransferDirection::Send;
+    task.fileName = QFileInfo(state.filePath).fileName();
+    task.filePath = state.filePath;
+    task.totalSize = state.totalSize;
+    task.md5 = state.md5;
+    task.isDirectory = state.isDirectory;
+    task.status = TransferStatus::Queued;
+    task.startTime = QDateTime::currentMSecsSinceEpoch();
+    task.lastSampleTime = task.startTime;
+    registerTask(task);
+    retryFile(fileId);
+}
 
-    // Send resume request to sender
-    QJsonObject json;
-    json["command"] = QString::fromUtf8(IPMSG_FILE_RESUME_REQUEST);
-    json["fileId"] = fileId;
-    json["offset"] = state.lastOffset;
-    json["md5"] = state.md5;
-
-    QJsonDocument doc(json);
-
-    QTcpSocket* socket = new QTcpSocket(this);
-    connect(socket, &QTcpSocket::connected, this, [this, socket, data = doc.toJson()]() {
-        socket->write(data);
-        socket->flush();
-    });
-    connect(socket, &QTcpSocket::bytesWritten, this, [this, socket](qint64) {
-        socket->deleteLater();
-    });
-    connect(socket, &QTcpSocket::errorOccurred, this, [this, socket](QAbstractSocket::SocketError) {
-        emit error("Failed to send resume request: " + socket->errorString());
-        socket->deleteLater();
-    });
-
-    // Get sender IP and TCP port from device list (TCP port = UDP port + 1)
-    QString senderIp;
-    quint16 senderPort = 2426; // default TCP port
-    for (auto it = m_devices.constBegin(); it != m_devices.constEnd(); ++it) {
-        if (it.value().id == state.fileId.left(8)) {
-            senderIp = it.value().ip;
-            senderPort = it.value().port + 1;
-            break;
+void IPMsgManager::removeTransfer(const QString& fileId) {
+    // Drop any in-flight sender/recipient context first.
+    if (m_activeSenders.contains(fileId)) {
+        cleanupSender(fileId);
+    }
+    if (m_recvContexts.contains(fileId)) {
+        RecvContext* c = m_recvContexts.take(fileId);
+        if (c->socket) {
+            m_recvSocketToFileId.remove(c->socket);
+            c->socket->disconnect();
+            c->socket->abort();
+            c->socket->deleteLater();
         }
+        if (c->file) { c->file->close(); delete c->file; }
+        delete c;
     }
+    m_pendingKeyJobs.remove(fileId);
+    m_tasks.remove(fileId);
+    m_incomingRelativePaths.remove(fileId);
+    m_incomingChunkMd5s.remove(fileId);
+    m_incomingChunkSizes.remove(fileId);
+    removeTransferState(fileId);
+}
 
-    if (!senderIp.isEmpty()) {
-        socket->connectToHost(senderIp, senderPort);
-    }
+QList<IPMsgTransferTask> IPMsgManager::getTransferTasks() const {
+    return m_tasks.values();
+}
+
+void IPMsgManager::setMaxConcurrentTransfers(int max) {
+    m_maxConcurrentTransfers = qMax(1, max);
+    const_cast<IPMsgManager*>(this)->pumpTransferQueue();
+}
+
+int IPMsgManager::maxConcurrentTransfers() const {
+    return m_maxConcurrentTransfers;
+}
+
+void IPMsgManager::setTransferStateFile(const QString& path) {
+    m_transferStateFile = path;
+    m_transferStates.clear();
+    loadTransferStates();
 }
 
 bool IPMsgManager::verifyFileIntegrity(const QString& filePath, const QString& expectedMd5) {
@@ -2151,6 +2336,14 @@ void IPMsgManager::onTcpDataReceived() {
     QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
     if (!socket) return;
 
+    if (m_recvSocketToFileId.contains(socket)) {
+        QString fileId = m_recvSocketToFileId[socket];
+        RecvContext* c = m_recvContexts.value(fileId);
+        if (c && c->paused) return; // backpressure: leave bytes in socket buffer
+        writeReceivedData(fileId, socket->readAll());
+        return;
+    }
+
     QByteArray data = socket->readAll();
     processTcpCommand(data, socket);
 }
@@ -2159,7 +2352,7 @@ void IPMsgManager::onTcpDisconnected() {
     QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
     if (!socket) return;
 
-    // Check if this was a file transfer
+    // Sender-side: an active send whose socket closed unexpectedly is a failure
     QString fileId;
     for (auto it = m_sendingSockets.constBegin(); it != m_sendingSockets.constEnd(); ++it) {
         if (it.value() == socket) {
@@ -2168,10 +2361,18 @@ void IPMsgManager::onTcpDisconnected() {
         }
     }
 
-    if (!fileId.isEmpty()) {
+    if (!fileId.isEmpty() && m_activeSenders.contains(fileId)) {
+        SendContext* c = m_activeSenders.value(fileId);
+        bool finished = c ? c->finished : false;
+        m_activeSenders.remove(fileId);
         m_sendingSockets.remove(fileId);
-        m_sendingProgress.remove(fileId);
-        emit fileCompleted(fileId, "", false);
+        if (!finished) {
+            IPMsgTransferTask* t = findTask(fileId);
+            if (t) t->status = TransferStatus::Failed;
+            emit fileError(fileId, "Connection closed");
+        }
+        if (c) { if (c->file) { c->file->close(); delete c->file; } delete c; }
+        pumpTransferQueue();
     }
 
     socket->deleteLater();
@@ -2190,12 +2391,7 @@ void IPMsgManager::onSendProgress(qint64 bytesWritten) {
     }
 
     if (!fileId.isEmpty()) {
-        m_sendingProgress[fileId] += bytesWritten;
-        IPMsgTransferState state = getTransferState(fileId);
-        state.transferredSize = m_sendingProgress[fileId];
-        state.lastOffset = m_sendingProgress[fileId];
-        saveTransferState(state);
-        emit fileProgress(fileId, m_sendingProgress[fileId], state.totalSize);
+        onSendChunkWritten(fileId, bytesWritten);
     }
 }
 
@@ -2850,69 +3046,81 @@ void IPMsgManager::processTcpCommand(const QByteArray& data, QTcpSocket* socket)
         qint64 fileSize = json["fileSize"].toVariant().toLongLong();
         bool isDirectory = json["isDirectory"].toBool();
         QString senderName = json["senderName"].toString();
+        QString senderId = json["senderId"].toString();
         QString md5 = json["md5"].toString();
+        bool encrypted = json["encrypted"].toBool() && hasEstablishedSession(senderId);
+        QString relativePath = json["filePath"].toString();
+        qint64 chunkSize = json["chunkSize"].toVariant().toLongLong();
+        if (chunkSize <= 0) chunkSize = m_chunkSize;
 
-        m_pendingFiles[fileId] = "";
-        emit fileReceiveRequest(fileId, senderName, fileName, fileSize, isDirectory, md5);
-    } else if (command == QString::fromUtf8(IPMSG_FILE_ACCEPT)) {
-        QString fileId = json["fileId"].toString();
-        QString savePath = json["savePath"].toString();
-        m_pendingFiles[fileId] = savePath;
+        // Capture per-chunk MD5s for verification at the receiver.
+        QList<QByteArray> chunkMd5s;
+        QJsonArray chunkMd5Array = json["chunkMd5s"].toArray();
+        for (const auto& v : chunkMd5Array) {
+            chunkMd5s.append(QByteArray::fromHex(v.toString().toLatin1()));
+        }
+        m_incomingChunkMd5s[fileId] = chunkMd5s;
+        m_incomingChunkSizes[fileId] = chunkSize;
+
+        IPMsgTransferTask task;
+        task.fileId = fileId;
+        task.direction = TransferDirection::Receive;
+        task.fileName = fileName;
+        task.filePath = relativePath;   // relative path within the folder (if any)
+        task.totalSize = fileSize;
+        task.md5 = md5;
+        task.isDirectory = isDirectory;
+        task.status = TransferStatus::Queued;
+        task.peerId = senderId;
+        task.encrypted = encrypted;
+        task.startTime = QDateTime::currentMSecsSinceEpoch();
+        task.lastSampleTime = task.startTime;
+        registerTask(task);
+
+        m_incomingFileSockets[fileId] = socket;
+        m_incomingRelativePaths[fileId] = relativePath;
+        emit fileReceiveRequest(fileId, senderName, fileName, fileSize, isDirectory, md5, relativePath);
     } else if (command == QString::fromUtf8(IPMSG_FILE_REJECT)) {
         QString fileId = json["fileId"].toString();
+        m_incomingFileSockets.remove(fileId);
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Cancelled;
+        emit fileTaskCancelled(fileId);
         emit fileError(fileId, "File transfer rejected");
-        m_pendingFiles.remove(fileId);
-        removeTransferState(fileId);
     } else if (command == QString::fromUtf8(IPMSG_FILE_RESUME_REQUEST)) {
         QString fileId = json["fileId"].toString();
         qint64 offset = json["offset"].toVariant().toLongLong();
-        QString md5 = json["md5"].toString();
         handleResumeRequest(fileId, offset, socket);
     } else if (command == QString::fromUtf8(IPMSG_FILE_RESUME)) {
         QString fileId = json["fileId"].toString();
         qint64 offset = json["offset"].toVariant().toLongLong();
-        emit fileResuming(fileId, offset);
-    } else if (command == QString::fromUtf8(IPMSG_FILE_DATA)) {
+        SendContext* c = m_activeSenders.value(fileId);
+        if (c && c->file && c->file->seek(offset)) {
+            c->offset = offset;
+            c->transferred = offset;
+            emit fileResuming(fileId, offset);
+            pumpSender(fileId);
+        }
+    } else if (command == QString::fromUtf8(IPMSG_FILE_CHUNK_REQUEST)) {
         QString fileId = json["fileId"].toString();
-        QString filePath = json["filePath"].toString();
-        qint64 fileSize = json["fileSize"].toVariant().toLongLong();
-        bool isDirectory = json["isDirectory"].toBool();
-        QString md5 = json["md5"].toString();
         qint64 offset = json["offset"].toVariant().toLongLong();
-
-        if (m_pendingFiles.contains(fileId)) {
-            QString savePath = m_pendingFiles[fileId];
-            if (savePath.isEmpty()) {
-                savePath = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-            }
-
-            // Create transfer state
-            IPMsgTransferState state;
-            state.fileId = fileId;
-            state.filePath = filePath;
-            state.savePath = savePath;
-            state.totalSize = fileSize;
-            state.transferredSize = 0;
-            state.md5 = md5;
-            state.isDirectory = isDirectory;
-            state.isSender = false;
-            state.lastOffset = 0;
-            saveTransferState(state);
-
-            if (isDirectory) {
-                QDir().mkpath(savePath + "/" + filePath);
-            } else {
-                QDir().mkpath(QFileInfo(savePath + "/" + filePath).absolutePath());
-            }
+        qint64 length = json["length"].toVariant().toLongLong();
+        handleChunkRequest(fileId, offset, length, socket);
+    } else if (command == QString::fromUtf8(IPMSG_FILE_CHUNK_DATA)) {
+        QString fileId = json["fileId"].toString();
+        qint64 offset = json["offset"].toVariant().toLongLong();
+        RecvContext* c = m_recvContexts.value(fileId);
+        if (c && c->file) {
+            c->file->seek(offset);
+            // Remaining framed payload is read by onTcpDataReceived on the next readyRead
         }
     } else if (command == QString::fromUtf8(IPMSG_FILE_VERIFY)) {
         QString fileId = json["fileId"].toString();
         QString md5 = json["md5"].toString();
-        QString filePath = json["filePath"].toString();
-        
-        bool integrityOk = verifyFileIntegrity(filePath, md5);
-        emit fileCompleted(fileId, filePath, integrityOk);
-        removeTransferState(fileId);
+        RecvContext* c = m_recvContexts.value(fileId);
+        QString checkPath = c ? c->savePath : QString();
+        bool integrityOk = verifyFileIntegrity(checkPath, md5);
+        finishReceive(fileId, integrityOk);
     }
 }
 
@@ -2950,10 +3158,41 @@ void IPMsgManager::sendUdpBroadcast(const QByteArray& data) {
 }
 
 void IPMsgManager::sendFileData(const QString& targetIp, const QList<IPMsgFileItem>& items) {
-    for (const IPMsgFileItem& item : items) {
+    // Flatten the (possibly nested) item tree into a list of leaf files. The
+    // folder structure is preserved via each leaf's relativePath, which the
+    // receiver uses to recreate sub-directories.
+    QList<IPMsgFileItem> flat;
+    std::function<void(const QList<IPMsgFileItem>&)> flatten = [&](const QList<IPMsgFileItem>& list) {
+        for (const IPMsgFileItem& it : list) {
+            if (it.isDirectory) {
+                flatten(it.children);
+            } else {
+                flat.append(it);
+            }
+        }
+    };
+    flatten(items);
+
+    for (const IPMsgFileItem& item : flat) {
         QString fileId = generateFileId();
 
-        // Create initial transfer state
+        // Live task (for UI)
+        IPMsgTransferTask task;
+        task.fileId = fileId;
+        task.direction = TransferDirection::Send;
+        task.fileName = item.name;
+        task.filePath = item.absolutePath;
+        task.totalSize = item.size;
+        task.md5 = item.md5;
+        task.isDirectory = item.isDirectory;
+        task.status = TransferStatus::Queued;
+        task.peerId = deviceIdByIp(targetIp);
+        task.startTime = QDateTime::currentMSecsSinceEpoch();
+        task.lastSampleTime = task.startTime;
+        registerTask(task);
+        emit fileTaskQueued(fileId);
+
+        // Persisted transfer state (for resume)
         IPMsgTransferState state;
         state.fileId = fileId;
         state.filePath = item.absolutePath;
@@ -2966,186 +3205,475 @@ void IPMsgManager::sendFileData(const QString& targetIp, const QList<IPMsgFileIt
         state.lastOffset = 0;
         saveTransferState(state);
 
-         // Send file start command with chunk info
-         QJsonObject header;
-         header["command"] = QString::fromUtf8(IPMSG_FILE_START);
-         header["fileId"] = fileId;
-         header["fileName"] = item.name;
-         header["filePath"] = item.relativePath;
-         header["fileSize"] = item.size;
-         header["isDirectory"] = item.isDirectory;
-         header["senderId"] = m_userId;
-         header["senderName"] = m_userName;
-         header["md5"] = item.md5;
-         header["chunkSize"] = item.chunkSize;
+        SendJob job;
+        job.fileId = fileId;
+        job.targetIp = targetIp;
+        job.item = item;
+        job.attempts = 1;
+        m_sendQueue.append(job);
+    }
+    pumpTransferQueue();
+}
 
-         // Convert chunkMd5s to JSON array
-         QJsonArray chunkMd5Array;
-         for (const QByteArray& md5 : item.chunkMd5s) {
-             chunkMd5Array.append(QString::fromLatin1(md5.toHex()));
-         }
-         header["chunkMd5s"] = chunkMd5Array;
+void IPMsgManager::pumpTransferQueue() {
+    while (m_activeSenders.size() < m_maxConcurrentTransfers && !m_sendQueue.isEmpty()) {
+        SendJob job = m_sendQueue.takeFirst();
+        startSendJob(job);
+    }
+}
 
-        QJsonDocument doc(header);
+void IPMsgManager::startSendJob(const SendJob& job) {
+    SendContext* ctx = new SendContext();
+    ctx->fileId = job.fileId;
+    ctx->targetIp = job.targetIp;
+    ctx->relativePath = job.item.relativePath;
+    ctx->md5 = job.item.md5;
+    ctx->totalSize = job.item.size;
+    ctx->offset = 0;
+    ctx->attempts = job.attempts;
+    ctx->item = job.item;
+    ctx->startTime = QDateTime::currentMSecsSinceEpoch();
+    ctx->lastSampleTime = ctx->startTime;
 
-        QTcpSocket* socket = new QTcpSocket(this);
-        m_sendingSockets[fileId] = socket;
-        m_sendingProgress[fileId] = 0;
+    QString peerId = deviceIdByIp(job.targetIp);
+    if (hasEstablishedSession(peerId)) {
+        ctx->encrypted = true;
+        ctx->sessionKey = m_e2eeSessions.value(peerId).sharedSecret;
+    } else {
+        ctx->encrypted = false;
+        ctx->pendingKey = true;
+    }
 
-        connect(socket, &QTcpSocket::connected, this, [this, socket, data = doc.toJson()]() {
-            socket->write(data);
-            socket->flush();
-        });
+    m_activeSenders[job.fileId] = ctx;
 
-        connect(socket, &QTcpSocket::bytesWritten, this, &IPMsgManager::onSendProgress);
+    if (!ctx->pendingKey) {
+        connectSendSocket(job);
+        return;
+    }
 
-        connect(socket, &QTcpSocket::readyRead, this, [this, socket, fileId, item, targetIp]() {
-            QByteArray response = socket->readAll();
-            QJsonDocument doc = QJsonDocument::fromJson(response);
-            QJsonObject json = doc.object();
+    // No E2EE session yet: initiate key exchange, wait for it, then send encrypted.
+    m_pendingKeyJobs[job.fileId] = job;
+    initiateKeyExchange(job.targetIp);
 
-            if (json["command"].toString() == QString::fromUtf8(IPMSG_FILE_ACCEPT)) {
-                // Send file data
-                QFile file(item.absolutePath);
-                if (file.open(QIODevice::ReadOnly)) {
-                    // Support resume from offset
-                    qint64 offset = json["offset"].toVariant().toLongLong();
-                    if (offset > 0) {
-                        file.seek(offset);
-                    }
-
-                    QByteArray fileData = file.readAll();
-                    QJsonObject dataHeader;
-                    dataHeader["command"] = QString::fromUtf8(IPMSG_FILE_DATA);
-                    dataHeader["fileId"] = fileId;
-                    dataHeader["filePath"] = item.relativePath;
-                    dataHeader["fileSize"] = item.size;
-                    dataHeader["isDirectory"] = item.isDirectory;
-                    dataHeader["md5"] = item.md5;
-                    dataHeader["offset"] = offset;
-
-                    QJsonDocument dataDoc(dataHeader);
-                    socket->write(dataDoc.toJson());
-                    socket->flush();
-
-                    // Send file data in chunks
-                    const qint64 chunkSize = 1024 * 1024; // 1MB chunks
-                    qint64 totalSent = offset;
-                    
-                    while (!file.atEnd()) {
-                        QByteArray chunk = file.read(chunkSize);
-                        socket->write(chunk);
-                        socket->flush();
-                        totalSent += chunk.size();
-                        
-                        // Update progress
-                        m_sendingProgress[fileId] = totalSent;
-                        emit fileProgress(fileId, totalSent, item.size);
-                    }
-
-                    file.close();
-
-                    // Send verify command
-                    QJsonObject verifyHeader;
-                    verifyHeader["command"] = QString::fromUtf8(IPMSG_FILE_VERIFY);
-                    verifyHeader["fileId"] = fileId;
-                    verifyHeader["md5"] = item.md5;
-                    verifyHeader["filePath"] = item.absolutePath;
-
-                    QJsonDocument verifyDoc(verifyHeader);
-                    socket->write(verifyDoc.toJson());
-                    socket->flush();
-
-                    emit fileCompleted(fileId, item.absolutePath, true);
-                } else {
-                    emit fileError(fileId, "Failed to open file: " + item.absolutePath);
-                }
-            } else if (json["command"].toString() == QString::fromUtf8(IPMSG_FILE_REJECT)) {
-                emit fileError(fileId, "File transfer rejected");
-            } else if (json["command"].toString() == QString::fromUtf8(IPMSG_FILE_RESUME_REQUEST)) {
-                // Handle resume request from receiver
-                qint64 offset = json["offset"].toVariant().toLongLong();
-                emit fileResuming(fileId, offset);
-                
-                // Update transfer state
-                IPMsgTransferState state = getTransferState(fileId);
-                state.lastOffset = offset;
-                state.transferredSize = offset;
-                saveTransferState(state);
+    // Fallback: if the peer cannot establish E2EE in time, send in plaintext.
+    QTimer* timer = new QTimer(this);
+    timer->setSingleShot(true);
+    connect(timer, &QTimer::timeout, this, [this, job, timer]() {
+        timer->deleteLater();
+        if (m_pendingKeyJobs.contains(job.fileId)) {
+            m_pendingKeyJobs.remove(job.fileId);
+            SendContext* c = m_activeSenders.value(job.fileId);
+            if (c && c->pendingKey) {
+                c->pendingKey = false;
+                connectSendSocket(job);
             }
+        }
+    });
+    timer->start(5000);
+}
 
-            socket->deleteLater();
-        });
+void IPMsgManager::connectSendSocket(const SendJob& job) {
+    SendContext* ctx = m_activeSenders.value(job.fileId);
+    if (!ctx) return;
 
-        connect(socket, &QTcpSocket::errorOccurred, this, [this, socket, fileId](QAbstractSocket::SocketError) {
-            emit fileError(fileId, "Connection error: " + socket->errorString());
-            socket->deleteLater();
-        });
+    QTcpSocket* socket = new QTcpSocket(this);
+    ctx->socket = socket;
+    m_sendingSockets[job.fileId] = socket;
 
-    // Find target's TCP port from device list (TCP port = UDP port + 1)
-    quint16 targetPort = 2426; // default TCP port
+    connect(socket, &QTcpSocket::connected, this, [this, job, socket]() {
+        SendContext* c = m_activeSenders.value(job.fileId);
+        if (!c) return;
+        QJsonObject header;
+        header["command"] = QString::fromUtf8(IPMSG_FILE_START);
+        header["fileId"] = job.fileId;
+        header["fileName"] = job.item.name;
+        header["filePath"] = job.item.relativePath;
+        header["fileSize"] = job.item.size;
+        header["isDirectory"] = job.item.isDirectory;
+        header["senderId"] = m_userId;
+        header["senderName"] = m_userName;
+        header["md5"] = job.item.md5;
+        header["chunkSize"] = job.item.chunkSize;
+        header["encrypted"] = c->encrypted;
+        header["algo"] = c->encrypted ? QString("AES-256-GCM") : QString();
+        header["offset"] = 0;
+
+        QJsonArray chunkMd5Array;
+        for (const QByteArray& md5 : job.item.chunkMd5s) {
+            chunkMd5Array.append(QString::fromLatin1(md5.toHex()));
+        }
+        header["chunkMd5s"] = chunkMd5Array;
+
+        socket->write(QJsonDocument(header).toJson());
+        socket->flush();
+    });
+
+    connect(socket, &QTcpSocket::readyRead, this, [this, job, socket]() {
+        QByteArray response = socket->readAll();
+        QJsonDocument doc = QJsonDocument::fromJson(response);
+        if (doc.isNull()) return;
+        QJsonObject json = doc.object();
+        QString cmd = json["command"].toString();
+
+        if (cmd == QString::fromUtf8(IPMSG_FILE_ACCEPT)) {
+            SendContext* c = m_activeSenders.value(job.fileId);
+            if (!c) return;
+            qint64 offset = json["offset"].toVariant().toLongLong();
+            c->offset = offset;
+
+            QFile* file = new QFile(job.item.absolutePath, this);
+            if (!file->open(QIODevice::ReadOnly)) {
+                emit fileError(job.fileId, "Failed to open file: " + job.item.absolutePath);
+                return;
+            }
+            if (offset > 0) file->seek(offset);
+            c->file = file;
+            c->transferred = offset;
+
+            IPMsgTransferTask* t = findTask(job.fileId);
+            if (t) { t->status = TransferStatus::Transferring; t->transferredSize = offset; t->encrypted = c->encrypted; }
+            emit fileTaskStarted(job.fileId);
+
+            pumpSender(job.fileId);
+        } else if (cmd == QString::fromUtf8(IPMSG_FILE_REJECT)) {
+            emit fileError(job.fileId, "File transfer rejected");
+            cleanupSender(job.fileId);
+        } else if (cmd == QString::fromUtf8(IPMSG_FILE_RESUME_REQUEST)) {
+            qint64 offset = json["offset"].toVariant().toLongLong();
+            emit fileResuming(job.fileId, offset);
+            IPMsgTransferState state = getTransferState(job.fileId);
+            state.lastOffset = offset;
+            state.transferredSize = offset;
+            saveTransferState(state);
+        }
+    });
+
+    connect(socket, &QTcpSocket::bytesWritten, this, &IPMsgManager::onSendProgress);
+
+    connect(socket, &QTcpSocket::errorOccurred, this, [this, job, socket](QAbstractSocket::SocketError) {
+        if (m_activeSenders.contains(job.fileId)) {
+            handleSendFailure(job.fileId, "Connection error: " + socket->errorString());
+        }
+    });
+
+    connect(socket, &QTcpSocket::disconnected, this, [this, job]() {
+        if (m_activeSenders.contains(job.fileId)) {
+            handleSendFailure(job.fileId, "Connection closed");
+        }
+    });
+
+    quint16 targetPort = 2426;
     for (auto it = m_devices.constBegin(); it != m_devices.constEnd(); ++it) {
-        if (it.value().ip == targetIp) {
+        if (it.value().ip == job.targetIp) {
             targetPort = it.value().port + 1;
             break;
         }
     }
-    socket->connectToHost(targetIp, targetPort);
-    }
+    socket->connectToHost(job.targetIp, targetPort);
 }
 
-void IPMsgManager::receiveFileData(QTcpSocket* socket, const QJsonObject& header) {
-    QString fileId = header["fileId"].toString();
-    QString fileName = header["fileName"].toString();
-    QString filePath = header["filePath"].toString();
-    qint64 fileSize = header["fileSize"].toVariant().toLongLong();
-    bool isDirectory = header["isDirectory"].toBool();
-    QString md5 = header["md5"].toString();
-    QString savePath = m_pendingFiles.value(fileId, 
-        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
-
-    if (isDirectory) {
-        QDir().mkpath(savePath + "/" + filePath);
-    } else {
-        // Receive file data
-        QJsonObject dataHeader;
-        dataHeader["command"] = QString::fromUtf8(IPMSG_FILE_ACCEPT);
-        dataHeader["fileId"] = fileId;
-        dataHeader["savePath"] = savePath;
-        dataHeader["offset"] = 0;
-
-        QJsonDocument doc(dataHeader);
-        socket->write(doc.toJson());
-        socket->flush();
-    }
-}
-
-IPMsgFileItem IPMsgManager::buildFileTree(const QString& path, const QString& basePath) {
-    QFileInfo info(path);
-    IPMsgFileItem item;
-    item.name = info.fileName();
-    item.absolutePath = info.absoluteFilePath();
-    item.relativePath = QDir(basePath).relativeFilePath(path);
-    item.size = info.size();
-    item.isDirectory = info.isDir();
-    item.md5 = calculateFileMd5(path);
-
-    // Calculate chunk MD5s for files
-    if (!item.isDirectory && item.size > 0) {
-        item.chunkMd5s = calculateChunkMd5s(path, item.chunkSize);
-    }
-
-    if (info.isDir()) {
-        QDir dir(path);
-        QDirIterator it(path, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            IPMsgFileItem child = buildFileTree(it.filePath(), basePath);
-            item.children.append(child);
+void IPMsgManager::onEncryptionReadyForTransfer(const QString& deviceId) {
+    for (auto it = m_pendingKeyJobs.begin(); it != m_pendingKeyJobs.end(); ) {
+        SendJob job = it.value();
+        if (deviceIdByIp(job.targetIp) == deviceId) {
+            it = m_pendingKeyJobs.erase(it);
+            SendContext* c = m_activeSenders.value(job.fileId);
+            if (c && c->pendingKey) {
+                c->pendingKey = false;
+                if (hasEstablishedSession(deviceId)) {
+                    c->encrypted = true;
+                    c->sessionKey = m_e2eeSessions.value(deviceId).sharedSecret;
+                }
+                connectSendSocket(job);
+            }
+        } else {
+            ++it;
         }
     }
+}
 
-    return item;
+void IPMsgManager::pumpSender(const QString& fileId) {
+    SendContext* c = m_activeSenders.value(fileId);
+    if (!c || c->paused || c->finished) return;
+    if (!c->file || !c->file->isOpen()) return;
+
+    while (c->inFlight < s_maxInFlight && !c->file->atEnd()) {
+        QByteArray chunk = c->file->read(m_chunkSize);
+        if (chunk.isEmpty()) break;
+
+        QByteArray framed;
+        if (c->encrypted) {
+            QByteArray nonce;
+            QByteArray ct = aesGcmEncrypt(chunk, c->sessionKey, &nonce);
+            framed = nonce + ct; // nonce(12) + ciphertext + tag(16)
+        } else {
+            framed = chunk;
+        }
+
+        // Length-prefixed frame (4-byte little-endian)
+        quint32 len = static_cast<quint32>(framed.size());
+        len = qToLittleEndian(len);
+        QByteArray header;
+        header.resize(4);
+        memcpy(header.data(), &len, 4);
+        c->socket->write(header);
+        c->socket->write(framed);
+        c->inFlight += (4 + framed.size());
+        c->transferred += chunk.size();
+    }
+
+    updateSendSpeed(c);
+    IPMsgTransferTask* t = findTask(fileId);
+    if (t) { t->transferredSize = c->transferred; t->speedBps = c->speedBps; }
+    emit fileProgress(fileId, c->transferred, c->totalSize, c->speedBps);
+
+    if (c->file->atEnd()) {
+        finalizeSender(fileId);
+    }
+}
+
+void IPMsgManager::finalizeSender(const QString& fileId) {
+    SendContext* c = m_activeSenders.value(fileId);
+    if (!c || c->finished) return;
+    c->finished = true;
+
+    QJsonObject v;
+    v["command"] = QString::fromUtf8(IPMSG_FILE_VERIFY);
+    v["fileId"] = fileId;
+    v["md5"] = c->md5;
+    v["filePath"] = c->relativePath;
+    c->socket->write(QJsonDocument(v).toJson());
+    c->socket->flush();
+
+    IPMsgTransferTask* t = findTask(fileId);
+    if (t) t->status = TransferStatus::Completed;
+    emit fileCompleted(fileId, c->relativePath, true);
+
+    removeTransferState(fileId);
+
+    QTcpSocket* s = c->socket;
+    QFile* f = c->file;
+    m_activeSenders.remove(fileId);
+    m_sendingSockets.remove(fileId);
+    c->socket->disconnect();
+    c->socket->close();
+    if (f) { f->close(); delete f; }
+    s->deleteLater();
+    delete c;
+
+    pumpTransferQueue();
+}
+
+void IPMsgManager::onSendChunkWritten(const QString& fileId, qint64 bytes) {
+    Q_UNUSED(bytes);
+    SendContext* c = m_activeSenders.value(fileId);
+    if (!c || c->paused || c->finished) return;
+    if (bytes > 0) {
+        c->inFlight = qMax(0LL, c->inFlight - bytes);
+    }
+    pumpSender(fileId);
+}
+
+void IPMsgManager::updateSendSpeed(SendContext* ctx) {
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 dt = now - ctx->lastSampleTime;
+    if (dt >= 500) {
+        ctx->speedBps = static_cast<int>((ctx->transferred - ctx->lastSampleBytes) * 1000 / dt);
+        ctx->lastSampleTime = now;
+        ctx->lastSampleBytes = ctx->transferred;
+    }
+}
+
+void IPMsgManager::updateRecvSpeed(RecvContext* ctx) {
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 dt = now - ctx->lastSampleTime;
+    if (dt >= 500) {
+        ctx->speedBps = static_cast<int>((ctx->received - ctx->lastSampleBytes) * 1000 / dt);
+        ctx->lastSampleTime = now;
+        ctx->lastSampleBytes = ctx->received;
+    }
+}
+
+void IPMsgManager::registerTask(const IPMsgTransferTask& task) {
+    m_tasks[task.fileId] = task;
+}
+
+IPMsgTransferTask* IPMsgManager::findTask(const QString& fileId) {
+    return m_tasks.contains(fileId) ? &m_tasks[fileId] : nullptr;
+}
+
+void IPMsgManager::writeReceivedData(const QString& fileId, const QByteArray& data) {
+    RecvContext* c = m_recvContexts.value(fileId);
+    if (!c || !c->file) return;
+
+    c->buffer.append(data);
+
+    while (c->received < c->totalSize) {
+        if (c->buffer.size() < 4) break;
+        quint32 len = 0;
+        memcpy(&len, c->buffer.constData(), 4);
+        len = qFromLittleEndian(len);
+        if (static_cast<quint32>(c->buffer.size()) < 4u + len) break;
+
+        QByteArray framed = c->buffer.mid(4, static_cast<int>(len));
+        c->buffer.remove(0, 4 + static_cast<int>(len));
+
+        QByteArray plaintext;
+        if (c->encrypted) {
+            if (framed.size() < 12 + 16) continue;
+            QByteArray nonce = framed.left(12);
+            QByteArray tag = framed.right(16);
+            QByteArray ct = framed.mid(12, framed.size() - 12 - 16);
+            plaintext = aesGcmDecrypt(ct, c->sessionKey, nonce, tag);
+            if (plaintext.isEmpty()) {
+                emit fileError(fileId, "Decryption failed");
+                return;
+            }
+        } else {
+            plaintext = framed;
+        }
+
+        // Per-chunk integrity check: verify this chunk's MD5 against the
+        // sender-provided digest before committing it to disk.
+        if (!c->chunkMd5s.isEmpty() && c->chunkIndex < c->chunkMd5s.size()) {
+            QByteArray got = QCryptographicHash::hash(plaintext, QCryptographicHash::Md5);
+            if (got != c->chunkMd5s.at(c->chunkIndex)) {
+                emit fileError(fileId, tr("分块 %1 校验失败").arg(c->chunkIndex));
+                finishReceive(fileId, false);
+                return;
+            }
+        }
+        c->chunkIndex++;
+
+        c->file->write(plaintext);
+        c->received += plaintext.size();
+        updateRecvSpeed(c);
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) { t->transferredSize = c->received; t->speedBps = c->speedBps; }
+        emit fileProgress(fileId, c->received, c->totalSize, c->speedBps);
+    }
+
+    // All plaintext received: remaining buffer is a control command (FILE_VERIFY)
+    if (c->received >= c->totalSize && !c->buffer.isEmpty()) {
+        QByteArray leftover = c->buffer;
+        c->buffer.clear();
+        processTcpCommand(leftover, c->socket);
+    }
+}
+
+void IPMsgManager::finishReceive(const QString& fileId, bool success) {
+    RecvContext* c = m_recvContexts.take(fileId);
+    QString savePath;
+    if (c) {
+        savePath = c->savePath;
+        if (c->file) { c->file->close(); delete c->file; }
+        m_recvSocketToFileId.remove(c->socket);
+        delete c;
+    }
+    removeTransferState(fileId);
+    IPMsgTransferTask* t = findTask(fileId);
+    if (t) { t->status = success ? TransferStatus::Completed : TransferStatus::Failed; t->savePath = savePath; }
+    emit fileCompleted(fileId, savePath, success);
+}
+
+void IPMsgManager::handleChunkRequest(const QString& fileId, qint64 offset, qint64 length, QTcpSocket* socket) {
+    Q_UNUSED(length);
+    SendContext* c = m_activeSenders.value(fileId);
+    if (!c || !c->file || !c->file->isOpen()) return;
+    if (!c->file->seek(offset)) return;
+    QByteArray chunk = c->file->read(m_chunkSize);
+    if (chunk.isEmpty()) return;
+
+    QByteArray framed;
+    if (c->encrypted) {
+        QByteArray nonce;
+        QByteArray ct = aesGcmEncrypt(chunk, c->sessionKey, &nonce);
+        framed = nonce + ct;
+    } else {
+        framed = chunk;
+    }
+    QJsonObject h;
+    h["command"] = QString::fromUtf8(IPMSG_FILE_CHUNK_DATA);
+    h["fileId"] = fileId;
+    h["offset"] = offset;
+    h["encrypted"] = c->encrypted;
+    socket->write(QJsonDocument(h).toJson());
+    socket->flush();
+
+    quint32 len = static_cast<quint32>(framed.size());
+    len = qToLittleEndian(len);
+    QByteArray header;
+    header.resize(4);
+    memcpy(header.data(), &len, 4);
+    socket->write(header);
+    socket->write(framed);
+    socket->flush();
+}
+
+void IPMsgManager::cleanupSender(const QString& fileId) {
+    SendContext* c = m_activeSenders.take(fileId);
+    if (!c) return;
+    if (c->socket) {
+        m_sendingSockets.remove(fileId);
+        c->socket->disconnect();
+        c->socket->abort();
+        c->socket->deleteLater();
+    }
+    if (c->file) { c->file->close(); delete c->file; }
+    delete c;
+    pumpTransferQueue();
+}
+
+void IPMsgManager::handleSendFailure(const QString& fileId, const QString& reason) {
+    // Take the context so a subsequent errorOccurred/disconnected for the same
+    // socket is ignored (they often fire together for one failure).
+    SendContext* c = m_activeSenders.take(fileId);
+    if (!c) return;
+
+    m_sendingSockets.remove(fileId);
+    if (c->socket) {
+        c->socket->disconnect();
+        c->socket->abort();
+        c->socket->deleteLater();
+    }
+    if (c->file) { c->file->close(); delete c->file; }
+
+    const int failedAttempt = c->attempts;
+    if (failedAttempt < m_maxRetries) {
+        const int nextAttempt = failedAttempt + 1;
+        const int delayMs = m_retryBaseDelayMs * (1 << (nextAttempt - 1)); // 2s, 4s, 8s...
+
+        SendJob job;
+        job.fileId = fileId;
+        job.targetIp = c->targetIp;
+        job.item = c->item;
+        job.item.relativePath = c->relativePath;
+        job.attempts = nextAttempt;
+
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) {
+            t->status = TransferStatus::Queued;
+            t->attempts = nextAttempt;
+            t->transferredSize = 0;
+            t->speedBps = 0;
+        }
+        emit fileRetryScheduled(fileId, nextAttempt, delayMs);
+
+        QTimer::singleShot(delayMs, this, [this, job]() {
+            if (m_tasks.contains(job.fileId)) {
+                m_sendQueue.prepend(job); // prioritize retried jobs
+                pumpTransferQueue();
+            }
+        });
+
+        delete c;
+    } else {
+        IPMsgTransferTask* t = findTask(fileId);
+        if (t) t->status = TransferStatus::Failed;
+        emit fileError(fileId, reason); // terminal: retries exhausted
+        delete c;
+        pumpTransferQueue();
+    }
 }
 
 qint64 IPMsgManager::calculateFolderSize(const QString& folderPath) {
@@ -3156,28 +3684,6 @@ qint64 IPMsgManager::calculateFolderSize(const QString& folderPath) {
         totalSize += it.fileInfo().size();
     }
     return totalSize;
-}
-
-void IPMsgManager::saveReceivedFile(QTcpSocket* socket, const QString& savePath, qint64 fileSize) {
-    QFile file(savePath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        emit fileError("", "Failed to create file: " + savePath);
-        return;
-    }
-
-    qint64 bytesReceived = 0;
-    while (bytesReceived < fileSize) {
-        QByteArray data = socket->read(qMin(fileSize - bytesReceived, (qint64)1024 * 1024));
-        if (data.isEmpty()) {
-            socket->waitForReadyRead(10000);
-            continue;
-        }
-        file.write(data);
-        bytesReceived += data.size();
-        emit fileProgress("", bytesReceived, fileSize);
-    }
-
-    file.close();
 }
 
 QString IPMsgManager::generateFileId() {
@@ -3307,6 +3813,30 @@ IPMsgTransferState IPMsgManager::getTransferState(const QString& fileId) const {
 
 bool IPMsgManager::hasTransferState(const QString& fileId) const {
     return m_transferStates.contains(fileId);
+}
+
+qint64 IPMsgManager::resumeOffsetFor(const QString& fileId) {
+    if (!hasTransferState(fileId)) return 0;
+    const IPMsgTransferState st = getTransferState(fileId);
+    if (st.lastOffset <= 0) return 0;
+    IPMsgTransferTask* t = findTask(fileId);
+    if (!t) return 0;
+    // Guard against resuming onto a different file (size/md5 mismatch).
+    if (st.totalSize != t->totalSize) return 0;
+    if (!st.md5.isEmpty() && !t->md5.isEmpty() && st.md5 != t->md5) return 0;
+    return st.lastOffset;
+}
+
+QList<IPMsgTransferState> IPMsgManager::getResumableTransfers() const {
+    QList<IPMsgTransferState> out;
+    for (auto it = m_transferStates.constBegin(); it != m_transferStates.constEnd(); ++it) {
+        const IPMsgTransferState& st = it.value();
+        if (st.totalSize <= 0) continue;
+        if (st.lastOffset >= st.totalSize) continue; // already complete
+        if (m_tasks.contains(st.fileId)) continue;   // currently active
+        out.append(st);
+    }
+    return out;
 }
 
 void IPMsgManager::sendResumeRequest(const QString& targetIp, const QString& fileId, qint64 offset) {

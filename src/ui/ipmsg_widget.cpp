@@ -1,6 +1,13 @@
 #include "ipmsg_widget.h"
 #include "app/ipmsg_manager.h"
+#include "hw/audio_capture.h"
+#include "hw/camera_capture.h"
 #include "app/database_manager.h"
+#include "transfer_task_widget.h"
+#include "send_preview_dialog.h"
+#include "send_preview_dialog.h"
+#include <QToolButton>
+#include <QMenu>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -31,6 +38,8 @@
 #include <QTimer>
 #include <QIcon>
 #include <QFileInfo>
+#include <QDirIterator>
+#include <QDir>
 #include <QSqlQuery>
 #include <QSqlDatabase>
 #include <QMenu>
@@ -82,7 +91,7 @@ IPMsgWidget::IPMsgWidget(IPMsgManager* manager, QWidget* parent)
             }
         });
 
-        connect(m_manager, &IPMsgManager::fileProgress, this, [this](const QString& fileId, qint64 bytes, qint64 total) {
+        connect(m_manager, &IPMsgManager::fileProgress, this, [this](const QString& fileId, qint64 bytes, qint64 total, int) {
             onFileProgress(fileId, bytes, total);
         });
 
@@ -96,11 +105,29 @@ IPMsgWidget::IPMsgWidget(IPMsgManager* manager, QWidget* parent)
 
         connect(m_manager, &IPMsgManager::fileReceiveRequest, this, [this](const QString& fileId, const QString& senderName,
                            const QString& fileName, qint64 fileSize, bool isDirectory,
-                           const QString& md5) {
+                           const QString& md5, const QString& relativePath) {
             QString sizeStr;
             if (fileSize < 1024) sizeStr = QString("%1 B").arg(fileSize);
             else if (fileSize < 1024 * 1024) sizeStr = QString("%1 KB").arg(fileSize / 1024);
             else sizeStr = QString("%1 MB").arg(double(fileSize) / (1024.0 * 1024.0), 0, 'f', 1);
+
+            // Files belonging to a folder share a base directory (chosen once per folder).
+            bool isFolderFile = relativePath.contains('/');
+            if (isFolderFile) {
+                QString key = senderName + "|" + relativePath.section('/', 0, 0);
+                if (m_recvFolderBases.value(key).isEmpty()) {
+                    QString base = QFileDialog::getExistingDirectory(this, tr("选择保存文件夹"), QDir::homePath());
+                    if (base.isEmpty()) {
+                        m_manager->rejectFile(fileId);
+                        return;
+                    }
+                    m_recvFolderBases[key] = base;
+                }
+                QString savePath = QDir(m_recvFolderBases.value(key)).filePath(relativePath);
+                m_manager->acceptFile(fileId, savePath);
+                addChatMessage("", tr("正在接收 %1...").arg(relativePath), false);
+                return;
+            }
 
             QMessageBox::StandardButton reply = QMessageBox::question(this,
                 tr("文件接收请求"),
@@ -429,6 +456,21 @@ void IPMsgWidget::setupUI() {
     connect(m_memberManagementBtn, &QPushButton::toggled, this, &IPMsgWidget::onMemberManagementToggled);
     chatHeaderLayout->addWidget(m_memberManagementBtn);
 
+    // Transfer task button
+    m_transferBtn = new QPushButton(QIcon(":/icons/files.svg"), "", this);
+    m_transferBtn->setFixedSize(36, 36);
+    m_transferBtn->setStyleSheet(
+        "QPushButton { background-color: #3A3A3A; color: #E0E0E0; border: none; border-radius: 6px; }"
+        "QPushButton:hover { background-color: #4A4A4A; }"
+        "QPushButton:pressed { background-color: #2A2A2A; }"
+        "QPushButton:checked { background-color: #07C160; color: white; }");
+    m_transferBtn->setCheckable(true);
+    m_transferBtn->setToolTip(tr("传输任务"));
+    m_transferBtn->setIconSize(QSize(20, 20));
+    m_transferBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_transferBtn, &QPushButton::toggled, this, &IPMsgWidget::onTransferToggled);
+    chatHeaderLayout->addWidget(m_transferBtn);
+
     rightLayout->addWidget(chatHeader);
 
     // Chat display area
@@ -634,6 +676,12 @@ void IPMsgWidget::setupUI() {
 
     rightLayout->addWidget(m_memberManagementPanel);
 
+    // Transfer task panel (hidden by default)
+    m_transferPanel = new TransferTaskWidget(m_manager, this);
+    m_transferPanel->setStyleSheet("QWidget { background-color: #1E1E1E; border-top: 1px solid #333; }");
+    m_transferPanel->setVisible(false);
+    rightLayout->addWidget(m_transferPanel);
+
     // Emoji panel (hidden by default)
 m_emojiPanel = new QWidget(this);
     m_emojiPanel->setFixedHeight(220);
@@ -700,16 +748,27 @@ m_emojiPanel = new QWidget(this);
     connect(m_emojiBtn, &QPushButton::clicked, this, &IPMsgWidget::onSendEmoji);
     toolbarLayout->addWidget(m_emojiBtn);
 
-    m_fileBtn = new QPushButton(QIcon(":/icons/file.svg"), "", this);
+    m_fileBtn = new QToolButton(this);
+    m_fileBtn->setIcon(QIcon(":/icons/file.svg"));
     m_fileBtn->setFixedSize(40, 40);
+    m_fileBtn->setPopupMode(QToolButton::MenuButtonPopup);
     m_fileBtn->setStyleSheet(
-        "QPushButton { background-color: #3A3A3A; border: none; border-radius: 8px; }"
-        "QPushButton:hover { background-color: #4A4A4A; }"
-        "QPushButton:pressed { background-color: #2A2A2A; }");
-    m_fileBtn->setToolTip(tr("发送文件"));
+        "QToolButton { background-color: #3A3A3A; border: none; border-radius: 8px; }"
+        "QToolButton:hover { background-color: #4A4A4A; }"
+        "QToolButton:pressed { background-color: #2A2A2A; }"
+        "QToolButton::menu-indicator { subcontrol-position: right center; padding-right: 2px; }");
+    m_fileBtn->setToolTip(tr("发送文件/文件夹"));
     m_fileBtn->setIconSize(QSize(24, 24));
     m_fileBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_fileBtn, &QPushButton::clicked, this, &IPMsgWidget::onSendFileClicked);
+    auto* fileMenu = new QMenu(m_fileBtn);
+    fileMenu->setStyleSheet("QMenu { background-color: #2A2A2A; color: #E0E0E0; border: 1px solid #444; }"
+                            "QMenu::item:selected { background-color: #3A3A3A; }");
+    QAction* actFile = fileMenu->addAction(tr("发送文件"));
+    QAction* actFolder = fileMenu->addAction(tr("发送文件夹"));
+    connect(actFile, &QAction::triggered, this, &IPMsgWidget::onSendFileClicked);
+    connect(actFolder, &QAction::triggered, this, &IPMsgWidget::onSendFolderClicked);
+    m_fileBtn->setMenu(fileMenu);
+    m_fileBtn->setDefaultAction(actFile);
     toolbarLayout->addWidget(m_fileBtn);
 
     m_imageBtn = new QPushButton(QIcon(":/icons/image.svg"), "", this);
@@ -2165,7 +2224,9 @@ void IPMsgWidget::showVoiceCallWindow(const QString& peerId) {
     connect(muteBtn, &QPushButton::toggled, this, [this, muteBtn](bool checked) {
         m_isMuted = checked;
         muteBtn->setText(checked ? tr("取消静音") : tr("静音"));
-        // TODO: Actually mute audio capture
+        if (m_callAudioCapture) {
+            m_callAudioCapture->setMuted(checked);
+        }
     });
     buttonLayout->addWidget(muteBtn);
     
@@ -2180,7 +2241,18 @@ void IPMsgWidget::showVoiceCallWindow(const QString& peerId) {
     connect(cameraBtn, &QPushButton::toggled, this, [this, cameraBtn](bool checked) {
         m_isCameraOn = checked;
         cameraBtn->setText(checked ? tr("关闭摄像头") : tr("开启摄像头"));
-        // TODO: Actually toggle video stream
+        if (checked) {
+            if (!m_callCameraCapture) {
+                m_callCameraCapture = new CameraCapture(this);
+            }
+            if (!m_callCameraCapture->isInitialized() && !m_callCameraCapture->initialize()) {
+                qWarning() << "IPMsgWidget: failed to start call camera";
+                m_isCameraOn = false;
+                cameraBtn->setChecked(false);
+            }
+        } else if (m_callCameraCapture) {
+            m_callCameraCapture->shutdown();
+        }
     });
     buttonLayout->addWidget(cameraBtn);
     
@@ -2194,7 +2266,27 @@ void IPMsgWidget::showVoiceCallWindow(const QString& peerId) {
     
     layout->addLayout(buttonLayout);
     layout->addStretch();
-    
+
+    // Create the call's microphone capture so the mute button can actually gate audio.
+    if (m_callAudioCapture) {
+        m_callAudioCapture->shutdown();
+        m_callAudioCapture->deleteLater();
+        m_callAudioCapture = nullptr;
+    }
+    m_callAudioCapture = new AudioCapture(this, AudioCapture::Microphone);
+    if (!m_callAudioCapture->initialize()) {
+        qWarning() << "IPMsgWidget: failed to initialize call microphone capture";
+    }
+    m_callAudioCapture->setMuted(m_isMuted);
+
+    // Create the call's camera capture so the video toggle can actually gate the stream.
+    m_callCameraCapture = new CameraCapture(this);
+    if (!m_callCameraCapture->initialize()) {
+        qWarning() << "IPMsgWidget: failed to initialize call camera";
+        m_isCameraOn = false;
+        cameraBtn->setChecked(false);
+    }
+
     m_callWidget->show();
     
     // Start call duration timer
@@ -2222,6 +2314,16 @@ void IPMsgWidget::showVoiceCallWindow(const QString& peerId) {
     if (m_callWidget) {
         m_callWidget->close();
         m_callWidget = nullptr;
+    }
+    if (m_callAudioCapture) {
+        m_callAudioCapture->shutdown();
+        m_callAudioCapture->deleteLater();
+        m_callAudioCapture = nullptr;
+    }
+    if (m_callCameraCapture) {
+        m_callCameraCapture->shutdown();
+        m_callCameraCapture->deleteLater();
+        m_callCameraCapture = nullptr;
     }
     if (m_callDialog) {
         m_callDialog->close();
@@ -2888,9 +2990,61 @@ void IPMsgWidget::onSendFileClicked() {
     }
 
     QStringList files = QFileDialog::getOpenFileNames(this, tr("选择文件"));
+    if (files.isEmpty()) return;
+
+    QList<SendPreviewItem> items;
     for (const QString& file : files) {
-        emit sendFile(m_targetIp, file);
-        addFileMessage(m_manager->userName(), QFileInfo(file).fileName(), QFileInfo(file).size(), true);
+        QFileInfo fi(file);
+        if (!fi.exists()) continue;
+        items.append({file, fi.fileName(), fi.size(), false});
+    }
+    if (items.isEmpty()) return;
+
+    SendPreviewDialog dlg(m_targetName.isEmpty() ? m_targetIp : m_targetName,
+                          items, e2eeActiveForTarget(), this);
+    if (dlg.exec() == QDialog::Accepted) sendItems(dlg.items());
+}
+
+void IPMsgWidget::onSendFolderClicked() {
+    if (m_targetIp.isEmpty()) {
+        QMessageBox::warning(this, tr("提示"), tr("请先选择联系人"));
+        return;
+    }
+
+    QString dir = QFileDialog::getExistingDirectory(this, tr("选择文件夹"));
+    if (dir.isEmpty()) return;
+
+    QFileInfo fi(dir);
+    qint64 dirSize = 0;
+    QDirIterator it(dir, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        dirSize += it.fileInfo().size();
+    }
+    QList<SendPreviewItem> items;
+    items.append({dir, fi.fileName(), dirSize, true});
+
+    SendPreviewDialog dlg(m_targetName.isEmpty() ? m_targetIp : m_targetName,
+                          items, e2eeActiveForTarget(), this);
+    if (dlg.exec() == QDialog::Accepted) sendItems(dlg.items());
+}
+
+bool IPMsgWidget::e2eeActiveForTarget() const {
+    if (!m_manager || m_targetIp.isEmpty()) return false;
+    QString devId = m_contacts.value(m_targetIp).deviceId;
+    if (devId.isEmpty()) return false;
+    return m_manager->hasEstablishedSession(devId);
+}
+
+void IPMsgWidget::sendItems(const QList<SendPreviewItem>& items) {
+    for (const SendPreviewItem& it : items) {
+        if (it.isDir) {
+            emit sendFolder(m_targetIp, it.path);
+            addFileMessage(m_manager->userName(), it.name + "/", 0, true);
+        } else {
+            emit sendFile(m_targetIp, it.path);
+            addFileMessage(m_manager->userName(), it.name, it.size, true);
+        }
     }
 }
 
@@ -3419,6 +3573,7 @@ void IPMsgWidget::onSameAccountDeviceFound(const QString& deviceId, const QStrin
 }
 
 void IPMsgWidget::onStatsToggled(bool checked) {
+    if (checked && m_transferBtn && m_transferBtn->isChecked()) m_transferBtn->setChecked(false);
     if (m_statsPanel) {
         m_statsPanel->setVisible(checked);
         if (checked && m_groupStatsWidget && !m_targetGroupId.isEmpty()) {
@@ -3437,6 +3592,7 @@ void IPMsgWidget::onStatsToggled(bool checked) {
 }
 
 void IPMsgWidget::onMemberManagementToggled(bool checked) {
+    if (checked && m_transferBtn && m_transferBtn->isChecked()) m_transferBtn->setChecked(false);
     if (m_memberManagementPanel) {
         m_memberManagementPanel->setVisible(checked);
         if (checked && m_memberManagementWidget && !m_targetGroupId.isEmpty()) {
@@ -3447,6 +3603,18 @@ void IPMsgWidget::onMemberManagementToggled(bool checked) {
                     break;
                 }
             }
+        }
+    }
+}
+
+void IPMsgWidget::onTransferToggled(bool checked) {
+    if (m_transferPanel) {
+        m_transferPanel->setVisible(checked);
+        if (checked) {
+            // Close the other (group-only) panels to avoid stacking.
+            if (m_statsBtn && m_statsBtn->isChecked()) m_statsBtn->setChecked(false);
+            if (m_memberManagementBtn && m_memberManagementBtn->isChecked()) m_memberManagementBtn->setChecked(false);
+            m_transferPanel->refresh();
         }
     }
 }
@@ -3468,15 +3636,16 @@ void IPMsgWidget::dropEvent(QDropEvent* event) {
 
     QStringList imageExtensions = {"png", "jpg", "jpeg", "gif", "bmp", "webp"};
 
+    // Collect non-image files / folders for a single batch preview, send
+    // images inline as before.
+    QList<SendPreviewItem> batch;
     for (const QUrl& url : mimeData->urls()) {
         QString filePath = url.toLocalFile();
         QFileInfo fileInfo(filePath);
         if (!fileInfo.exists()) continue;
 
         if (fileInfo.isDir()) {
-            // Handle folder drop
-            emit sendFolder(m_targetIp, filePath);
-            addFileMessage(m_manager->userName(), fileInfo.fileName() + "/", 0, true);
+            batch.append({filePath, fileInfo.fileName(), 0, true});
         } else {
             QString ext = fileInfo.suffix().toLower();
             if (imageExtensions.contains(ext)) {
@@ -3487,10 +3656,15 @@ void IPMsgWidget::dropEvent(QDropEvent* event) {
                     addImageMessage(m_manager->userName(), imageData, fileInfo.fileName(), true);
                 }
             } else {
-                emit sendFile(m_targetIp, filePath);
-                addFileMessage(m_manager->userName(), fileInfo.fileName(), fileInfo.size(), true);
+                batch.append({filePath, fileInfo.fileName(), fileInfo.size(), false});
             }
         }
+    }
+
+    if (!batch.isEmpty()) {
+        SendPreviewDialog dlg(m_targetName.isEmpty() ? m_targetIp : m_targetName,
+                              batch, e2eeActiveForTarget(), this);
+        if (dlg.exec() == QDialog::Accepted) sendItems(dlg.items());
     }
 }
 
