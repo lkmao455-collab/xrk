@@ -1015,6 +1015,19 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
             emit monitorListReceived(monitors, currentMonitorIndex);
             break;
         }
+        case MessageType::MONITOR_SWITCH_ACK: {
+            if (payload.size() >= 5) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                uint8_t success;
+                uint32_t newIndex;
+                stream >> success >> newIndex;
+                emit monitorSwitchCompleted(success == 1, static_cast<int>(newIndex));
+                LOG_INFO("Monitor switch " + QString(success ? "succeeded" : "failed") + 
+                         " to index " + QString::number(newIndex));
+            }
+            break;
+        }
         case MessageType::CONSENT_REQUEST: {
             // Host is asking its user to approve this connection.
             emit consentRequested();

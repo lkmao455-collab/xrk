@@ -65,6 +65,7 @@ private slots:
     void onTakeoverClicked();
     void onBlockInputClicked();
     void onMonitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
+    void onMonitorSwitchCompleted(bool success, int newIndex);
     void onAnnotationToggled(bool checked);
     void onAnnotateColorClicked();
     void onAnnotateClearClicked();
@@ -133,6 +134,13 @@ private:
     bool m_watermarkEnabled = false;
     QRect m_frameTargetRect;               // where the frame is drawn (widget coords)
     QLabel* m_consentLabel = nullptr;      // "waiting for host approval" overlay
+    
+    // Monitor switch transition effects
+    bool m_monitorSwitching = false;       // true during monitor switch
+    QLabel* m_switchingLabel = nullptr;    // "切换中..." overlay
+    QImage m_lastFrameBeforeSwitch;        // preserve last frame during switch
+    QTimer* m_switchFadeTimer = nullptr;   // fade-in animation timer
+    qreal m_switchFadeOpacity = 0.0;       // current opacity for fade-in
 
     // Top toolbar that hosts the action buttons (annotation / color / clear /
     // watermark / mic / privacy) so they no longer overlap the remote desktop.

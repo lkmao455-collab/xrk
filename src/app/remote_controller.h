@@ -140,6 +140,7 @@ signals:
     void qualityInfoReceived(const QualityInfo& info);
     void syncNotifyReceived(const SyncNotify& note);
     void monitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
+    void monitorSwitchCompleted(bool success, int newIndex);
     void latencyUpdated(qint64 ms);
 
     // VoIP signaling

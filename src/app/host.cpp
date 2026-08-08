@@ -2044,8 +2044,49 @@ case MessageType::VOICE_ACK: {
                 stream.setByteOrder(QDataStream::BigEndian);
                 uint32_t index;
                 stream >> index;
-                m_screenCapture->setMonitorIndex(static_cast<int>(index));
-                LOG_INFO("Host: Monitor switched to index " + QString::number(index));
+                
+                // Perform thread-safe monitor switch
+                bool success = m_screenCapture->switchMonitorSafe(static_cast<int>(index));
+                
+                // Update encoder resolution if switch succeeded
+                if (success && m_encodeWorker && m_encodeWorker->encoder()) {
+                    auto monitors = m_screenCapture->getMonitorList();
+                    int newIndex = m_screenCapture->monitorIndex();
+                    if (newIndex >= 0 && newIndex < monitors.size()) {
+                        int w = monitors[newIndex].width;
+                        int h = monitors[newIndex].height;
+                        
+                        // Re-initialize encoder with new resolution
+                        // This happens on encode thread via setEncoderAsync
+                        auto newEncoder = VideoEncoder::create(m_encodeWorker->encoder()->type());
+                        if (newEncoder && newEncoder->initialize(w, h, m_captureFps)) {
+                            if (m_encodeWorker->encoder()->type() == EncoderType::JPEG) {
+                                newEncoder->setJpegQuality(m_jpegQuality);
+                            }
+                            newEncoder->setTrueColor(m_trueColor);
+                            m_encodeWorker->setEncoderAsync(std::move(newEncoder));
+                            LOG_INFO("Host: Encoder reinitialized for resolution " + 
+                                     QString::number(w) + "x" + QString::number(h));
+                        }
+                    }
+                }
+                
+                // Send ACK to controller
+                QByteArray ackPayload;
+                QDataStream ackStream(&ackPayload, QIODevice::WriteOnly);
+                ackStream.setByteOrder(QDataStream::BigEndian);
+                ackStream << static_cast<uint8_t>(success ? 1 : 0);
+                ackStream << static_cast<uint32_t>(index);
+                QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_SWITCH_ACK, ackPayload);
+                
+                QTcpSocket* socket = m_clients.value(clientId).socket;
+                if (socket) {
+                    socket->write(resp);
+                    socket->flush();
+                }
+                
+                LOG_INFO("Host: Monitor switched to index " + QString::number(index) + 
+                         (success ? " OK" : " FAILED"));
             }
             break;
         }

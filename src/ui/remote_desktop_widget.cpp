@@ -66,10 +66,19 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     m_monitorCombo = new QComboBox(this);
     m_monitorCombo->setObjectName("monitor-combo");
     m_monitorCombo->hide();
-    m_monitorCombo->setMinimumWidth(160);
+    m_monitorCombo->setMinimumWidth(200);
     connect(m_monitorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
-                if (m_controller && m_active) {
+                if (m_controller && m_active && !m_monitorSwitching) {
+                    // Preserve current frame for transition effect
+                    if (!m_currentFrame.isNull()) {
+                        m_lastFrameBeforeSwitch = m_currentFrame;
+                    }
+                    m_monitorSwitching = true;
+                    m_switchFadeOpacity = 0.0;
+                    if (m_switchingLabel) m_switchingLabel->show();
+                    update();
+                    
                     m_controller->switchMonitor(index);
                 }
             });
@@ -99,6 +108,8 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     if (m_controller) {
         connect(m_controller, &RemoteController::monitorListReceived,
                 this, &RemoteDesktopWidget::onMonitorListReceived);
+        connect(m_controller, &RemoteController::monitorSwitchCompleted,
+                this, &RemoteDesktopWidget::onMonitorSwitchCompleted);
         connect(m_controller, &RemoteController::consentRequested,
                 this, &RemoteDesktopWidget::onConsentRequested);
         connect(m_controller, &RemoteController::consentGranted,
@@ -106,6 +117,28 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         connect(m_controller, &RemoteController::consentDenied,
                 this, &RemoteDesktopWidget::onConsentDenied);
     }
+
+    // Monitor switching overlay label
+    m_switchingLabel = new QLabel(tr("切换中..."), this);
+    m_switchingLabel->setObjectName("switching-overlay");
+    m_switchingLabel->setAlignment(Qt::AlignCenter);
+    m_switchingLabel->setStyleSheet(
+        "QLabel { background-color: rgba(0, 0, 0, 180); color: white; "
+        "font-size: 16px; padding: 20px 40px; border-radius: 8px; }");
+    m_switchingLabel->hide();
+    
+    // Fade-in animation timer
+    m_switchFadeTimer = new QTimer(this);
+    m_switchFadeTimer->setInterval(20); // 50fps animation
+    connect(m_switchFadeTimer, &QTimer::timeout, this, [this]() {
+        m_switchFadeOpacity += 0.1;
+        if (m_switchFadeOpacity >= 1.0) {
+            m_switchFadeOpacity = 1.0;
+            m_switchFadeTimer->stop();
+            m_monitorSwitching = false;
+        }
+        update();
+    });
 
     m_consentLabel = new QLabel(this);
     m_consentLabel->setObjectName("consent-overlay");
@@ -244,12 +277,40 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
         return;
     }
 
+    // Handle monitor switch transition
+    if (m_monitorSwitching && !m_lastFrameBeforeSwitch.isNull()) {
+        // Draw last frame at reduced opacity during switch
+        QImage scaled = m_lastFrameBeforeSwitch.scaled(display.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        QRect targetRect(display.x() + (display.width() - scaled.width()) / 2,
+                         display.y() + (display.height() - scaled.height()) / 2,
+                         scaled.width(), scaled.height());
+        painter.setOpacity(0.5);
+        painter.drawImage(targetRect, scaled);
+        painter.setOpacity(1.0);
+        
+        // Position switching overlay
+        if (m_switchingLabel) {
+            m_switchingLabel->adjustSize();
+            m_switchingLabel->move(display.center().x() - m_switchingLabel->width() / 2,
+                                   display.center().y() - m_switchingLabel->height() / 2);
+            m_switchingLabel->show();
+            m_switchingLabel->raise();
+        }
+        return;
+    }
+
     QImage scaled = m_currentFrame.scaled(display.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
     QRect targetRect(display.x() + (display.width() - scaled.width()) / 2,
                      display.y() + (display.height() - scaled.height()) / 2,
                      scaled.width(), scaled.height());
     m_frameTargetRect = targetRect;
+    
+    // Apply fade-in opacity during transition
+    if (m_switchFadeOpacity > 0.0 && m_switchFadeOpacity < 1.0) {
+        painter.setOpacity(m_switchFadeOpacity);
+    }
     painter.drawImage(targetRect, scaled);
+    painter.setOpacity(1.0);
 
     painter.setPen(Qt::green);
     painter.drawText(display.x() + 10, display.y() + 20, QString("FPS: %1").arg(m_currentFps));
@@ -583,7 +644,7 @@ void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monito
     QSignalBlocker blocker(m_monitorCombo);
     m_monitorCombo->clear();
     for (const MonitorInfo& m : monitors) {
-        QString label = QString("%1 %2").arg(m.index).arg(m.name);
+        QString label = QString("%1 %2 %3x%4").arg(m.index).arg(m.name).arg(m.width).arg(m.height);
         if (m.isPrimary) label += " (主屏)";
         m_monitorCombo->addItem(label, m.index);
     }
@@ -596,6 +657,28 @@ void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monito
         update(); // reposition overlay in paintEvent
     } else {
         m_monitorCombo->hide();
+    }
+}
+
+void RemoteDesktopWidget::onMonitorSwitchCompleted(bool success, int newIndex) {
+    m_monitorSwitching = false;
+    if (m_switchingLabel) m_switchingLabel->hide();
+    
+    if (success) {
+        // Start fade-in animation
+        m_switchFadeOpacity = 0.0;
+        m_switchFadeTimer->start();
+        LOG_INFO("Monitor switch to " + QString::number(newIndex) + " completed, fading in");
+    } else {
+        // Switch failed, restore previous state
+        m_lastFrameBeforeSwitch = QImage();
+        LOG_WARNING("Monitor switch to " + QString::number(newIndex) + " failed");
+    }
+    
+    // Update combo box to reflect current monitor
+    if (m_monitorCombo && newIndex >= 0 && newIndex < m_monitorCombo->count()) {
+        QSignalBlocker blocker(m_monitorCombo);
+        m_monitorCombo->setCurrentIndex(newIndex);
     }
 }
 
@@ -776,6 +859,42 @@ QPoint RemoteDesktopWidget::remoteToWidget(const QPoint& remotePos) const {
 void RemoteDesktopWidget::setupShortcuts() {
     m_fullscreenShortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
     connect(m_fullscreenShortcut, &QShortcut::activated, this, &RemoteDesktopWidget::toggleFullscreen);
+    
+    // Monitor switch shortcuts: Ctrl+1-9 to switch to specific monitor
+    for (int i = 0; i < 9; ++i) {
+        QKeySequence seq(Qt::CTRL | (Qt::Key_1 + i));
+        auto* sc = new QShortcut(seq, this);
+        connect(sc, &QShortcut::activated, this, [this, i]() {
+            if (m_controller && m_active && m_monitorCombo && !m_monitorSwitching) {
+                if (i < m_monitorCombo->count()) {
+                    m_monitorCombo->setCurrentIndex(i);
+                }
+            }
+        });
+    }
+    
+    // Ctrl+Tab / Ctrl+Shift+Tab to cycle through monitors
+    auto* nextSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Tab), this);
+    connect(nextSc, &QShortcut::activated, this, [this]() {
+        if (m_controller && m_active && m_monitorCombo && !m_monitorSwitching) {
+            int count = m_monitorCombo->count();
+            if (count > 1) {
+                int next = (m_monitorCombo->currentIndex() + 1) % count;
+                m_monitorCombo->setCurrentIndex(next);
+            }
+        }
+    });
+    
+    auto* prevSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Tab), this);
+    connect(prevSc, &QShortcut::activated, this, [this]() {
+        if (m_controller && m_active && m_monitorCombo && !m_monitorSwitching) {
+            int count = m_monitorCombo->count();
+            if (count > 1) {
+                int prev = (m_monitorCombo->currentIndex() - 1 + count) % count;
+                m_monitorCombo->setCurrentIndex(prev);
+            }
+        }
+    });
 }
 
 void RemoteDesktopWidget::toggleFullscreen() {

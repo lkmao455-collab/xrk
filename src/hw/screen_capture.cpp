@@ -186,21 +186,33 @@ QImage ScreenCapture::captureFrame(QList<QRect>* dirtyRects) {
     if (dirtyRects) {
         dirtyRects->clear();
     }
+    
+    QMutexLocker lock(&m_mutex);
     if (!m_initialized) {
         return QImage();
     }
+    
+    // Cache member variables under lock to avoid race conditions
+    bool useDxgi = m_useDxgi && !m_dxgiFallback;
+    bool dxgiFallback = m_dxgiFallback;
+    int dxFailCount = m_dxFailCount;
+    lock.unlock();
 
 #ifdef _WIN32
-    if (m_useDxgi && !m_dxgiFallback) {
+    if (useDxgi) {
         QImage frame = captureDxgiFrameEx(dirtyRects);
         if (!frame.isNull()) {
+            QMutexLocker l(&m_mutex);
             m_dxFailCount = 0;
             return frame;
         }
         // Track consecutive failures; after 10, permanently switch to GDI
-        if (++m_dxFailCount >= 10) {
-            m_dxgiFallback = true;
-            LOG_WARNING("DXGI capture failed " + QString::number(m_dxFailCount) + " times, switching to GDI permanently");
+        {
+            QMutexLocker l(&m_mutex);
+            if (++m_dxFailCount >= 10) {
+                m_dxgiFallback = true;
+                LOG_WARNING("DXGI capture failed " + QString::number(m_dxFailCount) + " times, switching to GDI permanently");
+            }
         }
         // Also try GDI for this frame so the user sees something. GDI has no
         // change metadata, so leave dirtyRects empty (= no hint).
@@ -220,14 +232,23 @@ QImage ScreenCapture::captureFrame(QList<QRect>* dirtyRects) {
 }
 
 QImage ScreenCapture::captureFrame(int monitorIndex, QList<QRect>* dirtyRects) {
+    QMutexLocker lock(&m_mutex);
     if (!m_initialized) {
         return QImage();
     }
 
     if (monitorIndex != m_monitorIndex && monitorIndex >= 0 && monitorIndex < m_monitors.size()) {
+        lock.unlock();
         setMonitorIndex(monitorIndex);
+        lock.relock();
     }
 
+    // Re-check after potential switch
+    if (!m_initialized) {
+        return QImage();
+    }
+    lock.unlock();
+    
     return captureFrame(dirtyRects);
 }
 
@@ -620,6 +641,7 @@ int ScreenCapture::monitorCount() const {
 }
 
 void ScreenCapture::setMonitorIndex(int index) {
+    QMutexLocker lock(&m_mutex);
     if (index < 0 || index >= m_monitors.size()) {
         return;
     }
@@ -629,9 +651,38 @@ void ScreenCapture::setMonitorIndex(int index) {
     }
 
     m_monitorIndex = index;
+    lock.unlock();
+    
     shutdown();
     initialize();
     LOG_INFO("Switched to monitor " + QString::number(index));
+}
+
+bool ScreenCapture::switchMonitorSafe(int index) {
+    QMutexLocker lock(&m_mutex);
+    if (index < 0 || index >= m_monitors.size()) {
+        LOG_WARNING("switchMonitorSafe: invalid index " + QString::number(index));
+        emit monitorSwitchCompleted(false, m_monitorIndex);
+        return false;
+    }
+
+    if (index == m_monitorIndex) {
+        emit monitorSwitchCompleted(true, m_monitorIndex);
+        return true;
+    }
+
+    m_monitorIndex = index;
+    lock.unlock();
+    
+    bool success = false;
+    if (shutdown(); true) {
+        success = initialize();
+    }
+    
+    emit monitorSwitchCompleted(success, m_monitorIndex);
+    LOG_INFO("switchMonitorSafe: switched to monitor " + QString::number(index) + 
+             (success ? " OK" : " FAILED"));
+    return success;
 }
 
 int ScreenCapture::monitorIndex() const {

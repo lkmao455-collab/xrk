@@ -4,6 +4,8 @@
 #include <QImage>
 #include <QRect>
 #include <QList>
+#include <QMutex>
+#include <QMutexLocker>
 #include <memory>
 #include "core/types.h"
 
@@ -44,9 +46,13 @@ public:
     void setMonitorIndex(int index);
     int monitorIndex() const;
 
+    // Thread-safe monitor switch with result feedback
+    bool switchMonitorSafe(int index);
+
 signals:
     void frameCaptured(const QImage& frame);
     void captureError(const QString& errorString);
+    void monitorSwitchCompleted(bool success, int newIndex);
 
 private:
     bool initializeDxgi();
@@ -94,6 +100,10 @@ private:
     int m_targetFps = 30;
     int m_monitorIndex = 0;
     QList<MonitorInfo> m_monitors;
+
+    // Thread safety: protects all member variables during concurrent access
+    // from capture thread (captureFrame) and main thread (setMonitorIndex/shutdown)
+    mutable QMutex m_mutex;
 
     struct DxgiContext;
     std::unique_ptr<DxgiContext> m_dxgiContext;
