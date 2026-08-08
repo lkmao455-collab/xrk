@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QByteArray>
 #include <QCryptographicHash>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include "ipmsg_manager.h"
 
 namespace xrk {
@@ -80,6 +82,9 @@ protected:
     void processTcp(IPMsgManager& m, const QByteArray& data) {
         m.processTcpCommand(data, nullptr);
     }
+    void processTcp(IPMsgManager& m, const QByteArray& data, QTcpSocket* socket) {
+        m.processTcpCommand(data, socket);
+    }
     void saveState(IPMsgManager& m, const IPMsgTransferState& s) {
         m.saveTransferState(s);
     }
@@ -94,6 +99,35 @@ protected:
     }
     QList<IPMsgTransferState> resumableTransfers(IPMsgManager& m) const {
         return m.getResumableTransfers();
+    }
+    QString genFileId(IPMsgManager& m, const QString& senderId, const QString& md5,
+                      const QString& relPath, qint64 size) const {
+        return m.generateFileId(senderId, md5, relPath, size);
+    }
+
+    // Helpers to set up / inspect the receiver-side wiring that acceptFile()
+    // expects, since the test body runs in a derived class without friendship.
+    void setIncomingSocket(IPMsgManager& m, const QString& id, QTcpSocket* s) {
+        m.m_incomingFileSockets[id] = s;
+    }
+    void setIncomingChunkSize(IPMsgManager& m, const QString& id, qint64 cs) {
+        m.m_incomingChunkSizes[id] = cs;
+    }
+    qint64 recvFilePos(IPMsgManager& m, const QString& id) const {
+        auto* c = m.m_recvContexts.value(id);
+        return (c && c->file) ? c->file->pos() : -1;
+    }
+    qint64 recvFileSize(IPMsgManager& m, const QString& id) const {
+        auto* c = m.m_recvContexts.value(id);
+        return (c && c->file) ? c->file->size() : -1;
+    }
+    qint64 recvReceived(IPMsgManager& m, const QString& id) const {
+        auto* c = m.m_recvContexts.value(id);
+        return c ? c->received : -1;
+    }
+    int recvChunkIndex(IPMsgManager& m, const QString& id) const {
+        auto* c = m.m_recvContexts.value(id);
+        return c ? c->chunkIndex : -1;
     }
 };
 
@@ -468,6 +502,279 @@ TEST_F(IpmsgTransferTest, ResumableTransfersExcludesCompleteAndActive) {
     t.status = TransferStatus::Transferring;
     registerTask(m, t);
     EXPECT_TRUE(resumableTransfers(m).isEmpty());
+}
+
+// Sets up a connected socket pair so acceptFile() has a live, open peer socket
+// to write its FILE_ACCEPT command to (mirrors the real incoming-connection
+// flow without needing a second machine). The server-side socket is reparented
+// to nullptr so it survives the local QTcpServer going out of scope.
+namespace {
+void makeConnectedSocketPair(QTcpSocket*& client, QTcpSocket*& server) {
+    QTcpServer srv;
+    QSignalSpy newConn(&srv, &QTcpServer::newConnection);
+    ASSERT_TRUE(srv.listen(QHostAddress::LocalHost, 0));
+    client = new QTcpSocket;
+    client->connectToHost(QHostAddress::LocalHost, srv.serverPort());
+    ASSERT_TRUE(newConn.wait(5000));
+    server = srv.nextPendingConnection();
+    ASSERT_NE(server, nullptr);
+    ASSERT_TRUE(server->isOpen());
+    // Detach from the (soon-to-be-destroyed) server so the socket stays alive.
+    server->setParent(nullptr);
+    QSignalSpy serverConnected(server, &QTcpSocket::connected);
+    if (server->state() != QAbstractSocket::ConnectedState)
+        ASSERT_TRUE(serverConnected.wait(5000));
+}
+} // namespace
+
+// A fresh accept (no persisted state) must start from offset 0: the receiver
+// file is opened truncated (WriteOnly) and the FILE_ACCEPT announces offset 0,
+// so the sender streams the whole file.
+TEST_F(IpmsgTransferTest, AcceptFileFreshTruncatesAndStartsAtZero) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    IPMsgManager m;
+    m.setTransferStateFile(dir.filePath("transfers.json"));
+
+    const QString fileId = "fresh-1";
+    const QString savePath = dir.filePath("out.bin");
+
+    // Pre-existing (stale) content on disk that a fresh accept must discard.
+    {
+        QFile f(savePath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(5000, 'X'));
+        f.close();
+    }
+
+    IPMsgTransferTask task;
+    task.fileId = fileId;
+    task.direction = TransferDirection::Receive;
+    task.totalSize = 5000;
+    task.md5 = "abc";
+    registerTask(m, task);
+
+    QTcpSocket* client = nullptr;
+    QTcpSocket* server = nullptr;
+    ASSERT_NO_FATAL_FAILURE(makeConnectedSocketPair(client, server));
+    setIncomingSocket(m, fileId, server);
+
+    QSignalSpy resumingSpy(&m, &IPMsgManager::fileResuming);
+
+    m.acceptFile(fileId, savePath);
+
+    // FILE_ACCEPT must announce offset 0 (no resume).
+    ASSERT_TRUE(client->waitForReadyRead(5000));
+    QJsonDocument doc = QJsonDocument::fromJson(client->readAll());
+    ASSERT_FALSE(doc.isNull());
+    EXPECT_EQ(doc.object()["command"].toString(), QString::fromUtf8("FILE_ACCEPT"));
+    EXPECT_EQ(doc.object()["offset"].toVariant().toLongLong(), 0);
+
+    EXPECT_EQ(resumingSpy.count(), 0); // fresh, no resume signal
+    EXPECT_EQ(recvFilePos(m, fileId), 0);
+    EXPECT_EQ(recvReceived(m, fileId), 0);
+    // WriteOnly truncates the stale 5000-byte file down to 0.
+    EXPECT_EQ(recvFileSize(m, fileId), 0);
+
+    delete client;
+    delete server;
+}
+
+// The core 断点续传 behaviour: when a partial download (2000 of 5000 bytes,
+// chunk size 1000) was persisted, re-accepting must open the receiver file in
+// ReadWrite, seek to 2000, align chunkIndex to 2, announce offset 2000 in
+// FILE_ACCEPT (so the SENDER skips the bytes we already have), and checkpoint
+// the receiver-side state with isSender=false.
+TEST_F(IpmsgTransferTest, AcceptFilePerformsRealResume) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    IPMsgManager m;
+    m.setTransferStateFile(dir.filePath("transfers.json"));
+
+    const QString fileId = "resume-acc";
+    const QString savePath = dir.filePath("out.bin");
+    const qint64 chunkSize = 1000;
+    const qint64 offset = 2000;
+
+    // Pre-write the already-received prefix to disk.
+    {
+        QFile f(savePath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(static_cast<int>(offset), 'P'));
+        f.close();
+    }
+
+    IPMsgTransferTask task;
+    task.fileId = fileId;
+    task.direction = TransferDirection::Receive;
+    task.totalSize = 5000;
+    task.md5 = "abc";
+    registerTask(m, task);
+
+    // Persisted bookmark from a previous session (receiver side).
+    IPMsgTransferState st;
+    st.fileId = fileId;
+    st.totalSize = 5000;
+    st.md5 = "abc";
+    st.lastOffset = offset;
+    st.isSender = false;
+    saveState(m, st);
+
+    // Tell acceptFile the chunk size so chunkIndex alignment is meaningful.
+    setIncomingChunkSize(m, fileId, chunkSize);
+
+    QTcpSocket* client = nullptr;
+    QTcpSocket* server = nullptr;
+    ASSERT_NO_FATAL_FAILURE(makeConnectedSocketPair(client, server));
+    setIncomingSocket(m, fileId, server);
+
+    QSignalSpy resumingSpy(&m, &IPMsgManager::fileResuming);
+
+    m.acceptFile(fileId, savePath);
+
+    // FILE_ACCEPT announces the resume offset so the sender skips ahead.
+    ASSERT_TRUE(client->waitForReadyRead(5000));
+    QJsonDocument doc = QJsonDocument::fromJson(client->readAll());
+    ASSERT_FALSE(doc.isNull());
+    EXPECT_EQ(doc.object()["command"].toString(), QString::fromUtf8("FILE_ACCEPT"));
+    EXPECT_EQ(doc.object()["offset"].toVariant().toLongLong(), offset);
+
+    // fileResuming emitted with the right offset.
+    ASSERT_EQ(resumingSpy.count(), 1);
+    EXPECT_EQ(resumingSpy.takeFirst().at(1).toLongLong(), offset);
+
+    // Receiver file opened ReadWrite and positioned at the offset.
+    EXPECT_EQ(recvFilePos(m, fileId), offset);
+    EXPECT_EQ(recvReceived(m, fileId), offset);
+    EXPECT_EQ(recvChunkIndex(m, fileId), static_cast<int>(offset / chunkSize));
+    // Prefix preserved (ReadWrite, not truncated).
+    EXPECT_EQ(recvFileSize(m, fileId), offset);
+
+    // Receiver-side state check-pointed for a later (post-restart) resume.
+    IPMsgTransferState persisted = getState(m, fileId);
+    EXPECT_EQ(persisted.lastOffset, offset);
+    EXPECT_FALSE(persisted.isSender);
+
+    delete client;
+    delete server;
+}
+
+// A re-sent file must produce a stable fileId (derived from sender+md5+path+
+// size) so the receiver's persisted resume bookmark still matches after a
+// restart. This is what makes 断点续传 work across process restarts rather
+// than only within a single session.
+TEST_F(IpmsgTransferTest, DeterministicFileIdEnablesCrossRestartResume) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    IPMsgManager m;
+    m.setTransferStateFile(dir.filePath("transfers.json"));
+
+    const QString sender = "userA";
+    const QString md5 = "abc";
+    const QString rel = "doc/file.bin";
+    const qint64 size = 5000;
+
+    // Same inputs -> identical id (stable across "restarts").
+    const QString id1 = genFileId(m, sender, md5, rel, size);
+    const QString id2 = genFileId(m, sender, md5, rel, size);
+    EXPECT_EQ(id1, id2);
+    EXPECT_FALSE(id1.isEmpty());
+
+    // Different content -> different id.
+    EXPECT_NE(id1, genFileId(m, sender, "other", rel, size));
+    EXPECT_NE(id1, genFileId(m, sender, md5, "doc/other.bin", size));
+
+    // Receiver persisted a bookmark from a previous session, keyed by the very
+    // same deterministic id a fresh re-send will produce.
+    IPMsgTransferState st;
+    st.fileId = id1;
+    st.totalSize = size;
+    st.md5 = md5;
+    st.lastOffset = 2000;
+    st.isSender = false;
+    saveState(m, st);
+
+    IPMsgTransferTask task;
+    task.fileId = id1;
+    task.direction = TransferDirection::Receive;
+    task.totalSize = size;
+    task.md5 = md5;
+    registerTask(m, task);
+
+    // The receiver recognises the re-sent file and resumes from the bookmark.
+    EXPECT_EQ(resumeOffsetOf(m, id1), 2000);
+}
+
+// When a sender auto-retries a failed transfer it re-sends FILE_START. If the
+// receiver already holds a partial-download bookmark for that file, it must
+// accept and resume silently (no user prompt) and tell the sender to seek to
+// the bookmark offset. This is what makes 断点续传 fully automatic end-to-end.
+TEST_F(IpmsgTransferTest, RetriedFileStartAutoResumesWithoutPrompt) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    IPMsgManager m;
+    m.setTransferStateFile(dir.filePath("transfers.json"));
+
+    const QString fileId = "auto-resume-1";
+    const qint64 total = 5000;
+    const qint64 offset = 2000;
+    const QString savePath = dir.filePath("partial.bin");
+
+    // Pre-write the already-received prefix so the receiver can safely seek.
+    {
+        QFile f(savePath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(static_cast<int>(offset), 'P'));
+        f.close();
+    }
+
+    // Persisted receiver bookmark from the interrupted attempt.
+    IPMsgTransferState st;
+    st.fileId = fileId;
+    st.totalSize = total;
+    st.md5 = "abc";
+    st.lastOffset = offset;
+    st.savePath = savePath;
+    st.isSender = false;
+    saveState(m, st);
+
+    QSignalSpy promptSpy(&m, &IPMsgManager::fileReceiveRequest);
+
+    // Connected socket pair: the "server" socket stands in for the receiver's
+    // incoming connection; the "client" simulates the retrying sender.
+    QTcpSocket* client = nullptr;
+    QTcpSocket* server = nullptr;
+    ASSERT_NO_FATAL_FAILURE(makeConnectedSocketPair(client, server));
+
+    QJsonObject start;
+    start["command"] = QString::fromUtf8("FILE_START");
+    start["fileId"] = fileId;
+    start["fileName"] = "partial.bin";
+    start["filePath"] = "";          // relative path (single file)
+    start["fileSize"] = total;
+    start["isDirectory"] = false;
+    start["senderId"] = "userA";
+    start["senderName"] = "Alice";
+    start["md5"] = "abc";
+    start["chunkSize"] = 1000;
+    processTcp(m, QJsonDocument(start).toJson(), server);
+
+    // No manual prompt: resume was automatic.
+    EXPECT_EQ(promptSpy.count(), 0);
+
+    // The receiver answered with FILE_ACCEPT carrying the resume offset.
+    ASSERT_TRUE(client->waitForReadyRead(5000));
+    QJsonDocument doc = QJsonDocument::fromJson(client->readAll());
+    ASSERT_FALSE(doc.isNull());
+    EXPECT_EQ(doc.object()["command"].toString(), QString::fromUtf8("FILE_ACCEPT"));
+    EXPECT_EQ(doc.object()["offset"].toVariant().toLongLong(), offset);
+
+    // Receiver context positioned at the offset, ready to receive the remainder.
+    EXPECT_EQ(recvFilePos(m, fileId), offset);
+    EXPECT_EQ(recvReceived(m, fileId), offset);
+
+    delete client;
+    delete server;
 }
 
 } // namespace xrk

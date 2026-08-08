@@ -1575,6 +1575,11 @@ void IPMsgManager::acceptFile(const QString& fileId, const QString& savePath) {
     c->chunkSize = m_incomingChunkSizes.value(fileId, m_chunkSize);
     c->chunkIndex = 0;
 
+    // Offset to resume from when we already hold a partial download for this
+    // file. Computed once and reused below so the on-disk file, the wire
+    // protocol and the progress signal all agree on the same number.
+    const qint64 resumeOffset = resumeOffsetFor(fileId);
+
     if (task->encrypted && m_e2eeSessions.contains(task->peerId)) {
         c->sessionKey = m_e2eeSessions.value(task->peerId).sharedSecret;
     } else {
@@ -1591,10 +1596,27 @@ void IPMsgManager::acceptFile(const QString& fileId, const QString& savePath) {
         }
         QDir().mkpath(QFileInfo(actualPath).dir().absolutePath());
         QFile* file = new QFile(actualPath, this);
-        if (!file->open(QIODevice::WriteOnly)) {
+        // Resume from a persisted partial download when one exists: open in
+        // ReadWrite so the already-received prefix is preserved, then seek to
+        // the resume offset. A fresh accept (offset 0) truncates any stale
+        // leftover via WriteOnly so we don't inherit garbage past totalSize.
+        const QIODevice::OpenMode mode = (resumeOffset > 0)
+                ? QIODevice::ReadWrite
+                : QIODevice::WriteOnly;
+        if (!file->open(mode)) {
             emit fileError(fileId, "Failed to create file: " + actualPath);
             delete c;
             return;
+        }
+        if (resumeOffset > 0) {
+            // Seek to the resume offset and align the per-chunk verification
+            // index so the chunk we are about to receive is checked against the
+            // correct sender-provided digest.
+            file->seek(resumeOffset);
+            c->received = resumeOffset;
+            if (c->chunkSize > 0)
+                c->chunkIndex = static_cast<int>(resumeOffset / c->chunkSize);
+            emit fileResuming(fileId, resumeOffset);
         }
         c->file = file;
         c->savePath = actualPath;
@@ -1603,6 +1625,21 @@ void IPMsgManager::acceptFile(const QString& fileId, const QString& savePath) {
         c->savePath = savePath;
     }
 
+    // Persist receiver-side transfer state so the download can be resumed after
+    // a restart or a dropped connection (断点续传). The sender still decides
+    // nothing here: it will seek to the offset we send in FILE_ACCEPT.
+    IPMsgTransferState st;
+    st.fileId = fileId;
+    st.filePath = "";
+    st.savePath = c->savePath;
+    st.totalSize = c->totalSize;
+    st.transferredSize = resumeOffset;
+    st.md5 = c->md5;
+    st.isDirectory = c->isDirectory;
+    st.isSender = false;
+    st.lastOffset = resumeOffset;
+    saveTransferState(st);
+
     m_recvContexts[fileId] = c;
     m_recvSocketToFileId[socket] = fileId;
 
@@ -1610,17 +1647,17 @@ void IPMsgManager::acceptFile(const QString& fileId, const QString& savePath) {
     json["command"] = QString::fromUtf8(IPMSG_FILE_ACCEPT);
     json["fileId"] = fileId;
     json["savePath"] = savePath;
-    // If we already have a partial download for this file, resume from the
-    // persisted offset instead of restarting from zero (断点续传).
-    json["offset"] = resumeOffsetFor(fileId);
+    // Tell the sender to skip the bytes we already have (真·省带宽续传).
+    json["offset"] = resumeOffset;
 
     socket->write(QJsonDocument(json).toJson());
     socket->flush();
 
     task->status = TransferStatus::Transferring;
     task->savePath = c->savePath;
+    task->transferredSize = resumeOffset;
     emit fileTaskStarted(fileId);
-    emit fileProgress(fileId, 0, task->totalSize, 0);
+    emit fileProgress(fileId, resumeOffset, task->totalSize, 0);
 }
 
 void IPMsgManager::rejectFile(const QString& fileId) {
@@ -1720,7 +1757,10 @@ void IPMsgManager::retryFile(const QString& fileId) {
     state.md5 = t->md5;
     state.isDirectory = t->isDirectory;
     state.isSender = true;
-    state.lastOffset = 0;
+    // Preserve any previously persisted offset so a retry continues from where
+    // it left off (the receiver still decides the actual resume offset via
+    // FILE_ACCEPT, so this only affects bookkeeping / UI state).
+    state.lastOffset = hasTransferState(fileId) ? getTransferState(fileId).lastOffset : 0;
     saveTransferState(state);
 
     QString targetIp;
@@ -3079,7 +3119,26 @@ void IPMsgManager::processTcpCommand(const QByteArray& data, QTcpSocket* socket)
 
         m_incomingFileSockets[fileId] = socket;
         m_incomingRelativePaths[fileId] = relativePath;
-        emit fileReceiveRequest(fileId, senderName, fileName, fileSize, isDirectory, md5, relativePath);
+
+        // Automatic resume: if we already hold a partial download for this file
+        // (e.g. the sender is auto-retrying a failed transfer), accept and resume
+        // it without prompting the user again. This closes the loop so that
+        // 断点续传 is fully automatic end-to-end: a dropped connection triggers
+        // the sender's retry, the receiver silently resumes from the bookmark.
+        bool autoResumed = false;
+        const IPMsgTransferState bookmark = getTransferState(fileId);
+        if (hasTransferState(fileId) && bookmark.lastOffset > 0 &&
+            bookmark.totalSize == fileSize &&
+            (bookmark.md5.isEmpty() || md5.isEmpty() || bookmark.md5 == md5) &&
+            !bookmark.savePath.isEmpty()) {
+            acceptFile(fileId, bookmark.savePath);
+            autoResumed = true;
+        }
+
+        if (!autoResumed) {
+            emit fileReceiveRequest(fileId, senderName, fileName, fileSize,
+                                   isDirectory, md5, relativePath);
+        }
     } else if (command == QString::fromUtf8(IPMSG_FILE_REJECT)) {
         QString fileId = json["fileId"].toString();
         m_incomingFileSockets.remove(fileId);
@@ -3174,7 +3233,18 @@ void IPMsgManager::sendFileData(const QString& targetIp, const QList<IPMsgFileIt
     flatten(items);
 
     for (const IPMsgFileItem& item : flat) {
-        QString fileId = generateFileId();
+        // Deterministic id so a re-send (e.g. after a restart) matches any
+        // persisted resume bookmark. Disambiguate against currently-active
+        // transfers so two live sends of the identical file don't collide in
+        // the task/context maps; resume still matches because the inactive
+        // original used this same base id.
+        QString baseId = generateFileId(m_userId, item.md5, item.relativePath, item.size);
+        QString fileId = baseId;
+        int dup = 0;
+        while (m_tasks.contains(fileId) || m_activeSenders.contains(fileId) ||
+               m_recvContexts.contains(fileId)) {
+            fileId = baseId + '-' + QString::number(++dup);
+        }
 
         // Live task (for UI)
         IPMsgTransferTask task;
@@ -3551,6 +3621,25 @@ void IPMsgManager::writeReceivedData(const QString& fileId, const QByteArray& da
         IPMsgTransferTask* t = findTask(fileId);
         if (t) { t->transferredSize = c->received; t->speedBps = c->speedBps; }
         emit fileProgress(fileId, c->received, c->totalSize, c->speedBps);
+
+        // Checkpoint resume progress so a dropped connection or an app restart
+        // can skip the bytes we already verified and committed (断点续传).
+        // Throttled to ~one disk write per chunk to keep the state file from
+        // being rewritten on every frame.
+        IPMsgTransferState st = getTransferState(fileId);
+        if (st.fileId.isEmpty() || st.isSender) {
+            st.fileId = fileId;
+            st.savePath = c->savePath;
+            st.totalSize = c->totalSize;
+            st.md5 = c->md5;
+            st.isDirectory = c->isDirectory;
+            st.isSender = false;
+        }
+        if (c->received - st.lastOffset >= c->chunkSize || st.lastOffset <= 0) {
+            st.transferredSize = c->received;
+            st.lastOffset = c->received;
+            saveTransferState(st);
+        }
     }
 
     // All plaintext received: remaining buffer is a control command (FILE_VERIFY)
@@ -3686,7 +3775,18 @@ qint64 IPMsgManager::calculateFolderSize(const QString& folderPath) {
     return totalSize;
 }
 
-QString IPMsgManager::generateFileId() {
+QString IPMsgManager::generateFileId(const QString& senderId, const QString& md5,
+                                      const QString& relativePath, qint64 size) {
+    if (!md5.isEmpty()) {
+        // Stable across process restarts: the same file re-sent by the same
+        // user yields the same id, so a persisted resume bookmark (keyed by
+        // fileId) still matches and 断点续传 can kick in. md5+size+relativePath
+        // uniquely identify the file's content.
+        const QByteArray key = (senderId + '|' + md5 + '|' + relativePath + '|' +
+                                QByteArray::number(size)).toUtf8();
+        return QCryptographicHash::hash(key, QCryptographicHash::Sha1).toHex();
+    }
+    // No digest (should not happen for a normal send) -> unique random id.
     return QUuid::createUuid().toString().remove('{').remove('}').remove('-');
 }
 

@@ -314,7 +314,12 @@ private:
     void sendUdpBroadcast(const QByteArray& data);
     void sendFileData(const QString& targetIp, const QList<IPMsgFileItem>& items);
     qint64 calculateFolderSize(const QString& folderPath);
-    QString generateFileId();
+    // Derives a file id from (senderId, md5, relativePath, size) rather than a
+    // random UUID so that re-sending the same file after a restart produces the
+    // same id and matches the persisted resume bookmark (断点续传). Falls back to
+    // a random id when no digest is available.
+    QString generateFileId(const QString& senderId, const QString& md5,
+                           const QString& relativePath, qint64 size);
     QString getLocalIp();
     QList<QByteArray> calculateChunkMd5s(const QString& filePath, qint64 chunkSize = 1024 * 1024);
     void loadTransferStates();
