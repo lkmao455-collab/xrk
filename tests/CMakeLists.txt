@@ -49,6 +49,7 @@ if(XRK_GTEST_AVAILABLE)
         test_web_socket_gateway.cpp
         test_voice_messages.cpp
         test_input_control.cpp
+        test_subnet_scanner.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)
