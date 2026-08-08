@@ -52,6 +52,9 @@ if(XRK_GTEST_AVAILABLE)
         test_subnet_scanner.cpp
         test_screen_capture.cpp
         test_remote_controller_monitor.cpp
+        test_protocol_extended.cpp
+        test_connection_history.cpp
+        test_tcp_connection.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)
