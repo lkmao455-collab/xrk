@@ -35,6 +35,13 @@ public:
     void processMouseEvent(const MouseEvent& event);
     void processKeyEvent(const KeyEvent& event);
 
+    // Silent-monitoring input lock (plan §2.2c): block/unblock the controlled
+    // machine's LOCAL keyboard and mouse. On Windows this wraps BlockInput(),
+    // which must run on the same thread as SendInput() (the Host main thread) —
+    // so injected input is never blocked by its own lock. Idempotent.
+    void setLocalInputBlocked(bool blocked);
+    bool isLocalInputBlocked() const { return m_localInputBlocked; }
+
     // --- Injection-logic helpers (platform neutral, unit-testable) ---
     // Whether a VK needs the KEYEVENTF_EXTENDEDKEY flag on Windows.
     static bool isExtendedKey(uint32_t keyCode);
@@ -59,6 +66,7 @@ private:
     void keyEvent(uint32_t keyCode, bool pressed, const QString& text = QString());
 
     bool m_initialized = false;
+    bool m_localInputBlocked = false;
 #ifdef __linux__
     Display* m_display = nullptr;
     bool initDisplay();

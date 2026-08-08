@@ -4,7 +4,6 @@
 #include "core/types.h"
 
 using namespace xrk;
-
 class ProtocolTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -313,4 +312,27 @@ TEST_F(ProtocolTest, EncodeSyncNotify) {
     EXPECT_EQ(decoded.localDir, note.localDir);
     EXPECT_EQ(decoded.size, note.size);
     EXPECT_EQ(decoded.mtime, note.mtime);
+}
+
+// INPUT_BLOCK (silent monitoring, plan §2.2c): the controller locks/unlocks the
+// controlled machine's local input via a 1-byte bool payload, reusing the
+// privacy-screen codec. Verify the full message round-trips through the real
+// ProtocolManager codec and the payload decodes back to the same bool.
+TEST_F(ProtocolTest, InputBlockMessageTypeValue) {
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::INPUT_BLOCK), 182u);
+}
+
+TEST_F(ProtocolTest, InputBlockRoundTrip) {
+    for (bool block : {true, false}) {
+        QByteArray payload = ProtocolManager::encodePrivacyScreen(block);
+        QByteArray message = ProtocolManager::encode(MessageType::INPUT_BLOCK, payload, "sess-1");
+
+        MessageType type = MessageType::HEARTBEAT;
+        QByteArray decodedPayload;
+        QString sessionId;
+        ASSERT_TRUE(ProtocolManager::decode(message, type, decodedPayload, sessionId));
+        EXPECT_EQ(type, MessageType::INPUT_BLOCK);
+        EXPECT_EQ(sessionId, QString("sess-1"));
+        EXPECT_EQ(ProtocolManager::decodePrivacyScreen(decodedPayload), block);
+    }
 }

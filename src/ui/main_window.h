@@ -49,6 +49,9 @@ private slots:
     void onToggleHost();
     void onConnectToIp(const QString& ip, uint16_t port);
     void onConnectToCode(const QString& code);
+#ifdef XRK_ENABLE_SILENT
+    void onSilentMonitor();
+#endif
     void onHostClientConnected(const QString& clientId);
     void onTransportEstablished(TransportType transport);
     void onHostClientDisconnected(const QString& clientId);
@@ -138,6 +141,9 @@ private:
     QAction* m_recordAction = nullptr;
     QAction* m_cameraAction = nullptr;
     QAction* m_audioAction = nullptr;
+#ifdef XRK_ENABLE_SILENT
+    QAction* m_silentMonitorAction = nullptr;
+#endif
     QAction* m_lockScreenAction = nullptr;
     QAction* m_mediaTestAction = nullptr;
     QAction* m_ipmsgAction = nullptr;

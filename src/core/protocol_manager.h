@@ -22,6 +22,15 @@ public:
     
     static QByteArray encodeScreenFrame(const ScreenFrame& frame);
     static ScreenFrame decodeScreenFrame(const QByteArray& data);
+
+    static QByteArray encodeScreenTile(const ScreenTile& tile);
+    static ScreenTile decodeScreenTile(const QByteArray& data);
+
+    static QByteArray encodeScreenTileRequest(const ScreenTileRequest& req);
+    static ScreenTileRequest decodeScreenTileRequest(const QByteArray& data);
+
+    static QByteArray encodeScreenAck(const ScreenAck& ack);
+    static ScreenAck decodeScreenAck(const QByteArray& data);
     
     static QByteArray encodeFileRequest(const FileRequest& request);
     static FileRequest decodeFileRequest(const QByteArray& data);
@@ -113,8 +122,8 @@ static QByteArray encodeFileData(const FileData& data);
     static QByteArray encodeMonitorInfo(const MonitorInfo& info);
     static MonitorInfo decodeMonitorInfo(const QByteArray& data);
     
-    static QByteArray encodeMonitorList(const QList<MonitorInfo>& monitors);
-    QList<MonitorInfo> static decodeMonitorList(const QByteArray& data);
+    static QByteArray encodeMonitorList(const QList<MonitorInfo>& monitors, int currentMonitorIndex = 0);
+    QList<MonitorInfo> static decodeMonitorList(const QByteArray& data, int& currentMonitorIndex);
     
     static QByteArray encodeChatMessage(const ChatMessage& msg);
     static ChatMessage decodeChatMessage(const QByteArray& data);

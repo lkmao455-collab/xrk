@@ -615,7 +615,9 @@ QToolBar::separator {
     border-bottom-color: #3a4566;
 }
 
-/* selected (toggled on) = accent highlight so the active state is obvious */
+/* selected (toggled on) = accent highlight so the active state is obvious.
+   Each toggle gets a distinct semantic color so multiple active features are
+   distinguishable at a glance. */
 #remote-toolbar QPushButton:checked {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #1b4fc0, stop:0.5 #2b6cff, stop:1 #1a3f9e);
@@ -623,6 +625,36 @@ QToolBar::separator {
     border-top-color: #1b4fc0;
     border-bottom-color: #7aa6ff;
     color: #ffffff;
+}
+
+/* annotation (whiteboard) active = amber / highlighter */
+#remote-toolbar #annotate-button:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #8a6d1b, stop:0.5 #d4a017, stop:1 #7a5e15);
+    border: 1px solid #ffd166;
+    border-top-color: #8a6d1b;
+    border-bottom-color: #ffe08a;
+    color: #1a1405;
+}
+
+/* watermark active = teal */
+#remote-toolbar #watermark-button:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #0f6e6e, stop:0.5 #1aa3a3, stop:1 #0d6363);
+    border: 1px solid #4dd0d0;
+    border-top-color: #0f6e6e;
+    border-bottom-color: #7fe3e3;
+    color: #04201f;
+}
+
+/* microphone (two-way voice) active = green */
+#remote-toolbar #mic-button:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #14632e, stop:0.5 #1ea84e, stop:1 #115a29);
+    border: 1px solid #4ade80;
+    border-top-color: #14632e;
+    border-bottom-color: #86efac;
+    color: #04210f;
 }
 
 /* privacy screen toggled on = red "blocking" highlight */
@@ -633,6 +665,14 @@ QToolBar::separator {
     border-top-color: #a51d36;
     border-bottom-color: #ff8a9b;
     color: #ffffff;
+}
+
+/* contextual action buttons (颜色 / 清空) are momentary, not toggles: render
+   them flatter so they never read as an on/off switch. */
+#remote-toolbar #annotate-clear-button {
+    background: #1d2742;
+    border: 1px solid #0c1222;
+    color: #c8cfe0;
 }
 
 /* ---- Tooltip ---- */

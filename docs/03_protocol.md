@@ -83,12 +83,102 @@ CRC32校验，覆盖头部+负载。
 ```
 
 #### SCREEN_FRAME_ACK (21)
+
+客户端回馈给主机的自适应网络环反馈（见 3.7 节）。负载为 `ScreenAck`：
+
 ```
-+----------+
-| Frame ID |
-| 8字节    |
-+----------+
++------------+------------+--------------+--------------+--------------+
+| Timestamp  | RoundTrip  | TilesRecv    | TilesLost    | BufferLevel  |
+| 8字节      | 8字节(有符号)| 4字节        | 4字节        | 4字节        |
++------------+------------+--------------+--------------+--------------+
 ```
+- **Timestamp**: 回显最近收到帧的时间戳
+- **RoundTrip**: 往返时延（ms）
+- **TilesRecv**: 累计收到的 tile 数
+- **TilesLost**: 累计丢失/损坏的 tile 数
+- **BufferLevel**: 客户端解码缓冲占用（0..100），用于驱动主机的 AIMD tile 预算
+
+### 3.3.1 弱网分块传输消息（Tiled Transport）
+
+分块传输用于弱网/高丢包场景：把整屏切成 64×64 的 tile，只对**变化区域**编码发送，
+并对每个 tile 计算 MD5 以便端到端完整性校验。客户端在鉴权成功后发送 `SCREEN_KEYFRAME` 声明
+自己可消费分块；只要存在一个非 tile-capable 的客户端或当前编码器为 H264，主机即回退到整帧
+`SCREEN_FRAME`。
+
+#### SCREEN_TILE (23)
+
+单个增量 tile（加密后放在消息体内）。负载为 `ScreenTile`：
+
+```
++-----+-----+-----+-----+-----+-----------+-----------+---------+---------+--------+-----------+-----------+----------+
+| X   | Y   | W   | H   | Seq | FrameW    | FrameH    | Key?    | Encoding| Format | Timestamp | HashLen   | Hash     |
+| 4B  | 4B  | 4B  | 4B  | 4B  | 4B        | 4B        | 1B      | 1B      | 1B     | 8B        | 4B        | HashLen  |
++-----+-----+-----+-----+-----+-----------+-----------+---------+---------+--------+-----------+-----------+----------+
+| DataLen(4B) | Data(DataLen)                                              |
++---------------------------------------------------------------------------+
+```
+- **X/Y/W/H**: tile 在整屏中的像素矩形
+- **Seq**: 主机侧全局递增的 tile 版本号
+- **FrameW/FrameH**: 整屏尺寸（客户端据此建立画布）
+- **Key?**: 1 表示该 tile 属于一次全屏关键帧批次
+- **Encoding**: `TileEncoding`（0=RLE 无损 / 1=RAW deflate / 2=JPEG）
+- **Hash**: tile 数据的 MD5；客户端校验失败则丢弃并触发 NACK 重传
+- **Data**: 按 Encoding 编码后的像素数据
+
+#### SCREEN_KEYFRAME (24)
+
+客户端声明支持分块传输（能力握手）。无负载。主机收到后切换到分块模式，并立即重发整屏。
+
+#### SCREEN_TILE_REQUEST (25)
+
+客户端向主机请求精准重传指定 tile（NACK，Phase F）。负载为 `ScreenTileRequest`：
+
+```
++-----------+-----------+----------------+-------------------+
+| FrameW    | FrameH    | TileCount(4B)  | Tiles(TileCount×) |
+| 4B        | 4B        | 4B             | X(4B) Y(4B) ...   |
++-----------+-----------+----------------+-------------------+
+```
+- **FrameW/FrameH**: 整屏尺寸
+- **Tiles**: 需要重传的 tile 像素坐标列表（客户端把 ≤100ms 内的坏 tile 合并成一条请求）
+
+### 3.7 弱网分块传输协议流程（Phases A–F）
+
+```
+Client                                        Host (EncodeWorker)
+  |                                              |
+  |--- AUTH_REQ ------------------------------->|
+  |<-- AUTH_RESP (AES key+iv) -----------------|
+  |                                              |
+  |--- SCREEN_KEYFRAME (能力握手) ------------>|  switch to tiled transport
+  |<-- SCREEN_TILE × N (整屏关键帧) -----------|  buildTiles 全网格
+  |                                              |
+  |  [Phase A] 主机仅对脏区/变化 tile 编码；      |
+  |            DXGI 脏矩形缺失时走整帧 hash 兜底  |
+  |<-- SCREEN_TILE × 少量 (仅变化区域) --------|
+  |                                              |
+  |  [Phase D] 逐 tile 内容分类编码：            |
+  |            纯色→RLE(无损) / 照片→JPEG        |
+  |                                              |
+  |--- SCREEN_FRAME_ACK (每 1s) -------------->|  驱动 AIMD tile 预算
+  |                                              |
+  |  [Phase E] 周期性关键帧(每 10s) + 丢块修复   |
+  |<-- SCREEN_TILE × N (关键帧) --------------|
+  |                                              |
+  |  [Phase F] 单 tile MD5 失败 → 丢弃          |
+  |--- SCREEN_TILE_REQUEST (≤100ms 批量) ------>|  resendTiles 精准重传
+  |<-- SCREEN_TILE × 1 (仅请求 tile) ---------|
+  |                                              |
+  |  [光标优先级] 主机发送前 stable_partition，   |
+  |            把鼠标所在 tile 排到最前           |
+```
+
+关键设计点：
+- **差分传输 (Phase A)**：静态屏幕不重发；脏区来自 DXGI Desktop Duplication 的 dirty/move
+  矩形，缺失时由整帧 FNV-1a hash 对比兜底（`hasFrameChanged`）。
+- **关键帧 IDR 语义 (Phase E)**：显式关键帧强制全网格重绘，绕过 hash 跳过，修复残留错块。
+- **精准 NACK (Phase F)**：单 tile 损坏只重传该 tile，比整屏关键帧更省带宽。
+- **光标优先级**：弱网下用户正在操作的区域优先重绘。
 
 ### 3.4 输入控制 (TCP)
 

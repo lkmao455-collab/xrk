@@ -1,0 +1,89 @@
+# XRK 局域网远程控制软件
+
+XRK 是一款面向**局域网**环境的远程控制软件（类似向日葵 / TeamViewer 的局域网版），
+基于 Qt6 + C++17 实现，内置飞鸽传书（IPMsg）风格的局域网文件传输与远程桌面控制。
+
+## 主要功能
+
+- **远程桌面控制**：实时查看并控制对端桌面，支持鼠标 / 键盘输入。
+- **局域网文件传输**：基于 IPMsg 协议的发现与文件收发。
+- **弱网分块屏幕传输（Tiled Transport）**：在丢包 / 高延迟链路上，把屏幕切成
+  64×64 的 tile，只对变化区域编码发送，并对每个 tile 做 MD5 完整性校验。包含
+  - 脏区检测（DXGI 脏矩形 + `hasFrameChanged` 整帧 hash 兜底）
+  - 逐 tile 内容分类编码（纯色 → RLE 无损 / 照片 → JPEG）
+  - 可靠传输（周期关键帧 IDR + AIMD tile 预算自适应）
+  - **精准 NACK 逐 tile 重传**（单 tile 损坏只重传该 tile，而非整屏）
+  - **光标优先级**（鼠标所在 tile 优先发送，弱网下操作区先重绘）
+- **多种编码**：JPEG（默认）/ H.264（可选，游戏/低延迟档位）。
+- **加密传输**：屏幕帧与消息均经 AES 加密，密钥在鉴权握手时下发。
+- 双向语音、远程终端、屏幕截图、剪贴板同步、群聊等增强能力。
+
+## 架构概览
+
+分层架构：`UI → Application → Core → Hardware`，模块职责单一、接口驱动。
+
+- **UI 层**：Qt Widgets（`MainWindow` / `RemoteDesktopWidget` 等）
+- **应用层**：`RemoteController`（控制端）、`Host` + `EncodeWorker`（被控端）、
+  `DeviceManager` / `SessionManager` / `FileTransferManager` 等
+- **核心层**：`NetworkManager` / `TcpConnection` / `ProtocolManager` / `MessageCodec`
+- **硬件层**：`ScreenCapture`（DXGI Desktop Duplication）/ `InputControl` /
+  `TileEncoder`（分块编码核心）
+
+弱网分块传输的分层数据流与各阶段设计要点，见 [docs/02_module_design.md](docs/02_module_design.md)
+第 5 节；协议格式（`SCREEN_TILE` / `SCREEN_KEYFRAME` / `SCREEN_TILE_REQUEST` /
+`ScreenAck` 等）见 [docs/03_protocol.md](docs/03_protocol.md) 第 3.3.1 / 3.7 节。
+
+## 快速开始
+
+### 构建
+
+环境要求：MSVC 2019+ / GCC 9+，CMake 3.20+，Qt 6.2+（含 Network / Widgets / Gui）。
+
+```bash
+# Windows（以 VS2022 + Qt 6.10.0 为例）
+cd E:\xrk
+cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release --target xrk
+# 可执行文件：build/src/Release/xrk.exe
+```
+
+详细步骤（含 Linux、Qt Creator、依赖库）见 [docs/05_build.md](docs/05_build.md)。
+
+### 运行与部署
+
+- Host（被控端）需在**交互式桌面会话**中启动（无头 / 服务器会话抓不到桌面，属环境限制）。
+- 控制端能看桌面的关键运行时依赖是 `imageformats/qjpeg.dll`（JPEG 解码，分块模式下照片类
+  tile 同样依赖它）。完整部署流程与"黑屏"排查清单见
+  [docs/05_build.md](docs/05_build.md) 第 7 节，以及 `FIX_DESKTOP_NOT_VISIBLE.md`。
+
+### 测试
+
+项目使用 Google Test。分块传输相关自动化测试可在无 GUI（headless）环境运行：
+
+```bash
+export PATH="/d/Qt/6.10.0/msvc2022_64/bin:$PATH"
+export QT_QPA_PLATFORM=offscreen
+./build/tests/Release/xrk_tests.exe --gtest_filter='TileEncoder.*:TiledTransportTest.*'
+# 预期：14 个测试全部 PASSED（9 编码器/协议 + 5 回环传输）
+```
+
+- 编码器/协议单元测试：`tests/test_tile_encoder.cpp`
+- 真实 socket 回环集成测试：`tests/test_tiled_transport.cpp`（桩 Host + 真实
+  `RemoteController`，覆盖能力握手 / 差分 / 丢块修复 / 精准 NACK / 光标优先级）
+- 弱网分块传输**手动**验证清单：`tests/TILED_TRANSPORT_CHECKLIST.md`
+- 完整测试方案：[docs/06_test_plan.md](docs/06_test_plan.md)
+
+## 文档索引
+
+| 文档 | 内容 |
+|------|------|
+| [docs/01_architecture.md](docs/01_architecture.md) | 系统架构与线程模型 |
+| [docs/02_module_design.md](docs/02_module_design.md) | 模块职责（含弱网分块传输设计第 5 节） |
+| [docs/03_protocol.md](docs/03_protocol.md) | 通信协议（含分块传输消息与流程） |
+| [docs/05_build.md](docs/05_build.md) | 编译与部署说明 |
+| [docs/06_test_plan.md](docs/06_test_plan.md) | 测试方案 |
+| [docs/07_change_log.md](docs/07_change_log.md) | 修改记录（v1.1.0 含分块传输） |
+
+## 许可
+
+商业许可，详见 [COMMERCIAL-LICENSE](COMMERCIAL-LICENSE) 与 [LICENSE-INFO.md](LICENSE-INFO.md)。

@@ -1,0 +1,83 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.14.51+25f168cee
+
+  Automatic MOC and UIC for target xrk_core
+  network_manager.cpp
+  protocol_manager.cpp
+  device_discovery.cpp
+  tcp_connection.cpp
+  message_codec.cpp
+  logger.cpp
+  encryption.cpp
+  wake_on_lan.cpp
+  arp_resolver.cpp
+  audit_logger.cpp
+  translation_manager.cpp
+  theme_manager.cpp
+  mocs_compilation_Release.cpp
+  xrk_core.vcxproj -> E:\xrk\build\src\core\Release\xrk_core.lib
+  Automatic MOC and UIC for target xrk_hw
+  screen_capture.cpp
+  input_control.cpp
+  video_encoder.cpp
+  jpeg_encoder.cpp
+  tile_encoder.cpp
+  camera_capture.cpp
+  audio_capture.cpp
+  audio_player.cpp
+  h264_encoder.cpp
+  video_decoder.cpp
+  mocs_compilation_Release.cpp
+  xrk_hw.vcxproj -> E:\xrk\build\src\hw\Release\xrk_hw.lib
+  Automatic MOC and UIC for target xrk_app
+  device_manager.cpp
+  session_manager.cpp
+  remote_controller.cpp
+  security_manager.cpp
+  file_transfer_manager.cpp
+  file_sync_manager.cpp
+  host.cpp
+  host_service.cpp
+  clipboard_manager.cpp
+  clipboard_history.cpp
+  remote_terminal.cpp
+  screen_recorder.cpp
+  privacy_screen.cpp
+  relay_server.cpp
+  nat_traversal.cpp
+  p2p_manager.cpp
+  system_info_collector.cpp
+  address_book.cpp
+  device_registry.cpp
+  ipmsg_manager.cpp
+  database_manager.cpp
+  web_socket_gateway.cpp
+  connection_history_manager.cpp
+  mocs_compilation_Release.cpp
+  xrk_app.vcxproj -> E:\xrk\build\src\app\Release\xrk_app.lib
+  Automatic MOC and UIC for target xrk_ui
+  main_window.cpp
+  simple_home_widget.cpp
+  device_list_widget.cpp
+  remote_desktop_widget.cpp
+  file_transfer_widget.cpp
+  settings_widget.cpp
+  terminal_widget.cpp
+  chat_widget.cpp
+  system_info_widget.cpp
+  address_book_dialog.cpp
+  clipboard_history_widget.cpp
+  media_test_dialog.cpp
+  ipmsg_widget.cpp
+  group_statistics_widget.cpp
+  group_member_management_widget.cpp
+  chat_search_widget.cpp
+  transfer_task_widget.cpp
+  send_preview_dialog.cpp
+  mocs_compilation_Release.cpp
+  xrk_ui.vcxproj -> E:\xrk\build\src\ui\Release\xrk_ui.lib
+  Automatic MOC and UIC for target xrk
+  main.cpp
+  mocs_compilation_Release.cpp
+  qrc_xrk.cpp
+  xrk.vcxproj -> E:\xrk\build\src\Release\xrk.exe
+  Copying translation: xrk_en_US.qm	Copying translation: xrk_zh_CN.qm

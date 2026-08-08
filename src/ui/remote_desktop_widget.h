@@ -26,6 +26,9 @@ public:
     void startRemote(const QString& ip, uint16_t port);
     void startRemote(const QString& ip, uint16_t port, const QString& password);
     void stopRemote();
+    // Enter the concealed UI mode used by a silent monitoring session: hide the
+    // privacy-screen control and default to NOT forwarding local input.
+    void enterSilentUiMode();
     bool isRemoteActive() const;
     void toggleFullscreen();
 
@@ -53,12 +56,15 @@ protected:
 
 private slots:
     void onScreenFrameReceived(const ScreenFrame& frame);
+    void onScreenImageReceived(const QImage& image);
     void onFpsTimer();
     void onFrameRequestTimer();
     void onQualityInfoReceived(const QualityInfo& info);
     void onLatencyUpdated(qint64 ms);
     void onPrivacyScreenClicked();
-    void onMonitorListReceived(const QList<MonitorInfo>& monitors);
+    void onTakeoverClicked();
+    void onBlockInputClicked();
+    void onMonitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
     void onAnnotationToggled(bool checked);
     void onAnnotateColorClicked();
     void onAnnotateClearClicked();
@@ -101,6 +107,14 @@ private:
     QComboBox* m_monitorCombo = nullptr;
     QComboBox* m_qualityCombo = nullptr;   // gear selector: 自动/流畅/标准/高清/游戏
     bool m_privacyEnabled = false;
+
+    // Silent-monitoring controls (plan §2.4): take over the controlled
+    // machine's input, and/or block its local keyboard & mouse.
+    QPushButton* m_takeoverButton = nullptr;   // checkable, default off
+    QPushButton* m_blockInputButton = nullptr; // checkable, default off
+    bool m_takeoverEnabled = false;
+    bool m_blockInputEnabled = false;
+    bool m_silentUiMode = false;           // hides privacy button, no loud "monitoring" chrome
 
     // Phase 4: local annotation overlay (whiteboard) + session watermark.
     // Strokes are stored in remote (frame) coordinates so they stay aligned

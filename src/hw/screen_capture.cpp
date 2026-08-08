@@ -6,6 +6,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include <malloc.h>
 using Microsoft::WRL::ComPtr;
 #endif
 
@@ -25,12 +26,36 @@ using Microsoft::WRL::ComPtr;
 
 namespace xrk {
 
+namespace {
+
+// Cheap, uniform frame signature for the hasFrameChanged fallback. We hash a
+// strided sample of the whole buffer (1/16 of the bytes) so a single changed
+// pixel, anywhere on screen, almost always flips the hash, while the cost stays
+// well under a millisecond even for a 1080p frame. Used only when DDA cannot
+// report dirty regions, so an occasional miss is recovered by the next frame /
+// the periodic keyframe.
+quint64 computeFrameHash(const QImage& img) {
+    if (img.isNull()) return 0;
+    const int bytes = img.sizeInBytes();
+    const uchar* p = img.constBits();
+    const int stride = 64; // 16 pixels per sampled slot
+    quint64 h = 1469598103934665603ULL; // FNV-1a 64-bit offset basis
+    for (int i = 0; i < bytes; i += stride) {
+        h ^= static_cast<quint64>(p[i]);
+        h *= 1099511628211ULL; // FNV prime
+    }
+    return h;
+}
+
+} // namespace
+
 #ifdef _WIN32
 struct ScreenCapture::DxgiContext {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGIOutputDuplication> duplication;
     ComPtr<ID3D11Texture2D> stagingTexture;
+    QByteArray metadataBuffer;
     int width = 0;
     int height = 0;
     bool valid = false;
@@ -82,6 +107,12 @@ bool ScreenCapture::initialize() {
     if (m_initialized) {
         return true;
     }
+
+    // No duplication history yet: the first dirty-rect query must report the
+    // whole screen.
+    m_dirtyRectsStale = true;
+    m_lastFrameHash = 0;
+    m_hasLastFrameHash = false;
 
 #ifdef _WIN32
     if (initializeDxgi()) {
@@ -141,17 +172,27 @@ void ScreenCapture::shutdown() {
 #endif
 
     m_initialized = false;
+    m_dirtyRectsStale = true;
+    m_hasLastFrameHash = false;
+    m_lastFrameHash = 0;
     LOG_INFO("ScreenCapture shutdown");
 }
 
 QImage ScreenCapture::captureFrame() {
+    return captureFrame(static_cast<QList<QRect>*>(nullptr));
+}
+
+QImage ScreenCapture::captureFrame(QList<QRect>* dirtyRects) {
+    if (dirtyRects) {
+        dirtyRects->clear();
+    }
     if (!m_initialized) {
         return QImage();
     }
 
 #ifdef _WIN32
     if (m_useDxgi && !m_dxgiFallback) {
-        QImage frame = captureDxgiFrame();
+        QImage frame = captureDxgiFrameEx(dirtyRects);
         if (!frame.isNull()) {
             m_dxFailCount = 0;
             return frame;
@@ -161,7 +202,11 @@ QImage ScreenCapture::captureFrame() {
             m_dxgiFallback = true;
             LOG_WARNING("DXGI capture failed " + QString::number(m_dxFailCount) + " times, switching to GDI permanently");
         }
-        // Also try GDI for this frame so the user sees something
+        // Also try GDI for this frame so the user sees something. GDI has no
+        // change metadata, so leave dirtyRects empty (= no hint).
+        if (dirtyRects) {
+            dirtyRects->clear();
+        }
         return captureGdiFrame();
     }
     return captureGdiFrame();
@@ -172,6 +217,18 @@ QImage ScreenCapture::captureFrame() {
 #else
     return QImage();
 #endif
+}
+
+QImage ScreenCapture::captureFrame(int monitorIndex, QList<QRect>* dirtyRects) {
+    if (!m_initialized) {
+        return QImage();
+    }
+
+    if (monitorIndex != m_monitorIndex && monitorIndex >= 0 && monitorIndex < m_monitors.size()) {
+        setMonitorIndex(monitorIndex);
+    }
+
+    return captureFrame(dirtyRects);
 }
 
 bool ScreenCapture::isInitialized() const {
@@ -315,8 +372,113 @@ void ScreenCapture::shutdownDxgi() {
     m_monitors.clear();
 }
 
+void ScreenCapture::collectDxgiDirtyRects(const DXGI_OUTDUPL_FRAME_INFO& frameInfo,
+                                          QList<QRect>* dirtyRects,
+                                          quint64 currentFrameHash) {
+    const QRect fullScreen(0, 0, m_dxgiContext->width, m_dxgiContext->height);
+
+    auto reportFullScreen = [&]() {
+        dirtyRects->clear();
+        if (fullScreen.isValid()) {
+            dirtyRects->append(fullScreen);
+        }
+        m_dirtyRectsStale = false;
+    };
+
+    // The DDA metadata is the authoritative change signal. When it is missing or
+    // unusable we fall back to a frame-level change check: only a genuinely
+    // changed frame forces a full-screen redraw, an identical frame is reported
+    // as "no change" so the encoder can skip it instead of re-encoding everything.
+    const bool frameChanged = !m_hasLastFrameHash || (currentFrameHash != m_lastFrameHash);
+    auto reportFullOrSkip = [&]() {
+        if (!frameChanged) {
+            dirtyRects->clear();
+            m_dirtyRectsStale = false;
+            return;
+        }
+        reportFullScreen();
+    };
+
+    if (m_dirtyRectsStale) {
+        // The previous grab lost its metadata, so the accumulated regions no
+        // longer describe everything that changed on screen.
+        reportFullOrSkip();
+        return;
+    }
+
+    if (frameInfo.TotalMetadataBufferSize == 0) {
+        // Nothing but a pointer update; no pixels changed.
+        return;
+    }
+
+    QByteArray& buffer = m_dxgiContext->metadataBuffer;
+    if (buffer.size() < static_cast<int>(frameInfo.TotalMetadataBufferSize)) {
+        buffer.resize(static_cast<int>(frameInfo.TotalMetadataBufferSize));
+    }
+
+    UINT moveBytes = 0;
+    HRESULT hr = m_dxgiContext->duplication->GetFrameMoveRects(
+        static_cast<UINT>(buffer.size()),
+        reinterpret_cast<DXGI_OUTDUPL_MOVE_RECT*>(buffer.data()),
+        &moveBytes
+    );
+    if (FAILED(hr)) {
+        reportFullOrSkip();
+        return;
+    }
+
+    const auto* moves = reinterpret_cast<const DXGI_OUTDUPL_MOVE_RECT*>(buffer.constData());
+    const int moveCount = static_cast<int>(moveBytes / sizeof(DXGI_OUTDUPL_MOVE_RECT));
+    for (int i = 0; i < moveCount; ++i) {
+        // Both the source and the destination area have to be resent: the
+        // encoder does not implement copy-blits, it just re-encodes pixels.
+        const RECT& dst = moves[i].DestinationRect;
+        const POINT& src = moves[i].SourcePoint;
+        const int w = dst.right - dst.left;
+        const int h = dst.bottom - dst.top;
+        dirtyRects->append(QRect(dst.left, dst.top, w, h));
+        dirtyRects->append(QRect(src.x, src.y, w, h));
+    }
+
+    UINT dirtyBytes = 0;
+    hr = m_dxgiContext->duplication->GetFrameDirtyRects(
+        static_cast<UINT>(buffer.size()) - moveBytes,
+        reinterpret_cast<RECT*>(buffer.data() + moveBytes),
+        &dirtyBytes
+    );
+    if (FAILED(hr)) {
+        reportFullOrSkip();
+        return;
+    }
+
+    const auto* dirty = reinterpret_cast<const RECT*>(buffer.constData() + moveBytes);
+    const int dirtyCount = static_cast<int>(dirtyBytes / sizeof(RECT));
+    for (int i = 0; i < dirtyCount; ++i) {
+        const RECT& r = dirty[i];
+        dirtyRects->append(QRect(r.left, r.top, r.right - r.left, r.bottom - r.top));
+    }
+
+    // Clamp to the desktop and drop degenerate entries.
+    for (int i = dirtyRects->size() - 1; i >= 0; --i) {
+        QRect clamped = fullScreen.isValid() ? (*dirtyRects)[i].intersected(fullScreen)
+                                             : (*dirtyRects)[i];
+        if (clamped.isEmpty()) {
+            dirtyRects->removeAt(i);
+        } else {
+            (*dirtyRects)[i] = clamped;
+        }
+    }
+
+    m_dirtyRectsStale = false;
+}
+
 QImage ScreenCapture::captureDxgiFrame() {
+    return captureDxgiFrameEx(nullptr);
+}
+
+QImage ScreenCapture::captureDxgiFrameEx(QList<QRect>* dirtyRects) {
     if (!m_dxgiContext || !m_dxgiContext->valid) {
+        m_dirtyRectsStale = true;
         return QImage();
     }
 
@@ -335,13 +497,18 @@ QImage ScreenCapture::captureDxgiFrame() {
 
     if (FAILED(hr)) {
         m_dxgiContext->duplication->ReleaseFrame();
+        m_dirtyRectsStale = true;
         return QImage();
     }
 
+    // Duplication metadata must be read before ReleaseFrame(). We defer the
+    // dirty-rect collection until the frame pixels are on the CPU (see below)
+    // so the hasFrameChanged fallback has a frame hash to compare against.
     ComPtr<ID3D11Texture2D> desktopTexture;
     hr = resource.As(&desktopTexture);
     if (FAILED(hr)) {
         m_dxgiContext->duplication->ReleaseFrame();
+        m_dirtyRectsStale = true;
         return QImage();
     }
 
@@ -367,6 +534,7 @@ QImage ScreenCapture::captureDxgiFrame() {
 
         if (FAILED(hr)) {
             m_dxgiContext->duplication->ReleaseFrame();
+            m_dirtyRectsStale = true;
             return QImage();
         }
         LOG_INFO("DXGI: Staging texture created: " + QString::number(desc.Width) + "x" + QString::number(desc.Height));
@@ -385,6 +553,7 @@ QImage ScreenCapture::captureDxgiFrame() {
 
     if (FAILED(hr)) {
         m_dxgiContext->duplication->ReleaseFrame();
+        m_dirtyRectsStale = true;
         return QImage();
     }
 
@@ -410,6 +579,18 @@ QImage ScreenCapture::captureDxgiFrame() {
             dstRow[x] = 0xFF000000 | (r << 16) | (g << 8) | b;
         }
     }
+
+    // Now that the frame is on the CPU we can compute its change signature and
+    // resolve dirty regions. GetFrame*Rects still reads metadata owned by the
+    // acquired frame, so this must run before ReleaseFrame() below.
+    quint64 currentHash = computeFrameHash(image);
+    if (dirtyRects) {
+        collectDxgiDirtyRects(frameInfo, dirtyRects, currentHash);
+    } else {
+        m_dirtyRectsStale = true;
+    }
+    m_lastFrameHash = currentHash;
+    m_hasLastFrameHash = true;
 
     m_dxgiContext->context->Unmap(m_dxgiContext->stagingTexture.Get(), 0);
     m_dxgiContext->duplication->ReleaseFrame();
@@ -821,6 +1002,7 @@ bool ScreenCapture::initializeDxgi() { return false; }
 void ScreenCapture::shutdownDxgi() {}
 QImage ScreenCapture::captureDxgiFrame() { return QImage(); }
 QImage ScreenCapture::captureDxgiFrame(int) { return QImage(); }
+QImage ScreenCapture::captureDxgiFrameEx(QList<QRect>*) { return QImage(); }
 bool ScreenCapture::initializeGdi() {
     MonitorInfo info;
     info.index = 0; info.name = "Primary";

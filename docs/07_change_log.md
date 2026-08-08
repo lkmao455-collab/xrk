@@ -2,6 +2,31 @@
 
 ## 版本历史
 
+### v1.1.0 (2026-08-07) — 弱网分块传输（Tiled Transport, Phases A–F）
+
+#### 新增功能
+- **分块屏幕传输**：整屏切 64×64 tile，仅对变化区域编码发送，弱网/高丢包下替代整帧重发
+- **能力握手（Phase C）**：客户端鉴权后发 `SCREEN_KEYFRAME` 声明支持分块，主机切换分块模式
+- **脏区检测（Phase A）**：DXGI Desktop Duplication 脏矩形 + 整帧 FNV-1a hash `hasFrameChanged` 兜底
+- **逐 tile 内容分类编码（Phase D）**：纯色→RLE（无损）/ 照片→JPEG
+- **可靠传输（Phase E）**：周期关键帧（IDR 强制全绘，10s）+ AIMD tile 预算自适应
+- **精准 NACK 逐 tile 重传（Phase F）**：单 tile MD5 校验失败 → ≤100ms 批量 `SCREEN_TILE_REQUEST`
+  → 主机 `EncodeWorker::resendTiles` 从 `m_lastRawFrame` 缓存精准重传
+- **光标优先级**：发送前 `std::stable_partition` 把鼠标所在 tile 排到最前，弱网下操作区优先重绘
+
+#### 协议变更
+- 新增消息类型：`SCREEN_TILE (23)`、`SCREEN_KEYFRAME (24)`、`SCREEN_TILE_REQUEST (25)`
+- `SCREEN_FRAME_ACK (21)` 负载由 Frame ID 扩展为 `ScreenAck`（RTT/丢包/缓冲）
+- 新增结构体：`ScreenTile`、`ScreenTileRequest`、`ScreenAck`（`src/core/types.h`）
+- 新增编解码：`encodeScreenTile/decodeScreenTile`、`encodeScreenAck/decodeScreenAck`、
+  `encodeScreenTileRequest/decodeScreenTileRequest`（`src/core/protocol_manager.cpp`）
+
+#### 测试
+- `tests/test_tile_encoder.cpp`：9 个编码器/协议单元测试
+- `tests/test_tiled_transport.cpp`：5 个真实 socket 回环集成测试（含丢包/NACK/光标优先级）
+- 手动验证清单：`tests/TILED_TRANSPORT_CHECKLIST.md`
+- 全量回归：401 PASSED，1 SKIPPED（H264 回环，沙箱缺 libx264）
+
 ### v1.0.0 (2026-01-01)
 
 #### 初始版本

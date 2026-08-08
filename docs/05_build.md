@@ -110,6 +110,31 @@ cmake --build . --target xrk_tests
 ctest --output-on-failure
 ```
 
+### 5.1 弱网分块传输（Tiled Transport）专项测试
+
+分块传输相关的自动化测试分两类，均可在无 GUI 的 headless 环境运行（Qt offscreen）：
+
+- **编码器/协议单元测试**（`tests/test_tile_encoder.cpp`，9 个）：RLE 无损往返、JPEG 分类、
+  关键帧全网格、脏区限制、MD5 篡改检测等。
+- **真实 socket 回环集成测试**（`tests/test_tiled_transport.cpp`，5 个）：用协议正确的桩 Host
+  （真实 `TileEncoder` + `Encryption` + `ProtocolManager`）在 127.0.0.1 上连接真实
+  `RemoteController`，覆盖能力握手、差分传输、丢块关键帧修复、**单 tile 精准 NACK 修复**、
+  **光标优先级**。
+
+运行（Qt 6.10 于 `D:\Qt\6.10.0\msvc2022_64`，路径按本机调整）：
+
+```bash
+export PATH="/d/Qt/6.10.0/msvc2022_64/bin:$PATH"
+export QT_QPA_PLATFORM=offscreen
+./build/tests/Release/xrk_tests.exe --gtest_filter='TileEncoder.*:TiledTransportTest.*'
+# 预期：14 个测试全部 PASSED（9 编码器/协议 + 5 回环传输）
+```
+
+> 全量回归：`xrk_tests.exe`（无 filter）目前约 401 PASSED / 1 SKIPPED
+> （`VideoRoundTrip.H264EncodeDecode` 因沙箱缺 libx264 跳过）。
+> 弱网分块传输的**手动**验证清单见 `tests/TILED_TRANSPORT_CHECKLIST.md`，
+> 设计说明见 `docs/02_module_design.md` 第 5 节与 `docs/03_protocol.md` 第 3.7 节。
+
 ## 6. 常见问题
 
 ### 6.1 Qt未找到
@@ -198,6 +223,12 @@ linuxdeployqt bin/xrk -appimage
 3. **加密**：屏幕帧始终 AES 加密，密钥在 AUTH 握手时下发，无需额外部署项。
 4. **抓取限制**：在**无头/非交互会话**（如服务、无桌面的服务器）中 `ScreenCapture` 抓不到帧，
    属环境限制，非部署缺失；需在能抓取桌面的交互式会话运行 Host。
+5. **弱网分块传输（Tiled Transport）为默认屏幕路径**：LAN 上客户端一旦鉴权即进入分块模式
+   （Host 日志 `tiled screen transport enabled`）。每张 tile 按内容分类编码——纯色/文字走
+   **RLE（自研解码，无需插件）**，照片走 **JPEG（依赖 `qjpeg.dll`）**。因此 7.3 中的
+   `qjpeg.dll` 要求对分块模式同样适用：缺它会导致照片类 tile 解码失败、画面残块。
+   分块模式与 H264 **互斥**——任一客户端非 tile-capable 或选“游戏/低延迟”H264 档位时，
+   Host 回退整帧 `SCREEN_FRAME`。
 
 ### 7.5 运行验证清单
 
@@ -217,6 +248,8 @@ linuxdeployqt bin/xrk -appimage
       （该告警已在 2026-08-05 修复；出现则说明部署的是旧版本）。
 - [ ] 日志显示 `Using JPEG encoder for screen capture (default; switch to H264 via game/low-latency gear)`
       —— 确认默认编码器为 JPEG（看到桌面的关键）。
+- [ ] 客户端连接后，Host 日志出现 `tiled screen transport enabled` —— 确认进入弱网分块模式
+      （默认；旧版客户端或不选 H264 档位时生效）。控制端相应发出 `SCREEN_KEYFRAME` 能力握手。
 - [ ] 若选“游戏/低延迟”档位：日志出现 `Encoder switch queued to H264`；本机无 libx264 时
       出现 `H264 encoder unusable ... keeping JPEG`（自愈，仍可见）。
 

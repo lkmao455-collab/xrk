@@ -32,6 +32,8 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     if (m_controller) {
         connect(m_controller, &RemoteController::screenFrameReceived,
                 this, &RemoteDesktopWidget::onScreenFrameReceived);
+        connect(m_controller, &RemoteController::screenImageReceived,
+                this, &RemoteDesktopWidget::onScreenImageReceived);
         connect(m_controller, &RemoteController::qualityInfoReceived,
                 this, &RemoteDesktopWidget::onQualityInfoReceived);
         connect(m_controller, &RemoteController::latencyUpdated,
@@ -48,6 +50,18 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     m_privacyButton->setObjectName("privacy-button");
     m_privacyButton->adjustSize();
     connect(m_privacyButton, &QPushButton::clicked, this, &RemoteDesktopWidget::onPrivacyScreenClicked);
+
+    m_takeoverButton = new QPushButton(tr("接管键鼠"), this);
+    m_takeoverButton->setCheckable(true);
+    m_takeoverButton->setObjectName("takeover-button");
+    m_takeoverButton->adjustSize();
+    connect(m_takeoverButton, &QPushButton::clicked, this, &RemoteDesktopWidget::onTakeoverClicked);
+
+    m_blockInputButton = new QPushButton(tr("禁用对方键鼠"), this);
+    m_blockInputButton->setCheckable(true);
+    m_blockInputButton->setObjectName("blockinput-button");
+    m_blockInputButton->adjustSize();
+    connect(m_blockInputButton, &QPushButton::clicked, this, &RemoteDesktopWidget::onBlockInputClicked);
 
     m_monitorCombo = new QComboBox(this);
     m_monitorCombo->setObjectName("monitor-combo");
@@ -111,12 +125,14 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     connect(m_annotateColorButton, &QPushButton::clicked,
             this, &RemoteDesktopWidget::onAnnotateColorClicked);
     updateColorButtonSwatch();
+    m_annotateColorButton->hide(); // contextual: only shown while annotating
 
     m_annotateClearButton = new QPushButton(tr("清空"), this);
     m_annotateClearButton->setObjectName("annotate-clear-button");
     m_annotateClearButton->adjustSize();
     connect(m_annotateClearButton, &QPushButton::clicked,
             this, &RemoteDesktopWidget::onAnnotateClearClicked);
+    m_annotateClearButton->hide(); // contextual: only shown while annotating
 
     m_watermarkButton = new QPushButton(tr("水印"), this);
     m_watermarkButton->setCheckable(true);
@@ -150,6 +166,8 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         m_toolbarLayout->addWidget(m_watermarkButton);
         m_toolbarLayout->addWidget(m_micButton);
         m_toolbarLayout->addWidget(m_privacyButton);
+        m_toolbarLayout->addWidget(m_takeoverButton);
+        m_toolbarLayout->addWidget(m_blockInputButton);
         m_toolbarLayout->addStretch(1);
     }
 
@@ -159,7 +177,8 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     // the host keeps working after toggling any toolbar action.
     for (QPushButton* b : {m_annotateButton, m_annotateColorButton,
                             m_annotateClearButton, m_watermarkButton,
-                            m_micButton, m_privacyButton}) {
+                            m_micButton, m_privacyButton,
+                            m_takeoverButton, m_blockInputButton}) {
         if (b) b->setFocusPolicy(Qt::NoFocus);
     }
     // The gear selector must also not steal keyboard focus from the remote
@@ -460,6 +479,13 @@ void RemoteDesktopWidget::onScreenFrameReceived(const ScreenFrame& frame) {
     }
 }
 
+void RemoteDesktopWidget::onScreenImageReceived(const QImage& image) {
+    if (image.isNull()) return;
+    m_currentFrame = image;
+    m_frameCount++;
+    update();
+}
+
 void RemoteDesktopWidget::onFpsTimer() {
     m_currentFps = m_frameCount;
     m_frameCount = 0;
@@ -521,7 +547,37 @@ void RemoteDesktopWidget::onPrivacyScreenClicked() {
     LOG_INFO("Privacy screen " + QString(m_privacyEnabled ? "enabled" : "disabled") + " by controller");
 }
 
-void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monitors) {
+void RemoteDesktopWidget::onTakeoverClicked() {
+    if (!m_controller) return;
+    m_takeoverEnabled = m_takeoverButton->isChecked();
+    // Forwarding only makes sense while a session is active; the controller
+    // gate (m_inputForwardEnabled) is honoured regardless of m_active.
+    m_controller->setInputForwardingEnabled(m_takeoverEnabled);
+    LOG_INFO("Input takeover " + QString(m_takeoverEnabled ? "enabled" : "disabled") + " by controller");
+}
+
+void RemoteDesktopWidget::onBlockInputClicked() {
+    if (!m_controller || !m_active) return;
+    m_blockInputEnabled = m_blockInputButton->isChecked();
+    m_controller->sendInputBlock(m_blockInputEnabled);
+    LOG_INFO("Block local input " + QString(m_blockInputEnabled ? "enabled" : "disabled") + " by controller");
+}
+
+void RemoteDesktopWidget::enterSilentUiMode() {
+    m_silentUiMode = true;
+    // Concealment: hide the privacy-screen control (a silent monitor must not
+    // accidentally expose itself). The takeover/block controls remain so the
+    // operator can still drive or lock the controlled machine on demand.
+    if (m_privacyButton) m_privacyButton->hide();
+    // Default to NOT taking over input; the operator opts in via the toggle.
+    if (m_controller) {
+        m_controller->setInputForwardingEnabled(false);
+    }
+    m_takeoverEnabled = false;
+    if (m_takeoverButton) m_takeoverButton->setChecked(false);
+}
+
+void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex) {
     if (!m_monitorCombo) return;
 
     QSignalBlocker blocker(m_monitorCombo);
@@ -534,6 +590,9 @@ void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monito
 
     if (m_monitorCombo->count() > 1) {
         m_monitorCombo->show();
+        if (currentMonitorIndex >= 0 && currentMonitorIndex < m_monitorCombo->count()) {
+            m_monitorCombo->setCurrentIndex(currentMonitorIndex);
+        }
         update(); // reposition overlay in paintEvent
     } else {
         m_monitorCombo->hide();
@@ -543,6 +602,10 @@ void RemoteDesktopWidget::onMonitorListReceived(const QList<MonitorInfo>& monito
 void RemoteDesktopWidget::onAnnotationToggled(bool checked) {
     m_annotationEnabled = checked;
     setMouseTracking(true);
+    // Reveal the contextual annotation controls only while annotating so the
+    // toolbar isn't cluttered with inactive action buttons.
+    if (m_annotateColorButton) m_annotateColorButton->setVisible(checked);
+    if (m_annotateClearButton) m_annotateClearButton->setVisible(checked);
     LOG_INFO("Annotation overlay " + QString(checked ? "enabled" : "disabled"));
     update();
 }

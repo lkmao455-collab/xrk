@@ -196,6 +196,107 @@ ScreenFrame ProtocolManager::decodeScreenFrame(const QByteArray& data) {
     return frame;
 }
 
+QByteArray ProtocolManager::encodeScreenTile(const ScreenTile& tile) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << tile.x << tile.y << tile.w << tile.h << tile.seq;
+    stream << tile.frameWidth << tile.frameHeight;
+    stream << tile.isKeyFrame << tile.encoding << tile.format;
+    stream << tile.timestamp;
+
+    stream << static_cast<uint32_t>(tile.hash.size());
+    if (!tile.hash.isEmpty())
+        stream.writeRawData(tile.hash.constData(), tile.hash.size());
+
+    stream << static_cast<uint32_t>(tile.data.size());
+    if (!tile.data.isEmpty())
+        stream.writeRawData(tile.data.constData(), tile.data.size());
+
+    return data;
+}
+
+ScreenTile ProtocolManager::decodeScreenTile(const QByteArray& data) {
+    ScreenTile tile;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> tile.x >> tile.y >> tile.w >> tile.h >> tile.seq;
+    stream >> tile.frameWidth >> tile.frameHeight;
+
+    quint8 isKey, enc, fmt;
+    stream >> isKey >> enc >> fmt;
+    tile.isKeyFrame = isKey;
+    tile.encoding = enc;
+    tile.format = fmt;
+
+    stream >> tile.timestamp;
+
+    uint32_t hashSize;
+    stream >> hashSize;
+    if (hashSize > 0) tile.hash = data.mid(static_cast<int>(stream.device()->pos()), static_cast<int>(hashSize));
+    stream.device()->seek(stream.device()->pos() + hashSize);
+
+    uint32_t dataSize;
+    stream >> dataSize;
+    tile.data = data.mid(static_cast<int>(stream.device()->pos()), static_cast<int>(dataSize));
+
+    return tile;
+}
+
+QByteArray ProtocolManager::encodeScreenTileRequest(const ScreenTileRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.frameWidth << req.frameHeight;
+    stream << static_cast<uint32_t>(req.tiles.size());
+    for (const QPoint& p : req.tiles) {
+        stream << p.x() << p.y();
+    }
+    return data;
+}
+
+ScreenTileRequest ProtocolManager::decodeScreenTileRequest(const QByteArray& data) {
+    ScreenTileRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.frameWidth >> req.frameHeight;
+    uint32_t count = 0;
+    stream >> count;
+    req.tiles.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        qint32 x = 0, y = 0;
+        stream >> x >> y;
+        req.tiles.append(QPoint(x, y));
+    }
+    return req;
+}
+
+QByteArray ProtocolManager::encodeScreenAck(const ScreenAck& ack) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << ack.timestamp;
+    stream << ack.roundTripMs;
+    stream << ack.tilesReceived;
+    stream << ack.tilesLost;
+    stream << ack.bufferLevel;
+    return data;
+}
+
+ScreenAck ProtocolManager::decodeScreenAck(const QByteArray& data) {
+    ScreenAck ack;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> ack.timestamp;
+    stream >> ack.roundTripMs;
+    stream >> ack.tilesReceived;
+    stream >> ack.tilesLost;
+    stream >> ack.bufferLevel;
+    return ack;
+}
+
 bool ProtocolManager::validate(const QByteArray& data) {
     return MessageCodec::verifyChecksum(data);
 }
@@ -1407,11 +1508,12 @@ MonitorInfo ProtocolManager::decodeMonitorInfo(const QByteArray& data) {
     return info;
 }
 
-QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors) {
+QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors, int currentMonitorIndex) {
     QByteArray result;
     QDataStream stream(&result, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
     
+    stream << static_cast<int32_t>(currentMonitorIndex);
     stream << static_cast<uint32_t>(monitors.size());
     
     for (const MonitorInfo& info : monitors) {
@@ -1423,10 +1525,14 @@ QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors
     return result;
 }
 
-QList<MonitorInfo> ProtocolManager::decodeMonitorList(const QByteArray& data) {
+QList<MonitorInfo> ProtocolManager::decodeMonitorList(const QByteArray& data, int& currentMonitorIndex) {
     QList<MonitorInfo> monitors;
     QDataStream stream(data);
     stream.setByteOrder(QDataStream::BigEndian);
+    
+    int32_t currentIdx = 0;
+    stream >> currentIdx;
+    currentMonitorIndex = static_cast<int>(currentIdx);
     
     uint32_t count;
     stream >> count;
