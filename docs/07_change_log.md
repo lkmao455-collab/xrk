@@ -2,6 +2,38 @@
 
 ## 版本历史
 
+### v1.2.0 (2026-08-08) — 多屏切换优化 + 开源协议
+
+#### 多屏切换优化
+- **线程安全**：`ScreenCapture` 添加 `QMutex` 保护，修复采集线程与主线程并发访问冲突
+- **编码器分辨率适配**：切换显示器后自动重新初始化编码器，支持不同分辨率显示器
+- **切换结果反馈**：新增 `MONITOR_SWITCH_ACK` 消息，控制器知道切换是否成功
+- **快捷键支持**：
+  - `Ctrl+1` ~ `Ctrl+9`：切换到指定显示器
+  - `Ctrl+Tab`：循环切换到下一个显示器
+  - `Ctrl+Shift+Tab`：循环切换到上一个显示器
+- **切换过渡效果**：切换时保持最后一帧显示，收到新帧后淡入动画
+- **UI增强**：显示器下拉框显示分辨率信息（如 `0 \\.\DISPLAY1 1920x1080 (主屏)`）
+- **新增 `switchMonitorSafe` 方法**：线程安全的显示器切换，返回切换结果
+
+#### 协议变更
+- 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
+- `MONITOR_SWITCH` 处理增强：发送 ACK + 重新初始化编码器
+
+#### 开源协议
+- 完善 GPL v3 LICENSE 文件（完整版本）
+- 更新 COMMERCIAL-LICENSE 商业授权协议（含 Starter/Professional/Enterprise 三级授权）
+- 更新 LICENSE-INFO.md 双协议说明文档
+- README.md 许可证章节更新为双授权对比表
+
+#### 修改文件
+- `src/hw/screen_capture.h/cpp`：添加 QMutex、switchMonitorSafe 方法
+- `src/app/host.cpp`：MONITOR_SWITCH 处理增强、编码器重新初始化
+- `src/app/remote_controller.h/cpp`：新增 monitorSwitchCompleted 信号、MONITOR_SWITCH_ACK 处理
+- `src/ui/remote_desktop_widget.h/cpp`：过渡效果、快捷键、UI增强
+- `src/core/types.h`：新增 MONITOR_SWITCH_ACK、MONITOR_REFRESH 消息类型
+- `LICENSE`、`COMMERCIAL-LICENSE`、`LICENSE-INFO.md`：协议文档更新
+
 ### v1.1.0 (2026-08-07) — 弱网分块传输（Tiled Transport, Phases A–F）
 
 #### 新增功能

@@ -161,6 +161,13 @@
 - [x] 获取显示器信息（名称/位置/尺寸/是否主显示器）
 - [x] 切换采集目标显示器
 - [x] 按索引采集指定显示器画面
+- [x] **线程安全切换**：QMutex保护并发访问，修复采集线程与主线程冲突
+- [x] **切换结果反馈**：MONITOR_SWITCH_ACK消息，控制器知道切换是否成功
+- [x] **编码器分辨率适配**：切换后自动重新初始化编码器，支持不同分辨率
+- [x] **快捷键切换**：Ctrl+1-9切换指定显示器，Ctrl+Tab循环切换
+- [x] **切换过渡效果**：保持最后一帧+淡入动画
+- [x] **UI增强**：显示器下拉框显示分辨率信息（如 '0 \\.\DISPLAY1 1920x1080 (主屏)'）
+- [x] **switchMonitorSafe方法**：线程安全的显示器切换，返回切换结果
 
 ### H.264视频编码
 - [x] VideoEncoder抽象接口（工厂模式）
@@ -360,7 +367,7 @@
 | 单元测试 | ✅ 核心模块 |
 | 多线程架构 | ✅ 采集/编码/网络分离 |
 | 剪贴板同步 | ✅ 文本/HTML/图片/URL |
-| 多显示器 | ✅ 枚举/切换/指定采集 |
+| 多显示器 | ✅ 枚举/切换/指定采集/线程安全/快捷键/过渡效果 |
 | H.264编码 | ✅ FFmpeg libx264, 超快+零延迟 |
 | AES加密 | ✅ AES-256-CBC, 认证后密钥传输 |
 | 远程终端 | ✅ QProcess, CMD/PowerShell/Bash |
@@ -408,6 +415,32 @@
 | Web客户端AES解密修复 | ✅ 新增crypto.ts: importSessionKey+decryptFrame(Web Crypto AES-256-CBC) + useWebSocket.ts集成AUTH_RESP提取密钥/IV、SCREEN_FRAME解密再decode + protocol.ts修正decodeScreenFrame字节偏移(dataSize@offset16, data@offset20) |
 | Web客户端部署更新 | ✅ web-client/dist部署到resources/web + xrk.qrc已包含最新资源hash(index-ChLrSEVe.js/index-FtecoFfX.css) + 重新编译xrk.exe包含新Web资源 |
 | 控制端黑屏修复 | ✅ 根因: consent授权流程阻断画面发送 (clients=0). 修复: 自动授权私有IP范围(127.0.0.1/8, 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) + 自动授权设置 + H264空帧自动回退JPEG + 增强日志 |
+| 多屏切换优化 | ✅ QMutex线程安全 + MONITOR_SWITCH_ACK反馈 + 编码器分辨率适配 + Ctrl+1-9/Ctrl+Tab快捷键 + 过渡效果 + UI增强(显示分辨率) |
+
+## 🖥️ 多屏切换优化 ✅
+
+### 已完成
+1. ✅ **线程安全**：`ScreenCapture` 添加 `QMutex` 保护，修复采集线程与主线程并发访问冲突
+2. ✅ **编码器分辨率适配**：切换显示器后自动重新初始化编码器，支持不同分辨率显示器
+3. ✅ **切换结果反馈**：新增 `MONITOR_SWITCH_ACK` 消息，控制器知道切换是否成功
+4. ✅ **快捷键支持**：
+   - `Ctrl+1` ~ `Ctrl+9`：切换到指定显示器
+   - `Ctrl+Tab`：循环切换到下一个显示器
+   - `Ctrl+Shift+Tab`：循环切换到上一个显示器
+5. ✅ **切换过渡效果**：切换时保持最后一帧显示，收到新帧后淡入动画
+6. ✅ **UI增强**：显示器下拉框显示分辨率信息（如 `0 \\.\DISPLAY1 1920x1080 (主屏)`）
+7. ✅ **新增 `switchMonitorSafe` 方法**：线程安全的显示器切换，返回切换结果
+
+### 技术实现
+- `src/hw/screen_capture.h/cpp`：添加 QMutex、switchMonitorSafe 方法
+- `src/app/host.cpp`：MONITOR_SWITCH 处理增强、编码器重新初始化
+- `src/app/remote_controller.h/cpp`：新增 monitorSwitchCompleted 信号、MONITOR_SWITCH_ACK 处理
+- `src/ui/remote_desktop_widget.h/cpp`：过渡效果、快捷键、UI增强
+- `src/core/types.h`：新增 MONITOR_SWITCH_ACK、MONITOR_REFRESH 消息类型
+
+### 协议变更
+- 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
+- `MONITOR_SWITCH` 处理增强：发送 ACK + 重新初始化编码器
  
 ## 📊 群组实时统计面板 ✅
  

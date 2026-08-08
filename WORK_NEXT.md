@@ -1,3 +1,11 @@
+✅ **多屏切换优化 (v1.2.0)**:
+  - 线程安全：ScreenCapture添加QMutex保护并发访问
+  - 编码器分辨率适配：切换后自动重新初始化编码器
+  - 切换结果反馈：MONITOR_SWITCH_ACK消息
+  - 快捷键：Ctrl+1-9切换指定显示器，Ctrl+Tab循环切换
+  - 过渡效果：保持最后一帧+淡入动画
+  - UI增强：显示器下拉框显示分辨率信息
+
 ✅ **Phase E2 Milestone 1**: WebSocket↔TCP网关 + 打包网页客户端页面
   - 新增文件: web_socket_gateway.h/.cpp, resources/web/client.html, qrc注册
   - 新增测试: test_web_socket_gateway.cpp (5用例, 全绿)
