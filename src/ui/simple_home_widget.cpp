@@ -685,6 +685,12 @@ void SimpleHomeWidget::onSearchClicked() {
     // Create scanner if needed
     if (!m_scanner) {
         m_scanner = new SubnetScanner(m_network, this);
+
+        // Apply configured timeout (default 5000ms)
+        QSettings settings;
+        int timeout = settings.value("scan/timeout_ms", 5000).toInt();
+        m_scanner->setConnectTimeout(timeout);
+
         connect(m_scanner, &SubnetScanner::scanProgress, this, &SimpleHomeWidget::onSearchProgress);
         connect(m_scanner, &SubnetScanner::deviceFound, this, &SimpleHomeWidget::onDeviceFound);
         connect(m_scanner, &SubnetScanner::scanFinished, this, &SimpleHomeWidget::onScanFinished);

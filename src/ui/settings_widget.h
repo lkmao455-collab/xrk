@@ -8,6 +8,7 @@
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QComboBox>
+#include <QTabWidget>
 
 namespace xrk {
 
@@ -36,6 +37,9 @@ public:
     QString relayToken() const;
     QString selectedLanguage() const;
 
+    // Scan
+    int scanTimeoutMs() const;
+
 private slots:
     void onOkClicked();
     void onCancelClicked();
@@ -45,23 +49,32 @@ private slots:
 private:
     void setupUI();
 
+    QTabWidget* m_tabWidget = nullptr;
+
+    // General tab
     QLineEdit* m_deviceNameEdit = nullptr;
     QSpinBox* m_portSpinBox = nullptr;
     QCheckBox* m_autoDiscoveryCheckBox = nullptr;
+    QComboBox* m_languageCombo = nullptr;
+
+    // Security tab
     QCheckBox* m_encryptionCheckBox = nullptr;
     QCheckBox* m_privacyScreenCheckBox = nullptr;
     QCheckBox* m_autoGrantConsentCheckBox = nullptr;
+
+    // Video tab
     QCheckBox* m_trueColorCheckBox = nullptr;
     QSpinBox* m_fpsSpinBox = nullptr;
 
+    // Network tab
+    QSpinBox* m_scanTimeoutSpinBox = nullptr;
     QCheckBox* m_relayCheckBox = nullptr;
     QLineEdit* m_relayHostEdit = nullptr;
     QSpinBox* m_relayPortSpinBox = nullptr;
     QLineEdit* m_relayTokenEdit = nullptr;
 
-    QComboBox* m_languageCombo = nullptr;
+    // Appearance tab
     QComboBox* m_themeCombo = nullptr;
-    
     QLineEdit* m_customBgEdit = nullptr;
     QPushButton* m_browseBgButton = nullptr;
     QPushButton* m_clearBgButton = nullptr;

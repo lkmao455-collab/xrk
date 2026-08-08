@@ -59,6 +59,7 @@ void SubnetScanner::scanWorker(const QHostAddress& baseIp, int startOffset, int 
     timer.start();
 
     quint32 baseNum = baseIp.toIPv4Address();
+    int timeout = m_connectTimeoutMs;
 
     for (int i = startOffset; i < count && m_scanning.load(); ++i) {
         QHostAddress targetIp(baseNum + i + 1); // +1 because 0 is network addr
@@ -67,8 +68,8 @@ void SubnetScanner::scanWorker(const QHostAddress& baseIp, int startOffset, int 
         QTcpSocket socket;
         socket.connectToHost(targetIp, DEFAULT_PORT);
 
-        // Wait up to 200ms for connection
-        if (socket.waitForConnected(200)) {
+        // Wait up to configured timeout for connection
+        if (socket.waitForConnected(timeout)) {
             // Connected! This is likely an XRK host.
             DeviceInfo info;
             info.ipAddress = targetIp.toString();

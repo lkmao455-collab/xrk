@@ -29,6 +29,10 @@ public:
 
     bool isScanning() const { return m_scanning.load(); }
 
+    // Set per-host connect timeout in milliseconds (default 5000ms)
+    void setConnectTimeout(int ms) { m_connectTimeoutMs = ms; }
+    int connectTimeout() const { return m_connectTimeoutMs; }
+
 signals:
     void scanProgress(int current, int total);
     void deviceFound(const DeviceInfo& info);
@@ -41,6 +45,7 @@ private:
     std::atomic<bool> m_scanning{false};
     int m_totalHosts = 0;
     int m_foundCount = 0;
+    int m_connectTimeoutMs = 5000;  // 5 seconds default
 };
 
 } // namespace xrk
