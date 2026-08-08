@@ -281,7 +281,7 @@ TEST_F(RemoteControllerMonitorTest, DeviceInfoDefaultValues) {
     EXPECT_TRUE(info.deviceId.isEmpty());
     EXPECT_TRUE(info.deviceName.isEmpty());
     EXPECT_TRUE(info.ipAddress.isEmpty());
-    EXPECT_EQ(info.port, 0);
+    EXPECT_EQ(info.port, DEFAULT_PORT);
     EXPECT_TRUE(info.accessCode.isEmpty());
     EXPECT_TRUE(info.macAddress.isEmpty());
     EXPECT_EQ(info.arpStatus, DeviceInfo::ArpStatus::Unknown);

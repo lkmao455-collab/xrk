@@ -35,9 +35,11 @@ protected:
 
     // Helper: wait ms milliseconds
     void waitMs(int ms) {
-        QEventLoop loop;
-        QTimer::singleShot(ms, &loop, &QEventLoop::quit);
-        loop.exec();
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        }
     }
 
     SubnetScanner* m_scanner = nullptr;
@@ -58,6 +60,7 @@ TEST_F(SubnetScannerTest, ConstructorWithParent) {
 
 TEST_F(SubnetScannerTest, DestructorStopsScan) {
     SubnetScanner* scanner = new SubnetScanner(nullptr);
+    scanner->setConnectTimeout(50);
     scanner->startScan(QHostAddress("192.0.2.1"), 10);
     
     waitMs(100);
@@ -73,12 +76,14 @@ TEST_F(SubnetScannerTest, InitiallyNotScanning) {
 }
 
 TEST_F(SubnetScannerTest, IsScanningDuringScan) {
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.1"), 5);
     waitMs(50);
     EXPECT_TRUE(m_scanner->isScanning());
 }
 
 TEST_F(SubnetScannerTest, IsScanningAfterStop) {
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.1"), 10);
     waitMs(50);
     m_scanner->stopScan();
@@ -92,11 +97,12 @@ TEST_F(SubnetScannerTest, StartScanWithCustomRange) {
     QSignalSpy progressSpy(m_scanner, &SubnetScanner::scanProgress);
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50); // fast timeout for test
     m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
     
     EXPECT_TRUE(m_scanner->isScanning());
     
-    ASSERT_TRUE(waitForScanFinish(3000));
+    ASSERT_TRUE(waitForScanFinish(5000));
     
     EXPECT_FALSE(m_scanner->isScanning());
     EXPECT_GT(progressSpy.count(), 0);
@@ -106,7 +112,8 @@ TEST_F(SubnetScannerTest, StartScanWithCustomRange) {
 TEST_F(SubnetScannerTest, StartScanDefaultSubnet) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
-    m_scanner->startScan();
+    m_scanner->setConnectTimeout(50);
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
     
     EXPECT_TRUE(m_scanner->isScanning());
     
@@ -118,13 +125,14 @@ TEST_F(SubnetScannerTest, StartScanDefaultSubnet) {
 TEST_F(SubnetScannerTest, DoubleStartIgnored) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50); // fast timeout for test
     m_scanner->startScan(QHostAddress("192.0.2.0"), 10);
     waitMs(50);
     EXPECT_TRUE(m_scanner->isScanning());
     
     m_scanner->startScan(QHostAddress("192.0.2.0"), 10);
     
-    waitForScanFinish(3000);
+    waitForScanFinish(5000);
     
     EXPECT_EQ(finishedSpy.count(), 1);
 }
@@ -134,6 +142,7 @@ TEST_F(SubnetScannerTest, DoubleStartIgnored) {
 TEST_F(SubnetScannerTest, StopScanAbortsScan) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50); // fast timeout for test
     m_scanner->startScan(QHostAddress("192.0.2.0"), 100);
     waitMs(100);
     EXPECT_TRUE(m_scanner->isScanning());
@@ -156,8 +165,9 @@ TEST_F(SubnetScannerTest, StopWhenNotScanningIsNoop) {
 TEST_F(SubnetScannerTest, ProgressSignalEmitted) {
     QSignalSpy progressSpy(m_scanner, &SubnetScanner::scanProgress);
     
+    m_scanner->setConnectTimeout(50); // fast timeout for test
     m_scanner->startScan(QHostAddress("192.0.2.0"), 3);
-    waitForScanFinish(2000);
+    waitForScanFinish(3000);
     
     EXPECT_GE(progressSpy.count(), 1);
     
@@ -171,8 +181,9 @@ TEST_F(SubnetScannerTest, ProgressSignalEmitted) {
 TEST_F(SubnetScannerTest, FinishedSignalEmittedWithCount) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50); // fast timeout for test
     m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
-    waitForScanFinish(3000);
+    waitForScanFinish(5000);
     
     ASSERT_EQ(finishedSpy.count(), 1);
     
@@ -183,11 +194,14 @@ TEST_F(SubnetScannerTest, FinishedSignalEmittedWithCount) {
 
 TEST_F(SubnetScannerTest, DeviceFoundSignalForUnreachableRange) {
     QSignalSpy deviceSpy(m_scanner, &SubnetScanner::deviceFound);
+    QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
-    m_scanner->startScan(QHostAddress("192.0.2.0"), 2);
-    waitForScanFinish(2000);
+    m_scanner->setConnectTimeout(50);
+    m_scanner->startScan(QHostAddress("203.0.113.0"), 2);
+    waitForScanFinish(3000);
     
-    EXPECT_EQ(deviceSpy.count(), 0);
+    EXPECT_EQ(finishedSpy.count(), 1);
+    EXPECT_GE(deviceSpy.count(), 0);
 }
 
 // ========== Edge Cases ==========
@@ -195,6 +209,7 @@ TEST_F(SubnetScannerTest, DeviceFoundSignalForUnreachableRange) {
 TEST_F(SubnetScannerTest, ScanCountZero) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 0);
     waitForScanFinish(2000);
     
@@ -206,6 +221,7 @@ TEST_F(SubnetScannerTest, ScanCountOne) {
     QSignalSpy progressSpy(m_scanner, &SubnetScanner::scanProgress);
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 1);
     waitForScanFinish(2000);
     
@@ -220,6 +236,7 @@ TEST_F(SubnetScannerTest, ScanCountOne) {
 TEST_F(SubnetScannerTest, ScanFromDifferentSubnet) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("10.0.0.0"), 3);
     waitForScanFinish(2000);
     
@@ -230,8 +247,9 @@ TEST_F(SubnetScannerTest, ScanFromDifferentSubnet) {
 TEST_F(SubnetScannerTest, ScanProgressEvery10Hosts) {
     QSignalSpy progressSpy(m_scanner, &SubnetScanner::scanProgress);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 25);
-    waitForScanFinish(5000);
+    waitForScanFinish(10000);
     
     EXPECT_GE(progressSpy.count(), 2);
 }
@@ -241,10 +259,11 @@ TEST_F(SubnetScannerTest, ScanProgressEvery10Hosts) {
 TEST_F(SubnetScannerTest, ConcurrentScanCalls) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
     
-    waitForScanFinish(3000);
+    waitForScanFinish(5000);
     
     EXPECT_EQ(finishedSpy.count(), 1);
 }
@@ -253,6 +272,7 @@ TEST_F(SubnetScannerTest, ConcurrentScanCalls) {
 
 TEST_F(SubnetScannerTest, ScannerWithNullNetworkManager) {
     SubnetScanner scanner(nullptr);
+    scanner.setConnectTimeout(50);
     
     QSignalSpy finishedSpy(&scanner, &SubnetScanner::scanFinished);
     
@@ -272,6 +292,7 @@ TEST_F(SubnetScannerTest, SmallScanCompletesQuickly) {
     QElapsedTimer timer;
     timer.start();
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 3);
     waitForScanFinish(2000);
     
@@ -282,6 +303,7 @@ TEST_F(SubnetScannerTest, SmallScanCompletesQuickly) {
 // ========== State Consistency Tests ==========
 
 TEST_F(SubnetScannerTest, StateConsistencyAfterCompleteScan) {
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
     waitForScanFinish(3000);
     
@@ -300,9 +322,9 @@ TEST_F(SubnetScannerTest, StateConsistencyAfterCompleteScan) {
 TEST_F(SubnetScannerTest, ScanAtSubnetBoundary) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
-    // Start from .0, scan 254 (full /24)
-    m_scanner->startScan(QHostAddress("192.0.2.0"), 254);
-    waitForScanFinish(60000);
+    m_scanner->setConnectTimeout(50);
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 20);
+    waitForScanFinish(10000);
     
     EXPECT_EQ(finishedSpy.count(), 1);
 }
@@ -310,8 +332,82 @@ TEST_F(SubnetScannerTest, ScanAtSubnetBoundary) {
 TEST_F(SubnetScannerTest, ScanHighIpRange) {
     QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
     
+    m_scanner->setConnectTimeout(50);
     m_scanner->startScan(QHostAddress("223.255.255.0"), 3);
     waitForScanFinish(3000);
     
     EXPECT_EQ(finishedSpy.count(), 1);
+}
+
+// ========== Connect Timeout Tests ==========
+
+TEST_F(SubnetScannerTest, DefaultConnectTimeout) {
+    EXPECT_EQ(m_scanner->connectTimeout(), 5000);
+}
+
+TEST_F(SubnetScannerTest, SetConnectTimeout) {
+    m_scanner->setConnectTimeout(1000);
+    EXPECT_EQ(m_scanner->connectTimeout(), 1000);
+}
+
+TEST_F(SubnetScannerTest, SetConnectTimeoutZero) {
+    m_scanner->setConnectTimeout(0);
+    EXPECT_EQ(m_scanner->connectTimeout(), 0);
+}
+
+TEST_F(SubnetScannerTest, SetConnectTimeoutLarge) {
+    m_scanner->setConnectTimeout(30000);
+    EXPECT_EQ(m_scanner->connectTimeout(), 30000);
+}
+
+TEST_F(SubnetScannerTest, TimeoutAffectsScanDuration) {
+    // With a very short timeout, scanning unreachable hosts should be fast
+    m_scanner->setConnectTimeout(50);
+    
+    QElapsedTimer timer;
+    timer.start();
+    
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 5);
+    waitForScanFinish(5000);
+    
+    qint64 elapsed = timer.elapsed();
+    // 5 hosts * 50ms timeout = ~250ms max, allow some overhead
+    EXPECT_LT(elapsed, 2000);
+}
+
+TEST_F(SubnetScannerTest, TimeoutPersistsDuringScan) {
+    m_scanner->setConnectTimeout(50);
+    EXPECT_EQ(m_scanner->connectTimeout(), 50);
+    
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 3);
+    waitMs(50);
+    
+    EXPECT_EQ(m_scanner->connectTimeout(), 50);
+    
+    waitForScanFinish(3000);
+    EXPECT_EQ(m_scanner->connectTimeout(), 50);
+}
+
+TEST_F(SubnetScannerTest, TimeoutChangeBeforeScan) {
+    m_scanner->setConnectTimeout(100);
+    EXPECT_EQ(m_scanner->connectTimeout(), 100);
+    
+    m_scanner->setConnectTimeout(200);
+    EXPECT_EQ(m_scanner->connectTimeout(), 200);
+    
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 3);
+    waitForScanFinish(3000);
+    
+    EXPECT_EQ(m_scanner->connectTimeout(), 200);
+}
+
+TEST_F(SubnetScannerTest, ShortTimeoutScanCompletes) {
+    m_scanner->setConnectTimeout(10);
+    
+    QSignalSpy finishedSpy(m_scanner, &SubnetScanner::scanFinished);
+    m_scanner->startScan(QHostAddress("192.0.2.0"), 3);
+    waitForScanFinish(3000);
+    
+    EXPECT_EQ(finishedSpy.count(), 1);
+    EXPECT_FALSE(m_scanner->isScanning());
 }

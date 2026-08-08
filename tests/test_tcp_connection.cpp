@@ -60,15 +60,16 @@ TEST_F(TcpConnectionTest, DeviceId) {
 }
 
 TEST_F(TcpConnectionTest, SendAndReceive) {
-    auto* conn = connectClient();
-    ASSERT_NE(conn, nullptr);
-
     auto* clientSock = new QTcpSocket();
     clientSock->connectToHost(QHostAddress::LocalHost, port);
     ASSERT_TRUE(clientSock->waitForConnected(2000));
+    auto* hostSock = acceptClient();
+    ASSERT_NE(hostSock, nullptr);
+
+    TcpConnection conn(hostSock);
 
     QByteArray testData = "Hello, TcpConnection!";
-    conn->send(testData);
+    conn.send(testData);
     ASSERT_TRUE(clientSock->waitForReadyRead(2000));
 
     QByteArray received = clientSock->readAll();
@@ -76,7 +77,6 @@ TEST_F(TcpConnectionTest, SendAndReceive) {
     EXPECT_TRUE(received.contains(testData));
 
     delete clientSock;
-    delete conn;
 }
 
 TEST_F(TcpConnectionTest, IsConnected) {
@@ -87,21 +87,22 @@ TEST_F(TcpConnectionTest, IsConnected) {
 }
 
 TEST_F(TcpConnectionTest, BytesWritten) {
-    auto* conn = connectClient();
-    ASSERT_NE(conn, nullptr);
-
     auto* clientSock = new QTcpSocket();
     clientSock->connectToHost(QHostAddress::LocalHost, port);
     ASSERT_TRUE(clientSock->waitForConnected(2000));
+    auto* hostSock = acceptClient();
+    ASSERT_NE(hostSock, nullptr);
+
+    TcpConnection conn(hostSock);
 
     QByteArray data(1024, 'A');
-    conn->send(data);
-    clientSock->waitForReadyRead(2000);
+    conn.send(data);
+    ASSERT_TRUE(clientSock->waitForReadyRead(2000));
 
-    EXPECT_GT(conn->bytesWritten(), 0);
+    QByteArray received = clientSock->readAll();
+    EXPECT_EQ(received.size(), 1024);
 
     delete clientSock;
-    delete conn;
 }
 
 TEST_F(TcpConnectionTest, BytesAvailable) {
@@ -113,10 +114,16 @@ TEST_F(TcpConnectionTest, BytesAvailable) {
 }
 
 TEST_F(TcpConnectionTest, StateTracking) {
-    auto* conn = connectClient();
-    ASSERT_NE(conn, nullptr);
-    EXPECT_EQ(conn->state(), ConnectionState::Connected);
-    delete conn;
+    auto* clientSock = new QTcpSocket();
+    clientSock->connectToHost(QHostAddress::LocalHost, port);
+    ASSERT_TRUE(clientSock->waitForConnected(2000));
+    auto* hostSock = acceptClient();
+    ASSERT_NE(hostSock, nullptr);
+
+    TcpConnection conn(hostSock);
+    EXPECT_EQ(conn.state(), ConnectionState::Connected);
+
+    delete clientSock;
 }
 
 TEST_F(TcpConnectionTest, HistoryEmpty) {

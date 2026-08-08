@@ -21,9 +21,14 @@ TcpConnection::TcpConnection(QTcpSocket* socket, QObject* parent)
     // input still works. (reconnect() wires its own freshly-created socket too.)
     if (m_socket) {
         setupSocket(m_socket);
+        if (m_socket->state() == QAbstractSocket::ConnectedState) {
+            setState(xrk::ConnectionState::Connected);
+        } else {
+            setState(xrk::ConnectionState::Disconnected);
+        }
+    } else {
+        setState(xrk::ConnectionState::Disconnected);
     }
-
-    setState(xrk::ConnectionState::Disconnected);
 }
 
 TcpConnection::~TcpConnection() {
