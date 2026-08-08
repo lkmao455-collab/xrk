@@ -17,17 +17,22 @@ XRK 是一款面向**局域网**环境的远程控制软件（类似向日葵 / 
 - **多种编码**：JPEG（默认）/ H.264（可选，游戏/低延迟档位）。
 - **加密传输**：屏幕帧与消息均经 AES 加密，密钥在鉴权握手时下发。
 - 双向语音、远程终端、屏幕截图、剪贴板同步、群聊等增强能力。
+- **多屏切换**：热插拔检测、DXGI 热切换、自动轮巡、缩略图预览。
+- **群聊增强**：公告发布、待办事项、群投票。
+- **通话**：语音/视频通话（ICE 协商 + WebRTC 信令）。
+- **表情 & 通讯录**：Emoji 选择器、联系人名片卡。
+- **局域网扫描**：子网主动扫描 + 可配置超时。
 
 ## 架构概览
 
 分层架构：`UI → Application → Core → Hardware`，模块职责单一、接口驱动。
 
-- **UI 层**：Qt Widgets（`MainWindow` / `RemoteDesktopWidget` 等）
+- **UI 层**：Qt Widgets（`MainWindow` / `RemoteDesktopWidget` / `EmojiPickerWidget` 等 24 个组件）
 - **应用层**：`RemoteController`（控制端）、`Host` + `EncodeWorker`（被控端）、
-  `DeviceManager` / `SessionManager` / `FileTransferManager` 等
+  `DeviceManager` / `SessionManager` / `FileTransferManager` / `IPMsgManager` 等
 - **核心层**：`NetworkManager` / `TcpConnection` / `ProtocolManager` / `MessageCodec`
 - **硬件层**：`ScreenCapture`（DXGI Desktop Duplication）/ `InputControl` /
-  `TileEncoder`（分块编码核心）
+  `TileEncoder`（分块编码核心）/ `H264Encoder` / `JpegEncoder`
 
 弱网分块传输的分层数据流与各阶段设计要点，见 [docs/02_module_design.md](docs/02_module_design.md)
 第 5 节；协议格式（`SCREEN_TILE` / `SCREEN_KEYFRAME` / `SCREEN_TILE_REQUEST` /
@@ -73,6 +78,30 @@ export QT_QPA_PLATFORM=offscreen
 - 弱网分块传输**手动**验证清单：`tests/TILED_TRANSPORT_CHECKLIST.md`
 - 完整测试方案：[docs/06_test_plan.md](docs/06_test_plan.md)
 
+## UI 组件列表
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| EmojiPickerWidget | `emoji_picker_widget.h/cpp` | 表情选择器（7分类 + 搜索 + 最近） |
+| ContactCardWidget | `contact_card_widget.h/cpp` | 联系人名片卡（头像/信息/操作） |
+| CallWidget | `call_widget.h/cpp` | 语音/视频通话界面 |
+| GroupAnnouncementWidget | `group_announcement_widget.h/cpp` | 群公告发布与查看 |
+| GroupTodoWidget | `group_todo_widget.h/cpp` | 群待办事项（创建/状态切换/删除） |
+| GroupVoteWidget | `group_vote_widget.h/cpp` | 群投票（创建/投票/查看结果） |
+| RemoteDesktopWidget | `remote_desktop_widget.h/cpp` | 远程桌面控制（输入转发/缩略图/工具栏） |
+| ChatWidget | `chat_widget.h/cpp` | 聊天窗口 |
+| IpmsgWidget | `ipmsg_widget.h/cpp` | IPMsg 即时通讯 |
+| FileTransferWidget | `file_transfer_widget.h/cpp` | 文件传输管理 |
+| DeviceListWidget | `device_list_widget.h/cpp` | 设备列表（扫描/历史/地址簿） |
+| SettingsWidget | `settings_widget.h/cpp` | 设置（5标签页: 基本/安全/视频/网络/外观） |
+| TerminalWidget | `terminal_widget.h/cpp` | 远程终端 |
+| SystemInfoWidget | `system_info_widget.h/cpp` | 系统信息 |
+| ClipboardHistoryWidget | `clipboard_history_widget.h/cpp` | 剪贴板历史 |
+| GroupStatisticsWidget | `group_statistics_widget.h/cpp` | 群统计图表 |
+| GroupMemberManagementWidget | `group_member_management_widget.h/cpp` | 群成员管理 |
+| SimpleHomeWidget | `simple_home_widget.h/cpp` | 首页（设备卡片/扫描） |
+| MainWindow | `main_window.h/cpp` | 主窗口 |
+
 ## 文档索引
 
 | 文档 | 内容 |
@@ -82,7 +111,8 @@ export QT_QPA_PLATFORM=offscreen
 | [docs/03_protocol.md](docs/03_protocol.md) | 通信协议（含分块传输消息与流程） |
 | [docs/05_build.md](docs/05_build.md) | 编译与部署说明 |
 | [docs/06_test_plan.md](docs/06_test_plan.md) | 测试方案 |
-| [docs/07_change_log.md](docs/07_change_log.md) | 修改记录（v1.1.0 含分块传输） |
+| [docs/07_change_log.md](docs/07_change_log.md) | 修改记录（v1.3.0） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
 
 ## 许可证
 

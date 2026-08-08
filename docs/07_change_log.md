@@ -2,6 +2,67 @@
 
 ## 版本历史
 
+### v1.3.0 (2026-08-08) — 6个新UI组件 + 代码质量修复
+
+#### 新增 UI 组件
+- **EmojiPickerWidget**：表情选择器
+  - 7 个分类（Recent / Smileys / Gestures / Hearts / Animals / Food / Objects / Symbols）
+  - 搜索栏过滤
+  - 最近使用记录（最多 16 个）
+  - 网格布局，每行 8 个表情
+- **ContactCardWidget**：联系人名片卡
+  - 头像（首字母自动填充）、姓名、IP、设备、备注
+  - 在线状态显示、最后在线时间
+  - 操作按钮：发送消息 / 语音通话 / 视频通话 / 编辑 / 删除
+- **CallWidget**：语音/视频通话界面
+  - 三态：来电 / 呼叫中 / 通话中
+  - 通话计时器、静音 / 扬声器 / 视频切换
+  - 脉冲动画（来电时）
+- **GroupAnnouncementWidget**：群公告
+  - 公告列表（按时间倒序）
+  - 发布新公告、全部清除
+- **GroupTodoWidget**：群待办事项
+  - 创建待办（标题/描述/优先级）
+  - 点击循环切换状态：Pending → In Progress → Completed
+  - 颜色标识（灰色/绿色/深绿）
+- **GroupVoteWidget**：群投票
+  - 创建投票（标题 + 多选项）
+  - 详情视图（投票数/百分比）
+  - 提交投票
+
+#### 类型定义
+- 新增 `ContactInfo` 结构体（contactId, displayName, avatarPath, ipAddress, port, deviceName, note, online, lastSeen, groups）
+- 新增 `EmojiReaction` 结构体（messageId, emoji, userId, userName, timestamp）
+
+#### 代码质量修复
+- 修复 `TcpConnection` 构造函数：pre-connected socket 现在正确设置 `ConnectionState::Connected`
+- 修复 `ScreenCaptureTest.MonitorInfoDefaultValues`：移除 tautology 断言
+- 修复 `RemoteControllerMonitorTest.DeviceInfoDefaultValues`：期望 `DEFAULT_PORT` 而非 0
+- 修复 `SubnetScanner` 测试：添加 `setConnectTimeout(50)` 加速执行
+- 修复 `TcpConnection` 测试：正确创建 client/server socket 对
+- 修复 `ScreenCapture` 测试：headless 环境下跳过无显示器测试
+- 添加 `SettingsWidget` 测试（24 个用例）
+
+#### 测试结果
+- 555 测试运行，554 通过，1 跳过（H264 编码器缺失）
+- 新增 SettingsWidget 24 个测试用例
+
+#### 修改文件
+- `src/core/types.h`：新增 ContactInfo、EmojiReaction 结构体
+- `src/ui/CMakeLists.txt`：注册 6 个新组件
+- `src/ui/emoji_picker_widget.h/cpp`：新文件
+- `src/ui/contact_card_widget.h/cpp`：新文件
+- `src/ui/call_widget.h/cpp`：新文件
+- `src/ui/group_announcement_widget.h/cpp`：新文件
+- `src/ui/group_todo_widget.h/cpp`：新文件
+- `src/ui/group_vote_widget.h/cpp`：新文件
+- `src/core/tcp_connection.cpp`：修复构造函数状态初始化
+- `tests/test_screen_capture.cpp`：修复 headless 测试
+- `tests/test_tcp_connection.cpp`：修复 socket 对测试
+- `tests/test_remote_controller_monitor.cpp`：修复默认值断言
+- `tests/test_subnet_scanner.cpp`：加速测试执行
+- `tests/test_settings_widget.cpp`：新文件（24 个测试）
+
 ### v1.2.0 (2026-08-08) — 多屏切换优化 + 开源协议
 
 #### 多屏切换优化
