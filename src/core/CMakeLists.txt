@@ -8,6 +8,7 @@ set(CORE_SOURCES
     encryption.cpp
     wake_on_lan.cpp
     arp_resolver.cpp
+    subnet_scanner.cpp
     audit_logger.cpp
     translation_manager.cpp
     theme_manager.cpp
@@ -25,6 +26,7 @@ set(CORE_HEADERS
     encryption.h
     wake_on_lan.h
     arp_resolver.h
+    subnet_scanner.h
     audit_logger.h
     translation_manager.h
     theme_manager.h

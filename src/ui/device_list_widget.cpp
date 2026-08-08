@@ -3,6 +3,7 @@
 #include "app/device_manager.h"
 #include "core/wake_on_lan.h"
 #include "core/arp_resolver.h"
+#include "core/subnet_scanner.h"
 #include "core/logger.h"
 #include <QFrame>
 #include <QHeaderView>
@@ -66,6 +67,12 @@ DeviceListWidget::DeviceListWidget(DeviceManager* manager, QWidget* parent)
     }
 
     connect(m_abSearchEdit, &QLineEdit::textChanged, this, &DeviceListWidget::onAbSearchChanged);
+
+    // Create subnet scanner
+    m_scanner = new SubnetScanner(nullptr, this);
+    connect(m_scanner, &SubnetScanner::scanProgress, this, &DeviceListWidget::onScanProgress);
+    connect(m_scanner, &SubnetScanner::deviceFound, this, &DeviceListWidget::onScanDeviceFound);
+    connect(m_scanner, &SubnetScanner::scanFinished, this, &DeviceListWidget::onScanFinished);
 }
 
 DeviceListWidget::~DeviceListWidget() {
@@ -540,6 +547,25 @@ void DeviceListWidget::setupUI() {
     buttonLayout->addWidget(m_connectButton);
     
     layout->addLayout(buttonLayout);
+
+    // Subnet scan section
+    QHBoxLayout* scanLayout = new QHBoxLayout();
+    m_scanButton = new QPushButton("扫描局域网", this);
+    m_scanButton->setToolTip("主动扫描局域网内所有XRK设备");
+    connect(m_scanButton, &QPushButton::clicked, this, &DeviceListWidget::onScanClicked);
+    scanLayout->addWidget(m_scanButton);
+
+    m_scanProgressBar = new QProgressBar(this);
+    m_scanProgressBar->setRange(0, 254);
+    m_scanProgressBar->setValue(0);
+    m_scanProgressBar->setVisible(false);
+    scanLayout->addWidget(m_scanProgressBar);
+
+    layout->addLayout(scanLayout);
+
+    m_scanStatusLabel = new QLabel(this);
+    m_scanStatusLabel->setText(QString::fromUtf8("点击\"扫描局域网\"查找可连接设备"));
+    layout->addWidget(m_scanStatusLabel);
     
     QFrame* line3 = new QFrame(this);
     line3->setFrameShape(QFrame::HLine);
@@ -632,6 +658,60 @@ void DeviceListWidget::clearHistory() {
     QSettings settings("XRK", "LANRemote");
     settings.remove("connectionHistory");
     m_historyList->clear();
+}
+
+// Subnet scan slots
+void DeviceListWidget::onScanClicked() {
+    if (!m_scanner) return;
+
+    if (m_scanner->isScanning()) {
+        m_scanner->stopScan();
+        m_scanButton->setText("扫描局域网");
+        m_scanProgressBar->setVisible(false);
+        m_scanStatusLabel->setText("扫描已停止");
+        return;
+    }
+
+    m_scanButton->setText("停止扫描");
+    m_scanProgressBar->setValue(0);
+    m_scanProgressBar->setVisible(true);
+    m_scanStatusLabel->setText("正在扫描局域网...");
+    m_scanner->startScan();
+}
+
+void DeviceListWidget::onScanProgress(int current, int total) {
+    m_scanProgressBar->setRange(0, total);
+    m_scanProgressBar->setValue(current);
+    m_scanStatusLabel->setText(QString("正在扫描... %1/%2").arg(current).arg(total));
+}
+
+void DeviceListWidget::onScanDeviceFound(const DeviceInfo& info) {
+    // Add found device to the list if not already there
+    bool exists = false;
+    for (int i = 0; i < m_deviceList->count(); ++i) {
+        QListWidgetItem* item = m_deviceList->item(i);
+        if (item->data(Qt::UserRole).toString() == info.deviceId) {
+            exists = true;
+            break;
+        }
+    }
+
+    if (!exists) {
+        QListWidgetItem* item = new QListWidgetItem(m_deviceList);
+        item->setText(deviceItemText(info));
+        item->setToolTip(deviceItemToolTip(info));
+        item->setData(Qt::UserRole, info.deviceId);
+        item->setIcon(QIcon::fromTheme("network-transmit-receive"));
+        m_deviceList->addItem(item);
+    }
+
+    m_scanStatusLabel->setText(QString("已发现: %1 (%2)").arg(info.deviceName, info.ipAddress));
+}
+
+void DeviceListWidget::onScanFinished(int foundCount) {
+    m_scanButton->setText("扫描局域网");
+    m_scanProgressBar->setVisible(false);
+    m_scanStatusLabel->setText(QString("扫描完成，发现 %1 台设备").arg(foundCount));
 }
 
 } // namespace xrk

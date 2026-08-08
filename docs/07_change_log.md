@@ -26,6 +26,13 @@
   - 点击缩略图即可切换到对应屏幕
   - 缩略图显示屏幕编号和分辨率
 
+#### 设备发现增强
+- **局域网主动扫描**：新增子网扫描器（SubnetScanner），主动探测局域网内所有XRK设备
+  - 点击"扫描局域网"按钮启动扫描
+  - 扫描进度条实时显示
+  - 扫描结果自动添加到设备列表
+  - 适用于UDP广播无法跨子网/防火墙的场景
+
 #### 协议变更
 - 新增消息类型：`MONITOR_SWITCH_ACK (62)`、`MONITOR_REFRESH (63)`
 - 新增自动轮巡消息：`MONITOR_AUTO_SWITCH_START (64)`、`MONITOR_AUTO_SWITCH_STOP (65)`、`MONITOR_AUTO_SWITCH_PAUSE (66)`、`MONITOR_AUTO_SWITCH_RESUME (67)`、`MONITOR_AUTO_SWITCH_CONFIG (68)`、`MONITOR_AUTO_SWITCH_STATUS (69)`
