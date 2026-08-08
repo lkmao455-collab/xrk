@@ -17,6 +17,12 @@ set(UI_SOURCES
     chat_search_widget.cpp
     transfer_task_widget.cpp
     send_preview_dialog.cpp
+    emoji_picker_widget.cpp
+    contact_card_widget.cpp
+    call_widget.cpp
+    group_announcement_widget.cpp
+    group_todo_widget.cpp
+    group_vote_widget.cpp
 )
 
 set(UI_HEADERS
@@ -38,6 +44,12 @@ set(UI_HEADERS
     chat_search_widget.h
     transfer_task_widget.h
     send_preview_dialog.h
+    emoji_picker_widget.h
+    contact_card_widget.h
+    call_widget.h
+    group_announcement_widget.h
+    group_todo_widget.h
+    group_vote_widget.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})

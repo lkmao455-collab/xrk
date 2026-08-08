@@ -748,4 +748,26 @@ struct GroupTodo {
     qint64 timestamp = 0;
 };
 
+struct ContactInfo {
+    QString contactId;
+    QString displayName;
+    QString avatarPath;
+    QString ipAddress;
+    quint16 port = DEFAULT_PORT;
+    QString deviceName;
+    QString note;
+    bool online = false;
+    qint64 lastSeen = 0;
+    QStringList groups;
+};
+Q_DECLARE_METATYPE(ContactInfo)
+
+struct EmojiReaction {
+    QString messageId;
+    QString emoji;
+    QString userId;
+    QString userName;
+    qint64 timestamp = 0;
+};
+
 } // namespace xrk
