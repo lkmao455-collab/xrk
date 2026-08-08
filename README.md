@@ -84,6 +84,26 @@ export QT_QPA_PLATFORM=offscreen
 | [docs/06_test_plan.md](docs/06_test_plan.md) | 测试方案 |
 | [docs/07_change_log.md](docs/07_change_log.md) | 修改记录（v1.1.0 含分块传输） |
 
-## 许可
+## 许可证
 
-商业许可，详见 [COMMERCIAL-LICENSE](COMMERCIAL-LICENSE) 与 [LICENSE-INFO.md](LICENSE-INFO.md)。
+XRK 项目采用**双授权模式**，您可根据使用场景选择合适的许可：
+
+| 场景                    | GPL v3 (免费) | 商业授权 (付费) |
+|------------------------|:------------:|:--------------:|
+| 个人学习/研究           | ✅ 可以       | ✅ 可以         |
+| 开源项目                | ✅ 可以       | ✅ 可以         |
+| 小团队 (<10人)          | ✅ 可以       | ✅ 可以         |
+| 企业内部使用            | ✅ 可以       | ✅ 可以         |
+| 商业闭源产品            | ❌ 不可以     | ✅ 可以         |
+| 分发二进制(不含源码)     | ❌ 不可以     | ✅ 可以         |
+| 大规模商业部署          | ❌ 不可以     | ✅ 可以         |
+
+**选择指南：**
+- 个人/开源/非商业 → **GPL v3** (见 [LICENSE](LICENSE))
+- 商业/闭源/企业 → **商业授权** (见 [COMMERCIAL-LICENSE](COMMERCIAL-LICENSE))
+
+详细对比与常见问题见 [LICENSE-INFO.md](LICENSE-INFO.md)。
+
+**商业授权咨询：**
+- Email: lkmao455-collab@users.noreply.github.com
+- GitHub: https://github.com/lkmao455-collab/caipiao
