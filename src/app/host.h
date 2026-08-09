@@ -335,6 +335,7 @@ private:
     void handleFileRequest(const QString& clientId, const QByteArray& payload);
     void handleFileData(const QString& clientId, const QByteArray& payload);
     void handleFileBrowserRequest(const QString& clientId, const QByteArray& payload);
+    void handleFileOpRequest(const QString& clientId, const QByteArray& payload);
     void handleSystemInfoRequest(const QString& clientId, const QByteArray& payload);
     void handleProcessListRequest(const QString& clientId, const QByteArray& payload);
     void handleProcessKillRequest(const QString& clientId, const QByteArray& payload);

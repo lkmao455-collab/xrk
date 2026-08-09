@@ -1822,6 +1822,90 @@ FileBrowserResponse ProtocolManager::decodeFileBrowserResponse(const QByteArray&
     return resp;
 }
 
+QByteArray ProtocolManager::encodeFileOpRequest(const FileOpRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << static_cast<quint8>(req.op);
+
+    QByteArray pathBytes = req.path.toUtf8();
+    stream << static_cast<quint32>(pathBytes.size());
+    stream.writeRawData(pathBytes.constData(), pathBytes.size());
+
+    QByteArray newPathBytes = req.newPath.toUtf8();
+    stream << static_cast<quint32>(newPathBytes.size());
+    stream.writeRawData(newPathBytes.constData(), newPathBytes.size());
+
+    return data;
+}
+
+FileOpRequest ProtocolManager::decodeFileOpRequest(const QByteArray& data) {
+    FileOpRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    quint8 op;
+    stream >> op;
+    req.op = static_cast<FileOp>(op);
+
+    quint32 len;
+    stream >> len;
+    req.path = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+    stream.skipRawData(len);
+
+    stream >> len;
+    req.newPath = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+    stream.skipRawData(len);
+
+    return req;
+}
+
+QByteArray ProtocolManager::encodeFileOpResponse(const FileOpResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << static_cast<quint8>(resp.op);
+
+    QByteArray pathBytes = resp.path.toUtf8();
+    stream << static_cast<quint32>(pathBytes.size());
+    stream.writeRawData(pathBytes.constData(), pathBytes.size());
+
+    stream << static_cast<quint8>(resp.success ? 1 : 0);
+
+    QByteArray errBytes = resp.errorMessage.toUtf8();
+    stream << static_cast<quint32>(errBytes.size());
+    stream.writeRawData(errBytes.constData(), errBytes.size());
+
+    return data;
+}
+
+FileOpResponse ProtocolManager::decodeFileOpResponse(const QByteArray& data) {
+    FileOpResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    quint8 op;
+    stream >> op;
+    resp.op = static_cast<FileOp>(op);
+
+    quint32 len;
+    stream >> len;
+    resp.path = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+    stream.skipRawData(len);
+
+    quint8 success;
+    stream >> success;
+    resp.success = (success != 0);
+
+    stream >> len;
+    resp.errorMessage = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+    stream.skipRawData(len);
+
+    return resp;
+}
+
 QByteArray ProtocolManager::encodeSysInfo(const SysInfo& info) {
     QByteArray data;
     QDataStream stream(&data, QIODevice::WriteOnly);

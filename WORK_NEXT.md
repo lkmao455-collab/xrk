@@ -7,6 +7,13 @@
   - 控制端 `RemoteDesktopWidget`：每笔带独立颜色/线宽，松手即把完整笔迹集发给被控端；「清空」同步清除两端
   - 单测：AnnotationUpdate 往返 + 枚举值断言（test_protocol_extended.cpp）
 
+✅ **Web 触控输入 / 快照导出 / 远程文件读写 (v1.7.0)**:
+  - Web 触控：`TouchGestureController`（DOM 无关）+ `RemoteDesktop.tsx` 触控工具栏（右键/▲/▼），单击/拖拽/长按右键/双指捏合与平移滚动；复用 `MouseAction` 协议
+  - 快照导出：`RemoteDesktopWidget::onSnapshotClicked` 将当前帧+标注+水印合成 PNG 保存
+  - 远程文件读写：`FILE_OP_REQ`(162)/`FILE_OP_RESP`(163) + `FileOp`(Rename/Delete/Mkdir)；Host `handleFileOpRequest` + 审计；控制端 `FileTransferWidget` 重命名/删除/新建文件夹（写操作需 consented）
+  - 高危门禁补强：`POWER_COMMAND`(158) 强制 consented
+  - 单测：FileOp 四类往返 + 枚举值断言（test_protocol_extended.cpp）
+
 ✅ **多屏切换优化 (v1.2.0)**:
   - 线程安全：ScreenCapture添加QMutex保护并发访问
   - 编码器分辨率适配：切换后自动重新初始化编码器

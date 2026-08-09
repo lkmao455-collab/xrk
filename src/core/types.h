@@ -130,6 +130,8 @@ AUDIO_START = 140,
     POWER_COMMAND = 158,
     FILE_BROWSER_REQ = 160,
     FILE_BROWSER_RESP = 161,
+    FILE_OP_REQ = 162,        // controller -> host: rename/delete/mkdir (consented)
+    FILE_OP_RESP = 163,       // host -> controller: result of FILE_OP_REQ
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
 
@@ -520,6 +522,26 @@ struct FileBrowserRequest {
 struct FileBrowserResponse {
     QString path;
     QList<FileBrowserEntry> entries;
+    bool success = false;
+    QString errorMessage;
+};
+
+// Remote file write operations (rename / delete / mkdir) for the file manager.
+enum class FileOp : uint8_t {
+    Rename = 0,
+    Delete = 1,
+    Mkdir = 2,
+};
+
+struct FileOpRequest {
+    FileOp op = FileOp::Rename;
+    QString path;      // target path (delete target, mkdir parent, rename source)
+    QString newPath;   // rename destination (unused for delete/mkdir)
+};
+
+struct FileOpResponse {
+    FileOp op = FileOp::Rename;
+    QString path;
     bool success = false;
     QString errorMessage;
 };

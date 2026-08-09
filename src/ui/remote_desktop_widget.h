@@ -80,6 +80,7 @@ private slots:
     void onAnnotationToggled(bool checked);
     void onAnnotateColorClicked();
     void onAnnotateClearClicked();
+    void onSnapshotClicked();
     void onWatermarkToggled(bool checked);
     void onMicToggled(bool checked);
     void onConsentRequested();
@@ -143,6 +144,7 @@ private:
     QPushButton* m_annotateButton = nullptr;
     QPushButton* m_annotateColorButton = nullptr;
     QPushButton* m_annotateClearButton = nullptr;
+    QPushButton* m_snapshotButton = nullptr;     // save current frame + annotations as PNG
     QPushButton* m_watermarkButton = nullptr;
     QPushButton* m_micButton = nullptr;       // two-way voice microphone toggle
     bool m_annotationEnabled = false;

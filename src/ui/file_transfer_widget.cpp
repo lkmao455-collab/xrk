@@ -228,6 +228,8 @@ void FileTransferWidget::setRemoteController(RemoteController* controller) {
     if (m_remoteController) {
         connect(m_remoteController, &RemoteController::syncNotifyReceived,
                 this, &FileTransferWidget::onSyncNotifyReceived);
+        connect(m_remoteController, &RemoteController::fileOpCompleted,
+                this, &FileTransferWidget::onFileOpCompleted);
     }
 }
 
@@ -321,6 +323,71 @@ void FileTransferWidget::onDownloadClicked() {
     QString localPath = localDir + "/" + name;
     if (m_manager) {
         m_manager->downloadFile(fullPath, localPath, size);
+    }
+}
+
+QString FileTransferWidget::selectedRemotePath() const {
+    int row = m_remoteTable ? m_remoteTable->currentRow() : -1;
+    if (row < 0) return QString();
+    QTableWidgetItem* nameItem = m_remoteTable->item(row, 0);
+    if (!nameItem) return QString();
+    // The absolute remote path is stored in the item's UserRole by
+    // populateRemoteTable, so prefer it over reconstructing from the name.
+    QString abs = nameItem->data(Qt::UserRole).toString();
+    if (!abs.isEmpty()) return abs;
+    return QDir::cleanPath(m_currentRemotePath + "/" + nameItem->text());
+}
+
+void FileTransferWidget::onRenameClicked() {
+    if (!m_remoteController) return;
+    QString oldPath = selectedRemotePath();
+    if (oldPath.isEmpty()) return;
+    bool ok = false;
+    QString newName = QInputDialog::getText(this, tr("重命名"), tr("新名称:"),
+                                            QLineEdit::Normal, QFileInfo(oldPath).fileName(), &ok);
+    if (!ok || newName.isEmpty()) return;
+    QString newPath = QDir::cleanPath(QFileInfo(oldPath).path() + "/" + newName);
+    FileOpRequest req;
+    req.op = FileOp::Rename;
+    req.path = oldPath;
+    req.newPath = newPath;
+    m_remoteController->sendFileOp(req);
+}
+
+void FileTransferWidget::onDeleteClicked() {
+    if (!m_remoteController) return;
+    QString path = selectedRemotePath();
+    if (path.isEmpty()) return;
+    QFileInfo fi(path);
+    auto result = QMessageBox::question(this, tr("删除"),
+        tr("确定要删除%1 \"%2\" 吗？此操作不可恢复。")
+            .arg(fi.isDir() ? tr("文件夹") : tr("文件")).arg(fi.fileName()),
+        QMessageBox::Yes | QMessageBox::No);
+    if (result != QMessageBox::Yes) return;
+    FileOpRequest req;
+    req.op = FileOp::Delete;
+    req.path = path;
+    m_remoteController->sendFileOp(req);
+}
+
+void FileTransferWidget::onMkdirClicked() {
+    if (!m_remoteController) return;
+    bool ok = false;
+    QString name = QInputDialog::getText(this, tr("新建文件夹"), tr("文件夹名称:"),
+                                         QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.isEmpty()) return;
+    FileOpRequest req;
+    req.op = FileOp::Mkdir;
+    req.path = QDir::cleanPath(m_currentRemotePath + "/" + name);
+    m_remoteController->sendFileOp(req);
+}
+
+void FileTransferWidget::onFileOpCompleted(const FileOpResponse& resp) {
+    if (resp.success) {
+        requestRemoteDir(m_currentRemotePath); // refresh the listing
+    } else {
+        QMessageBox::warning(this, tr("操作失败"),
+            tr("远程文件操作失败: %1").arg(resp.errorMessage));
     }
 }
 
@@ -766,6 +833,11 @@ void FileTransferWidget::setupUI() {
     m_remoteTable->setDragEnabled(true);
     m_remoteTable->setDragDropMode(QAbstractItemView::DragOnly);
     connect(m_remoteTable, &QTableWidget::cellDoubleClicked, this, &FileTransferWidget::onRemoteDoubleClicked);
+    connect(m_remoteTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        bool has = m_remoteTable->currentRow() >= 0;
+        m_renameButton->setEnabled(has);
+        m_deleteButton->setEnabled(has);
+    });
     remoteLayout->addWidget(m_remoteTable);
 
     browserSplitter->addWidget(localPanel);
@@ -852,6 +924,23 @@ void FileTransferWidget::setupUI() {
     m_downloadButton->setEnabled(false);
     connect(m_downloadButton, &QPushButton::clicked, this, &FileTransferWidget::onDownloadClicked);
     buttonLayout->addWidget(m_downloadButton);
+
+    m_renameButton = new QPushButton("重命名", this);
+    m_renameButton->setFixedWidth(80);
+    m_renameButton->setEnabled(false);
+    connect(m_renameButton, &QPushButton::clicked, this, &FileTransferWidget::onRenameClicked);
+    buttonLayout->addWidget(m_renameButton);
+
+    m_deleteButton = new QPushButton("删除", this);
+    m_deleteButton->setFixedWidth(80);
+    m_deleteButton->setEnabled(false);
+    connect(m_deleteButton, &QPushButton::clicked, this, &FileTransferWidget::onDeleteClicked);
+    buttonLayout->addWidget(m_deleteButton);
+
+    m_mkdirButton = new QPushButton("新建文件夹", this);
+    m_mkdirButton->setFixedWidth(100);
+    connect(m_mkdirButton, &QPushButton::clicked, this, &FileTransferWidget::onMkdirClicked);
+    buttonLayout->addWidget(m_mkdirButton);
 
     m_cancelButton = new QPushButton("取消", this);
     m_cancelButton->setFixedWidth(80);
