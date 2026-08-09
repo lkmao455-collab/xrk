@@ -802,6 +802,13 @@ void RemoteController::requestFileBrowser(const QString& path) {
     m_connection->send(msg);
 }
 
+void RemoteController::sendFileOp(const FileOpRequest& req) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload = ProtocolManager::encodeFileOpRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::FILE_OP_REQ, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::requestSystemInfo() {
     if (!m_active || !m_connection) return;
     QByteArray msg = ProtocolManager::encode(MessageType::SYSINFO_REQ, QByteArray(), m_currentSessionId);
@@ -932,6 +939,11 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
         case MessageType::FILE_BROWSER_RESP: {
             FileBrowserResponse resp = ProtocolManager::decodeFileBrowserResponse(payload);
             emit fileBrowserReceived(resp);
+            break;
+        }
+        case MessageType::FILE_OP_RESP: {
+            FileOpResponse resp = ProtocolManager::decodeFileOpResponse(payload);
+            emit fileOpCompleted(resp);
             break;
         }
         case MessageType::SYSINFO_RESP: {

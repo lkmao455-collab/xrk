@@ -20,6 +20,10 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QColorDialog>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QPixmap>
+#include <QDateTime>
 
 namespace xrk {
 
@@ -289,6 +293,14 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     connect(m_watermarkButton, &QPushButton::toggled,
             this, &RemoteDesktopWidget::onWatermarkToggled);
 
+    // Phase 4: snapshot of the current frame + annotations, saved as PNG.
+    m_snapshotButton = new QPushButton(tr("快照"), this);
+    m_snapshotButton->setObjectName("snapshot-button");
+    m_snapshotButton->setToolTip(tr("将当前画面与标注保存为 PNG 图片"));
+    m_snapshotButton->adjustSize();
+    connect(m_snapshotButton, &QPushButton::clicked,
+            this, &RemoteDesktopWidget::onSnapshotClicked);
+
     // Phase 6: two-way voice microphone toggle.
     m_micButton = new QPushButton(tr("麦克风"), this);
     m_micButton->setCheckable(true);
@@ -319,6 +331,7 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         m_toolbarLayout->addWidget(m_annotateClearButton);
         m_toolbarLayout->addWidget(m_watermarkButton);
         m_toolbarLayout->addWidget(m_micButton);
+        m_toolbarLayout->addWidget(m_snapshotButton);
 
         // Remote audio forwarding toggle
         m_audioButton = new QPushButton(tr("喇叭"), m_toolbar);
@@ -1124,6 +1137,78 @@ void RemoteDesktopWidget::onAnnotateClearClicked() {
     // v1.6.0: clear the host's overlay too.
     if (m_controller) {
         m_controller->sendAnnotationClear();
+    }
+}
+
+void RemoteDesktopWidget::onSnapshotClicked() {
+    if (m_currentFrame.isNull()) {
+        QMessageBox::warning(this, tr("无法保存快照"),
+                              tr("当前没有可用的远程画面。请先建立连接并接收画面。"));
+        return;
+    }
+
+    // Composite the raw frame (frame coordinates) with the local annotation
+    // strokes and optional watermark into a PNG at native frame resolution.
+    QPixmap pm(m_currentFrame.size());
+    pm.fill(Qt::black);
+    {
+        QPainter p(&pm);
+        p.drawImage(0, 0, m_currentFrame);
+
+        auto drawStrokeFrame = [&](const AnnotationStroke& stroke) {
+            if (stroke.points.isEmpty()) return;
+            QPen pen(stroke.color, stroke.width);
+            pen.setCapStyle(Qt::RoundCap);
+            pen.setJoinStyle(Qt::RoundJoin);
+            p.setPen(pen);
+            if (stroke.points.size() == 1) {
+                p.drawPoint(stroke.points.first());
+                return;
+            }
+            for (int i = 1; i < stroke.points.size(); ++i) {
+                p.drawLine(stroke.points[i - 1], stroke.points[i]);
+            }
+        };
+
+        for (const AnnotationStroke& s : m_strokes) drawStrokeFrame(s);
+        if (!m_currentStroke.points.isEmpty()) {
+            AnnotationStroke live = m_currentStroke;
+            live.color = m_annotationColor;
+            live.width = m_annotationWidth;
+            drawStrokeFrame(live);
+        }
+
+        if (m_watermarkEnabled && !m_currentDeviceId.isEmpty()) {
+            QString wm = tr("查看端: %1").arg(m_currentDeviceId);
+            QFont wmFont = p.font();
+            wmFont.setPointSize(11);
+            p.setFont(wmFont);
+            QFontMetrics fm(wmFont);
+            int w = fm.horizontalAdvance(wm) + 12;
+            int h = fm.height() + 6;
+            int wx = pm.width() - w - 10;
+            int wy = pm.height() - h - 10;
+            p.fillRect(wx, wy, w, h, QColor(0, 0, 0, 140));
+            p.setPen(Qt::white);
+            p.drawText(wx + 6, wy + fm.ascent() + 3, wm);
+        }
+    }
+
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("保存快照"),
+        tr("xrk-snapshot-%1.png").arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")),
+        tr("PNG 图片 (*.png)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(".png", Qt::CaseInsensitive)) path += ".png";
+
+    if (pm.save(path, "PNG")) {
+        LOG_INFO("Snapshot saved: " + path);
+        QMessageBox::information(this, tr("已保存"),
+                                 tr("快照已保存到:\n%1").arg(path));
+    } else {
+        LOG_ERROR("Snapshot save failed: " + path);
+        QMessageBox::warning(this, tr("保存失败"),
+                             tr("无法写入文件:\n%1").arg(path));
     }
 }
 

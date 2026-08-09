@@ -2,21 +2,38 @@
 
 ## 版本历史
 
+### v1.7.0 — Web 触控输入 / 快照导出 / 远程文件管理（读写）✅ 已发布 (2026-08-09)
+- **Web 客户端触控输入（touchInput.ts）**：React Web 客户端新增 `TouchGestureController`（DOM 无关，便于单测）
+  - 单击 → PRESS+RELEASE+CLICK（左键）；拖拽 → PRESS+MOVE…+RELEASE（无 CLICK）；长按（不移动，定时器）→ 右键（RELEASE 左 + PRESS 右 + RELEASE 右）+ 抑制 CLICK
+  - 双指捏合（距离差）→ SCROLL；双指平移（中点 Y 差）→ SCROLL；双指松开转单指平滑恢复为单击按压
+  - 协议复用既有 `MouseAction`（MOVE/CLICK/DOUBLECLICK/PRESS/RELEASE/SCROLL）+ `button`（LEFT/RIGHT/MIDDLE）
+  - 单测 9 项（单击/拖拽/捏合/缩放/空操作/取消/长按右键/长按被拖拽取消/双指平移）全部通过
+- **触控增强（RemoteDesktop.tsx + App.css）**：letterbox 感知的 `mapPoint` 坐标映射；`dispatchMouse` 派发 `xrk-mouse` 事件；触控工具栏（右键 / ▲ / ▼）与 `user-select:none`、`overscroll-behavior:none` 样式
+- **标注快照导出（RemoteDesktopWidget::onSnapshotClicked）**：将当前帧 + 本地标注笔迹 + 可选水印合成 PNG（`QFileDialog::getSaveFileName`，默认 `xrk-snapshot-<时间戳>.png`），原生分辨率保存
+- **远程文件管理器（读写）**：在既有文件浏览/分块上传下载之上新增写操作（需被控端 `consented` 授权 + 审计日志）
+  - 协议：`FILE_OP_REQ`(162) / `FILE_OP_RESP`(163) + `FileOp`(Rename/Delete/Mkdir) + `FileOpRequest` / `FileOpResponse`
+  - 编解码：`ProtocolManager::encode/decodeFileOpRequest`（op + UTF-8 path + newPath）、`encode/decodeFileOpResponse`（op + path + success + error）
+  - Host：`handleFileOpRequest`（rename→`QFile::rename`、delete→`QDir::removeRecursively`/`QFile::remove`、mkdir→`QDir::mkpath`）+ 审计 `file_op_ok`/`file_op_failed`
+  - 控制端：`RemoteController::sendFileOp` + `fileOpCompleted` 信号；`FileTransferWidget` 重命名/删除/新建文件夹按钮（删除前确认），成功后自动刷新目录
+  - Host 高危门禁补强：`POWER_COMMAND`(158) 现强制 `consented`（与进程结束/启动一致）
+  - 单测：`FileOpMessageTypeValues` / `Rename` / `Delete` / `Mkdir` / `Response` 往返
+
+### v1.6.0 — 实时屏幕标注（端到端）✅ 已发布 (2026-08-09)
+- **实时屏幕标注同步**：控制端画完自由笔标注即同步给被控端，在被控端物理屏以穿透式透明 overlay 显示，引导远端用户
+  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184) + 结构体 `AnnotationStroke`（颜色/线宽/点序列）、`AnnotationUpdate`（frame 宽高 + 笔迹集）
+  - 协议编解码：`ProtocolManager::encodeAnnotationUpdate` / `decodeAnnotationUpdate`（BigEndian 二进制，与核心协议一致）
+  - 新增 `AnnotationOverlay`：穿透点击的透明置顶窗口，跨所有屏幕，按帧坐标等比映射绘制
+  - Host 仅 `authenticated` 即可接收，并写审计日志 `annotation` / `annotation_clear`；会话断开 / `stop()` / 收到 `ANNOTATION_CLEAR` 时销毁
+  - 控制端 `RemoteDesktopWidget`：每笔标注携带独立颜色/线宽，鼠标松开即把当前完整笔迹集发给被控端；「清空」两端同步
+  - 复用既有本地标注层（Phase 4）
+  - 单测：`AnnotationUpdate` 往返（多笔 / 多色 / 多宽）+ 枚举值断言（183/184）
+
 ### v1.5.0 — 远程进程管理器
 - **远程进程管理器**：控制端连接后可查看/结束/启动被控端进程
   - 协议：`PROCESS_LIST_REQ/RESP`(172/173)、`PROCESS_KILL_REQ/RESP`(174/175)、`PROCESS_START_REQ/RESP`(176/177)
   - 后端 `ProcessCollector`：跨平台进程枚举（Win `CreateToolhelp32Snapshot` / Linux `/proc` / macOS `sysctl`）、结束（`TerminateProcess`/`kill`）、启动（`QProcess::startDetached`）
   - Host 高危操作（结束/启动）强制 `consented` 门禁 + 审计日志 `process_kill` / `process_start`
   - UI `RemoteProcessWidget`：进程表格（PID/名称/内存）+ 3 秒轮询刷新 + 结束/启动按钮，挂载为「进程」分页
-
-### v1.6.0 — 实时屏幕标注
-- **实时屏幕标注（控制端 → 被控端同步）**：远程协助时控制端可直接在被控端屏幕上画图引导
-  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184) + 结构体 `AnnotationStroke`（颜色/线宽/点序列）、`AnnotationUpdate`（frame 宽高 + 笔迹集）
-  - 协议编解码：`ProtocolManager::encodeAnnotationUpdate` / `decodeAnnotationUpdate`（BigEndian 二进制，与核心协议一致）
-  - 被控端 `AnnotationOverlay`：透明、`Qt::WindowTransparentForInput` 穿透输入的顶层覆盖层，覆盖全部物理屏幕（虚拟桌面几何），按 frame 坐标等比缩放绘制
-  - Host：收到首帧标注即惰性创建 overlay 并 `setStrokes()`；仅要求已鉴权会话（无需 consented，标注不可注入输入/读取数据）；会话断开、`stop()` 或收到 `ANNOTATION_CLEAR` 时销毁
-  - 控制端 `RemoteDesktopWidget`：每笔标注携带独立颜色/线宽，鼠标松开即把当前完整笔迹集发给被控端；「清空」同时清除两端 overlay
-  - 单测：`AnnotationUpdate` 往返（多笔、多色、多宽）+ 枚举值断言（183/184）
 
 ### v1.4.0 (2026-08-09) — 12项功能增强
 

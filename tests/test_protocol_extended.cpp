@@ -1371,3 +1371,87 @@ TEST_F(ProtocolExtendedTest, AnnotationMessageTypeValues) {
     EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_UPDATE), 183u);
     EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_CLEAR), 184u);
 }
+
+TEST_F(ProtocolExtendedTest, AnnotationUpdateRoundTrip) {
+    AnnotationUpdate update;
+    update.frameWidth = 1920;
+    update.frameHeight = 1080;
+    AnnotationStroke s;
+    s.color = Qt::red;
+    s.width = 4;
+    s.points.append(QPoint(10, 20));
+    s.points.append(QPoint(30, 40));
+    s.points.append(QPoint(50, 60));
+    update.strokes.append(s);
+
+    QByteArray encoded = ProtocolManager::encodeAnnotationUpdate(update);
+    EXPECT_FALSE(encoded.isEmpty());
+
+    AnnotationUpdate decoded = ProtocolManager::decodeAnnotationUpdate(encoded);
+    EXPECT_EQ(decoded.frameWidth, 1920);
+    EXPECT_EQ(decoded.frameHeight, 1080);
+    ASSERT_EQ(decoded.strokes.size(), 1);
+    EXPECT_EQ(decoded.strokes[0].color, QColor(Qt::red));
+    EXPECT_EQ(decoded.strokes[0].width, 4);
+    ASSERT_EQ(decoded.strokes[0].points.size(), 3);
+    EXPECT_EQ(decoded.strokes[0].points[0], QPoint(10, 20));
+    EXPECT_EQ(decoded.strokes[0].points[2], QPoint(50, 60));
+}
+
+TEST_F(ProtocolExtendedTest, FileOpMessageTypeValues) {
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::FILE_OP_REQ), 162u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::FILE_OP_RESP), 163u);
+}
+
+TEST_F(ProtocolExtendedTest, FileOpRenameRoundTrip) {
+    FileOpRequest req;
+    req.op = FileOp::Rename;
+    req.path = "C:/data/old.txt";
+    req.newPath = "C:/data/new.txt";
+
+    QByteArray encoded = ProtocolManager::encodeFileOpRequest(req);
+    EXPECT_FALSE(encoded.isEmpty());
+    FileOpRequest decoded = ProtocolManager::decodeFileOpRequest(encoded);
+    EXPECT_EQ(decoded.op, FileOp::Rename);
+    EXPECT_EQ(decoded.path, req.path);
+    EXPECT_EQ(decoded.newPath, req.newPath);
+}
+
+TEST_F(ProtocolExtendedTest, FileOpDeleteRoundTrip) {
+    FileOpRequest req;
+    req.op = FileOp::Delete;
+    req.path = "C:/data/todelete.bin";
+
+    QByteArray encoded = ProtocolManager::encodeFileOpRequest(req);
+    FileOpRequest decoded = ProtocolManager::decodeFileOpRequest(encoded);
+    EXPECT_EQ(decoded.op, FileOp::Delete);
+    EXPECT_EQ(decoded.path, req.path);
+    EXPECT_TRUE(decoded.newPath.isEmpty());
+}
+
+TEST_F(ProtocolExtendedTest, FileOpMkdirRoundTrip) {
+    FileOpRequest req;
+    req.op = FileOp::Mkdir;
+    req.path = "C:/data/newfolder";
+
+    QByteArray encoded = ProtocolManager::encodeFileOpRequest(req);
+    FileOpRequest decoded = ProtocolManager::decodeFileOpRequest(encoded);
+    EXPECT_EQ(decoded.op, FileOp::Mkdir);
+    EXPECT_EQ(decoded.path, req.path);
+}
+
+TEST_F(ProtocolExtendedTest, FileOpResponseRoundTrip) {
+    FileOpResponse resp;
+    resp.op = FileOp::Delete;
+    resp.path = "C:/data/todelete.bin";
+    resp.success = false;
+    resp.errorMessage = "权限不足";
+
+    QByteArray encoded = ProtocolManager::encodeFileOpResponse(resp);
+    EXPECT_FALSE(encoded.isEmpty());
+    FileOpResponse decoded = ProtocolManager::decodeFileOpResponse(encoded);
+    EXPECT_EQ(decoded.op, FileOp::Delete);
+    EXPECT_EQ(decoded.path, resp.path);
+    EXPECT_FALSE(decoded.success);
+    EXPECT_EQ(decoded.errorMessage, "权限不足");
+}

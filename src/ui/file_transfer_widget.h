@@ -41,6 +41,10 @@ public slots:
 private slots:
     void onUploadClicked();
     void onDownloadClicked();
+    void onRenameClicked();
+    void onDeleteClicked();
+    void onMkdirClicked();
+    void onFileOpCompleted(const FileOpResponse& resp);
     void onCancelClicked();
     void onAddSyncClicked();
     void onRemoveSyncClicked();
@@ -66,6 +70,7 @@ private:
     void requestRemoteDir(const QString& path);
     void populateRemoteTable(const FileBrowserResponse& resp);
     void populateDriveList();
+    QString selectedRemotePath() const;
 
     // Drag-and-drop download (remote -> local)
     void downloadRemoteItem(const QString& remotePath, const QString& name,
@@ -98,6 +103,9 @@ private:
     QListWidget* m_transferList = nullptr;
     QPushButton* m_uploadButton = nullptr;
     QPushButton* m_downloadButton = nullptr;
+    QPushButton* m_renameButton = nullptr;
+    QPushButton* m_deleteButton = nullptr;
+    QPushButton* m_mkdirButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
 
     QMap<QString, QWidget*> m_transferWidgets;

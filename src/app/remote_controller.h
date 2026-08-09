@@ -87,6 +87,7 @@ public:
     void endCall(const QString& callId);
     void sendIceCandidate(const QString& callId, const QString& candidate);
     void requestFileBrowser(const QString& path);
+    void sendFileOp(const FileOpRequest& req);
     void requestSystemInfo();
     void requestProcessList();
     void requestKillProcess(qint64 pid);
@@ -148,6 +149,7 @@ signals:
     void recordingStopped();
     void recordingError(const QString& error);
     void fileBrowserReceived(const FileBrowserResponse& response);
+    void fileOpCompleted(const FileOpResponse& response);
     void sysInfoReceived(const SysInfo& info);
     void processListReceived(const ProcessListResponse& response);
     void processKillReceived(const ProcessKillResponse& response);

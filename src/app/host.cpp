@@ -23,6 +23,7 @@
 #include <QCryptographicHash>
 #include <QRandomGenerator>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QApplication>
 #include <QClipboard>
@@ -2012,6 +2013,16 @@ case MessageType::VOICE_ACK: {
             handleFileBrowserRequest(clientId, payload);
             break;
         }
+        case MessageType::FILE_OP_REQ: {
+            // Write operations on the host filesystem are destructive -> require
+            // explicit consent (consistent with process kill/start gating).
+            if (!m_clients.value(clientId).consented) {
+                logAuditOp(clientId, "file_op_denied", "not_consented");
+                break;
+            }
+            handleFileOpRequest(clientId, payload);
+            break;
+        }
         case MessageType::SYSINFO_REQ: {
             handleSystemInfoRequest(clientId, payload);
             break;
@@ -2043,6 +2054,12 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::POWER_COMMAND: {
+            // Destructive power actions require an explicit consent grant
+            // (consistent with process kill/start gating).
+            if (!m_clients.value(clientId).consented) {
+                logAuditOp(clientId, "power_command_denied", "not_consented");
+                break;
+            }
             if (payload.size() >= 1) {
                 PowerAction action = static_cast<PowerAction>(payload[0]);
                 executePowerAction(action);
@@ -2810,6 +2827,50 @@ void Host::handleFileBrowserRequest(const QString& clientId, const QByteArray& p
 
     QByteArray respPayload = ProtocolManager::encodeFileBrowserResponse(resp);
     QByteArray msg = ProtocolManager::encode(MessageType::FILE_BROWSER_RESP, respPayload);
+    QTcpSocket* socket = m_clients.value(clientId).socket;
+    if (socket) {
+        socket->write(msg);
+        socket->flush();
+    }
+}
+
+void Host::handleFileOpRequest(const QString& clientId, const QByteArray& payload) {
+    FileOpRequest req = ProtocolManager::decodeFileOpRequest(payload);
+    FileOpResponse resp;
+    resp.op = req.op;
+    resp.path = req.path;
+
+    bool ok = false;
+    QString err;
+    switch (req.op) {
+    case FileOp::Rename: {
+        QFile f(req.path);
+        ok = f.rename(req.newPath);
+        if (!ok) err = "重命名失败: " + req.path;
+        break;
+    }
+    case FileOp::Delete: {
+        QFileInfo fi(req.path);
+        if (fi.isDir()) ok = QDir(req.path).removeRecursively();
+        else ok = QFile::remove(req.path);
+        if (!ok) err = "删除失败: " + req.path;
+        break;
+    }
+    case FileOp::Mkdir: {
+        ok = QDir().mkpath(req.path);
+        if (!ok) err = "创建目录失败: " + req.path;
+        break;
+    }
+    }
+
+    resp.success = ok;
+    resp.errorMessage = err;
+    logAuditOp(clientId,
+                QString("file_op_%1").arg(ok ? "ok" : "failed"),
+                QString::number(static_cast<int>(req.op)) + " " + req.path);
+
+    QByteArray respPayload = ProtocolManager::encodeFileOpResponse(resp);
+    QByteArray msg = ProtocolManager::encode(MessageType::FILE_OP_RESP, respPayload);
     QTcpSocket* socket = m_clients.value(clientId).socket;
     if (socket) {
         socket->write(msg);

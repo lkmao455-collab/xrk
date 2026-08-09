@@ -143,7 +143,12 @@ static QByteArray encodeFileData(const FileData& data);
     static FileBrowserEntry decodeFileBrowserEntry(QDataStream& stream, const QByteArray& data);
     static QByteArray encodeFileBrowserResponse(const FileBrowserResponse& resp);
     static FileBrowserResponse decodeFileBrowserResponse(const QByteArray& data);
-    
+
+    static QByteArray encodeFileOpRequest(const FileOpRequest& req);
+    static FileOpRequest decodeFileOpRequest(const QByteArray& data);
+    static QByteArray encodeFileOpResponse(const FileOpResponse& resp);
+    static FileOpResponse decodeFileOpResponse(const QByteArray& data);
+
     static QByteArray encodeQualityInfo(const QualityInfo& info);
     static QualityInfo decodeQualityInfo(const QByteArray& data);
 
