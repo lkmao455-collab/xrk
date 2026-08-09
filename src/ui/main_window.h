@@ -27,6 +27,7 @@ class ClipboardManager;
 class RelayServer;
 class NatTraversal;
 class SystemInfoWidget;
+class RemoteProcessWidget;
 class AuditLogger;
 class ClipboardHistory;
 class ClipboardHistoryWidget;
@@ -109,12 +110,6 @@ private:
     bool m_hostMode = false;
     bool m_relayMode = false;
 
-    // Sidebar navigation
-    QWidget* m_navSidebar = nullptr;
-    QPushButton* m_navButtons[8] = {};
-    QStackedWidget* m_contentStack = nullptr;
-    int m_currentPage = 0;
-
     // Page indices in the stacked widget
     enum PageIndex {
         PAGE_HOME = 0,
@@ -124,8 +119,15 @@ private:
         PAGE_CHAT,
         PAGE_MONITOR,
         PAGE_CLIPBOARD,
+        PAGE_PROCESS,
         PAGE_COUNT
     };
+
+    // Sidebar navigation
+    QWidget* m_navSidebar = nullptr;
+    QPushButton* m_navButtons[PAGE_COUNT] = {};
+    QStackedWidget* m_contentStack = nullptr;
+    int m_currentPage = 0;
 
     DeviceListWidget* m_deviceListWidget = nullptr; // Legacy - no longer used
     RemoteDesktopWidget* m_remoteDesktopWidget = nullptr;
@@ -133,6 +135,7 @@ private:
     TerminalWidget* m_terminalWidget = nullptr;
     ChatWidget* m_chatWidget = nullptr;
     SystemInfoWidget* m_sysInfoWidget = nullptr;
+    RemoteProcessWidget* m_processWidget = nullptr;
 
     QAction* m_settingsAction = nullptr;
     QAction* m_aboutAction = nullptr;

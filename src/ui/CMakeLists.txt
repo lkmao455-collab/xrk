@@ -31,6 +31,7 @@ set(UI_SOURCES
     device_trust_widget.cpp
     notification_center_widget.cpp
     key_verification_dialog.cpp
+    remote_process_widget.cpp
 )
 
 set(UI_HEADERS
@@ -66,6 +67,7 @@ set(UI_HEADERS
     device_trust_widget.h
     notification_center_widget.h
     key_verification_dialog.h
+    remote_process_widget.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})

@@ -335,6 +335,9 @@ private:
     void handleFileData(const QString& clientId, const QByteArray& payload);
     void handleFileBrowserRequest(const QString& clientId, const QByteArray& payload);
     void handleSystemInfoRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessListRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessKillRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessStartRequest(const QString& clientId, const QByteArray& payload);
     void onQualityTimer();
     void sendQualityInfo();
     void handleScreenAck(const QString& clientId, const QByteArray& payload);

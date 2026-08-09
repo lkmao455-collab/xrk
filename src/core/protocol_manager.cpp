@@ -1889,6 +1889,124 @@ SysInfo ProtocolManager::decodeSysInfo(const QByteArray& data) {
     return info;
 }
 
+// ───────────── Remote Process Manager (v1.5.0) ─────────────
+QByteArray ProtocolManager::encodeProcessListResponse(const ProcessListResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.errorMessage;
+    stream << static_cast<uint32_t>(resp.entries.size());
+    for (const auto& e : resp.entries) {
+        stream << e.pid;
+        stream << e.name;
+        stream << e.memoryBytes;
+    }
+    return data;
+}
+
+ProcessListResponse ProtocolManager::decodeProcessListResponse(const QByteArray& data) {
+    ProcessListResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.errorMessage;
+
+    uint32_t count = 0;
+    stream >> count;
+    resp.entries.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        ProcessEntry e;
+        stream >> e.pid;
+        stream >> e.name;
+        stream >> e.memoryBytes;
+        resp.entries.append(e);
+    }
+    return resp;
+}
+
+QByteArray ProtocolManager::encodeProcessKillRequest(const ProcessKillRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.pid;
+    return data;
+}
+
+ProcessKillRequest ProtocolManager::decodeProcessKillRequest(const QByteArray& data) {
+    ProcessKillRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.pid;
+    return req;
+}
+
+QByteArray ProtocolManager::encodeProcessKillResponse(const ProcessKillResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.pid;
+    stream << resp.errorMessage;
+    return data;
+}
+
+ProcessKillResponse ProtocolManager::decodeProcessKillResponse(const QByteArray& data) {
+    ProcessKillResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.pid;
+    stream >> resp.errorMessage;
+    return resp;
+}
+
+QByteArray ProtocolManager::encodeProcessStartRequest(const ProcessStartRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.command;
+    stream << req.workingDir;
+    return data;
+}
+
+ProcessStartRequest ProtocolManager::decodeProcessStartRequest(const QByteArray& data) {
+    ProcessStartRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.command;
+    stream >> req.workingDir;
+    return req;
+}
+
+QByteArray ProtocolManager::encodeProcessStartResponse(const ProcessStartResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.pid;
+    stream << resp.errorMessage;
+    return data;
+}
+
+ProcessStartResponse ProtocolManager::decodeProcessStartResponse(const QByteArray& data) {
+    ProcessStartResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.pid;
+    stream >> resp.errorMessage;
+    return resp;
+}
+
 QByteArray ProtocolManager::encodePrivacyScreen(bool enabled) {
     QByteArray data;
     QDataStream stream(&data, QIODevice::WriteOnly);

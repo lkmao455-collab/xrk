@@ -6,6 +6,7 @@
 #include "terminal_widget.h"
 #include "chat_widget.h"
 #include "system_info_widget.h"
+#include "remote_process_widget.h"
 #include "settings_widget.h"
 #include "core/network_manager.h"
 #include <QCloseEvent>
@@ -169,6 +170,7 @@ void MainWindow::setupUI() {
     m_navButtons[PAGE_CHAT]     = createNavButton(":/icons/chat.svg",     "\u804a\u5929",     this);
     m_navButtons[PAGE_MONITOR]  = createNavButton(":/icons/monitor.svg",  "\u7cfb\u7edf\u4fe1\u606f", this);
     m_navButtons[PAGE_CLIPBOARD]= createNavButton(":/icons/clipboard.svg","\u526a\u8d34\u677f\u5386\u53f2", this);
+    m_navButtons[PAGE_PROCESS] = createNavButton(":/icons/process.svg", "\u8fdb\u7a0b", this);
 
     for (int i = 0; i < PAGE_COUNT; ++i) {
         navLayout->addWidget(m_navButtons[i]);
@@ -227,6 +229,10 @@ void MainWindow::setupUI() {
     // Page 6: Clipboard History
     m_clipboardHistoryWidget = new ClipboardHistoryWidget(m_clipboardHistory.get());
     m_contentStack->addWidget(m_clipboardHistoryWidget);
+
+    // Page 7: Remote Process Manager
+    m_processWidget = new RemoteProcessWidget();
+    m_contentStack->addWidget(m_processWidget);
 
     mainLayout->addWidget(m_contentStack, 1);
 
@@ -323,6 +329,8 @@ void MainWindow::onRemoteStarted() {
     m_cameraAction->setEnabled(true);
     m_sysInfoWidget->setRemoteController(m_remoteController.get());
     m_sysInfoWidget->setConnected(true);
+    m_processWidget->setRemoteController(m_remoteController.get());
+    m_processWidget->setConnected(true);
 
     m_fileTransferManager->setConnection(m_remoteController->connection());
     m_clipboardManager->setConnection(m_remoteController->connection());
@@ -354,6 +362,7 @@ void MainWindow::onRemoteStopped() {
         m_cameraAction->setChecked(false);
     }
     m_sysInfoWidget->setConnected(false);
+    m_processWidget->setConnected(false);
 
     // Hide sidebar and return to home when disconnected
     m_navSidebar->setVisible(false);
@@ -912,6 +921,29 @@ void MainWindow::setupConnections() {
     connect(m_remoteController.get(), &RemoteController::sysInfoReceived,
             this, [this](const SysInfo& info) {
         m_sysInfoWidget->updateInfo(info);
+    });
+
+    connect(m_remoteController.get(), &RemoteController::processListReceived,
+            this, [this](const ProcessListResponse& resp) {
+        m_processWidget->refreshList(resp);
+    });
+    connect(m_remoteController.get(), &RemoteController::processKillReceived,
+            this, [this](const ProcessKillResponse& resp) {
+        if (!resp.success) {
+            QMessageBox::warning(this, tr("结束进程"),
+                                 tr("结束进程失败: %1").arg(resp.errorMessage));
+        }
+        if (m_remoteController) m_remoteController->requestProcessList();
+    });
+    connect(m_remoteController.get(), &RemoteController::processStartReceived,
+            this, [this](const ProcessStartResponse& resp) {
+        if (!resp.success) {
+            QMessageBox::warning(this, tr("启动进程"),
+                                 tr("启动进程失败: %1").arg(resp.errorMessage));
+        } else {
+            statusBar()->showMessage(tr("已启动进程 PID %1").arg(resp.pid), 4000);
+        }
+        if (m_remoteController) m_remoteController->requestProcessList();
     });
 
     connect(m_natTraversal.get(), &NatTraversal::relayConnected,

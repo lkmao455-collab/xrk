@@ -88,6 +88,9 @@ public:
     void sendIceCandidate(const QString& callId, const QString& candidate);
     void requestFileBrowser(const QString& path);
     void requestSystemInfo();
+    void requestProcessList();
+    void requestKillProcess(qint64 pid);
+    void requestStartProcess(const QString& command, const QString& workingDir = QString());
     void startRecording(const QString& filePath = QString(), int fps = 30);
     void stopRecording();
     void setCameraMode(bool enabled);
@@ -144,6 +147,9 @@ signals:
     void recordingError(const QString& error);
     void fileBrowserReceived(const FileBrowserResponse& response);
     void sysInfoReceived(const SysInfo& info);
+    void processListReceived(const ProcessListResponse& response);
+    void processKillReceived(const ProcessKillResponse& response);
+    void processStartReceived(const ProcessStartResponse& response);
     void qualityInfoReceived(const QualityInfo& info);
     void syncNotifyReceived(const SyncNotify& note);
     void monitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);

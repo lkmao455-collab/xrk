@@ -1253,3 +1253,65 @@ TEST_F(ProtocolExtendedTest, ChatMessageThroughMessage) {
     EXPECT_EQ(decoded.sender, "Alice");
     EXPECT_EQ(decoded.content, "Hello!");
 }
+
+TEST_F(ProtocolExtendedTest, ProcessListResponseRoundTrip) {
+    ProcessListResponse resp;
+    resp.success = true;
+    resp.errorMessage = "";
+    ProcessEntry a;
+    a.pid = 1234; a.name = "notepad.exe"; a.memoryBytes = 1024 * 1024 * 12;
+    ProcessEntry b;
+    b.pid = 5678; b.name = "explorer.exe"; b.memoryBytes = 0;
+    resp.entries.append(a);
+    resp.entries.append(b);
+
+    QByteArray encoded = ProtocolManager::encodeProcessListResponse(resp);
+    EXPECT_FALSE(encoded.isEmpty());
+
+    ProcessListResponse decoded = ProtocolManager::decodeProcessListResponse(encoded);
+    EXPECT_TRUE(decoded.success);
+    ASSERT_EQ(decoded.entries.size(), 2);
+    EXPECT_EQ(decoded.entries[0].pid, 1234LL);
+    EXPECT_EQ(decoded.entries[0].name, "notepad.exe");
+    EXPECT_EQ(decoded.entries[0].memoryBytes, 1024 * 1024 * 12LL);
+    EXPECT_EQ(decoded.entries[1].pid, 5678LL);
+    EXPECT_EQ(decoded.entries[1].name, "explorer.exe");
+}
+
+TEST_F(ProtocolExtendedTest, ProcessKillStartRoundTrip) {
+    ProcessKillRequest killReq;
+    killReq.pid = 4321;
+    QByteArray kEnc = ProtocolManager::encodeProcessKillRequest(killReq);
+    ProcessKillRequest kDec = ProtocolManager::decodeProcessKillRequest(kEnc);
+    EXPECT_EQ(kDec.pid, 4321LL);
+
+    ProcessKillResponse killResp;
+    killResp.success = true; killResp.pid = 4321; killResp.errorMessage = "";
+    ProcessKillResponse kRespDec = ProtocolManager::decodeProcessKillResponse(
+        ProtocolManager::encodeProcessKillResponse(killResp));
+    EXPECT_TRUE(kRespDec.success);
+    EXPECT_EQ(kRespDec.pid, 4321LL);
+
+    ProcessStartRequest startReq;
+    startReq.command = "notepad"; startReq.workingDir = "C:/tmp";
+    QByteArray sEnc = ProtocolManager::encodeProcessStartRequest(startReq);
+    ProcessStartRequest sDec = ProtocolManager::decodeProcessStartRequest(sEnc);
+    EXPECT_EQ(sDec.command, "notepad");
+    EXPECT_EQ(sDec.workingDir, "C:/tmp");
+
+    ProcessStartResponse startResp;
+    startResp.success = true; startResp.pid = 9999; startResp.errorMessage = "";
+    ProcessStartResponse sRespDec = ProtocolManager::decodeProcessStartResponse(
+        ProtocolManager::encodeProcessStartResponse(startResp));
+    EXPECT_TRUE(sRespDec.success);
+    EXPECT_EQ(sRespDec.pid, 9999LL);
+}
+
+TEST_F(ProtocolExtendedTest, ProcessMessageTypeValues) {
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_LIST_REQ), 172u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_LIST_RESP), 173u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_KILL_REQ), 174u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_KILL_RESP), 175u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_START_REQ), 176u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_START_RESP), 177u);
+}

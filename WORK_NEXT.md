@@ -329,3 +329,17 @@ SPA 已含解密修复；仅因环境无法抓屏而无画面流。
 **数据库**: 新增 `blocked_users`、`blacklisted_ips` 表，`messages.is_pinned` 列，迁移版本 4
 **构建**: `xrk_app` +4 文件，`xrk_ui` +4 文件，UI 链接 `Qt6::Multimedia`
 **编译**: 全量编译通过，633 测试框架就绪
+
+---
+
+✅ **v1.5.0 功能增强 (2026-08-09)**: 远程进程管理器
+
+1. **远程进程列表** — `PROCESS_LIST_REQ/RESP`(172/173) + `ProcessCollector::collectProcessList()`（跨平台枚举）
+2. **结束进程** — `PROCESS_KILL_REQ/RESP`(174/175) + `ProcessCollector::killProcess()`，需 `consented` + 审计
+3. **启动进程** — `PROCESS_START_REQ/RESP`(176/177) + `ProcessCollector::startProcess()`，需 `consented` + 审计
+4. **进程管理器 UI** — `RemoteProcessWidget`（进程表格 PID/名称/内存 + 3s 轮询 + 结束/启动按钮），挂载「进程」分页
+5. **单元测试** — `test_protocol_extended.cpp` 增加进程协议 round-trip 与枚举值断言
+
+**后端**: 新增 `src/app/process_collector.{h,cpp}`（注册 `src/app/CMakeLists.txt`，WIN32 链接 `psapi.lib`）
+**UI**: 新增 `src/ui/remote_process_widget.{h,cpp}`（注册 `src/ui/CMakeLists.txt`），`MainWindow` 新增 `PAGE_PROCESS` 分页
+**安全**: 列进程仅需 `authenticated`；结束/启动强制 `consented` 门禁 + `logAuditOp`，全程不触碰 `XRK_ENABLE_SILENT` 后门

@@ -158,6 +158,18 @@ static QByteArray encodeFileData(const FileData& data);
     static QByteArray encodeSysInfo(const SysInfo& info);
     static SysInfo decodeSysInfo(const QByteArray& data);
 
+    // Remote Process Manager (v1.5.0)
+    static QByteArray encodeProcessListResponse(const ProcessListResponse& resp);
+    static ProcessListResponse decodeProcessListResponse(const QByteArray& data);
+    static QByteArray encodeProcessKillRequest(const ProcessKillRequest& req);
+    static ProcessKillRequest decodeProcessKillRequest(const QByteArray& data);
+    static QByteArray encodeProcessKillResponse(const ProcessKillResponse& resp);
+    static ProcessKillResponse decodeProcessKillResponse(const QByteArray& data);
+    static QByteArray encodeProcessStartRequest(const ProcessStartRequest& req);
+    static ProcessStartRequest decodeProcessStartRequest(const QByteArray& data);
+    static QByteArray encodeProcessStartResponse(const ProcessStartResponse& resp);
+    static ProcessStartResponse decodeProcessStartResponse(const QByteArray& data);
+
     static QByteArray encodePrivacyScreen(bool enabled);
     static bool decodePrivacyScreen(const QByteArray& data);
 

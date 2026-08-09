@@ -16,6 +16,7 @@ set(APP_SOURCES
     nat_traversal.cpp
     p2p_manager.cpp
     system_info_collector.cpp
+    process_collector.cpp
     address_book.cpp
     device_registry.cpp
     ipmsg_manager.cpp
@@ -44,6 +45,7 @@ set(APP_HEADERS
     nat_traversal.h
     p2p_manager.h
     system_info_collector.h
+    process_collector.h
     address_book.h
     device_registry.h
     ipmsg_manager.h
@@ -61,5 +63,5 @@ target_include_directories(xrk_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xrk_app PUBLIC xrk_core xrk_hw Qt6::Widgets Qt6::Sql Qt6::WebSockets)
 
 if(WIN32)
-    target_link_libraries(xrk_app PRIVATE pdh.lib advapi32.lib)
+    target_link_libraries(xrk_app PRIVATE pdh.lib advapi32.lib psapi.lib)
 endif()

@@ -795,6 +795,31 @@ void RemoteController::requestSystemInfo() {
     m_connection->send(msg);
 }
 
+void RemoteController::requestProcessList() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_LIST_REQ, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestKillProcess(qint64 pid) {
+    if (!m_active || !m_connection) return;
+    ProcessKillRequest req;
+    req.pid = pid;
+    QByteArray payload = ProtocolManager::encodeProcessKillRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_KILL_REQ, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestStartProcess(const QString& command, const QString& workingDir) {
+    if (!m_active || !m_connection) return;
+    ProcessStartRequest req;
+    req.command = command;
+    req.workingDir = workingDir;
+    QByteArray payload = ProtocolManager::encodeProcessStartRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_START_REQ, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::onMessageReceived(const QByteArray& data) {
     MessageType type;
     QByteArray payload;
@@ -899,6 +924,21 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
         case MessageType::SYSINFO_RESP: {
             SysInfo info = ProtocolManager::decodeSysInfo(payload);
             emit sysInfoReceived(info);
+            break;
+        }
+        case MessageType::PROCESS_LIST_RESP: {
+            ProcessListResponse resp = ProtocolManager::decodeProcessListResponse(payload);
+            emit processListReceived(resp);
+            break;
+        }
+        case MessageType::PROCESS_KILL_RESP: {
+            ProcessKillResponse resp = ProtocolManager::decodeProcessKillResponse(payload);
+            emit processKillReceived(resp);
+            break;
+        }
+        case MessageType::PROCESS_START_RESP: {
+            ProcessStartResponse resp = ProtocolManager::decodeProcessStartResponse(payload);
+            emit processStartReceived(resp);
             break;
         }
         case MessageType::QUALITY_INFO: {

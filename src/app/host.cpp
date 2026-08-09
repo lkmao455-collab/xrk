@@ -13,6 +13,7 @@
 #include "screen_recorder.h"
 #include "privacy_screen.h"
 #include "system_info_collector.h"
+#include "process_collector.h"
 #include "core/logger.h"
 #include <QTcpSocket>
 #include <QHostInfo>
@@ -2002,6 +2003,20 @@ case MessageType::VOICE_ACK: {
             handleSystemInfoRequest(clientId, payload);
             break;
         }
+        case MessageType::PROCESS_LIST_REQ: {
+            handleProcessListRequest(clientId, payload);
+            break;
+        }
+        case MessageType::PROCESS_KILL_REQ: {
+            if (!m_clients.value(clientId).consented) return;
+            handleProcessKillRequest(clientId, payload);
+            break;
+        }
+        case MessageType::PROCESS_START_REQ: {
+            if (!m_clients.value(clientId).consented) return;
+            handleProcessStartRequest(clientId, payload);
+            break;
+        }
         case MessageType::POWER_COMMAND: {
             if (payload.size() >= 1) {
                 PowerAction action = static_cast<PowerAction>(payload[0]);
@@ -2782,6 +2797,50 @@ void Host::handleSystemInfoRequest(const QString& clientId, const QByteArray& pa
         socket->write(msg);
         socket->flush();
     }
+}
+
+void Host::handleProcessListRequest(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(payload);
+    ProcessListResponse resp;
+    resp.entries = ProcessCollector::collectProcessList();
+    resp.success = true;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_LIST_RESP,
+                                             ProtocolManager::encodeProcessListResponse(resp));
+    sendToClient(clientId, msg);
+}
+
+void Host::handleProcessKillRequest(const QString& clientId, const QByteArray& payload) {
+    ProcessKillRequest req = ProtocolManager::decodeProcessKillRequest(payload);
+    QString err;
+    bool ok = ProcessCollector::killProcess(req.pid, err);
+    logAuditOp(clientId, "process_kill", QString::number(req.pid));
+
+    ProcessKillResponse resp;
+    resp.success = ok;
+    resp.pid = req.pid;
+    resp.errorMessage = err;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_KILL_RESP,
+                                             ProtocolManager::encodeProcessKillResponse(resp));
+    sendToClient(clientId, msg);
+}
+
+void Host::handleProcessStartRequest(const QString& clientId, const QByteArray& payload) {
+    ProcessStartRequest req = ProtocolManager::decodeProcessStartRequest(payload);
+    qint64 pidOut = 0;
+    QString err;
+    bool ok = ProcessCollector::startProcess(req.command, req.workingDir, pidOut, err);
+    logAuditOp(clientId, "process_start", req.command);
+
+    ProcessStartResponse resp;
+    resp.success = ok;
+    resp.pid = pidOut;
+    resp.errorMessage = err;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_START_RESP,
+                                             ProtocolManager::encodeProcessStartResponse(resp));
+    sendToClient(clientId, msg);
 }
 
 void Host::setEncoderType(EncoderType type) {

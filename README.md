@@ -22,6 +22,9 @@ XRK 是一款面向**局域网**环境的远程控制软件（类似向日葵 / 
 - **通话**：语音/视频通话（ICE 协商 + WebRTC 信令）。
 - **表情 & 通讯录**：Emoji 选择器、联系人名片卡。
 - **局域网扫描**：子网主动扫描 + 可配置超时。
+- **远程进程管理器（v1.5.0）**：连接被控端后查看进程列表、结束进程、启动进程；结束/启动需被控端授权并写入审计日志。
+- **安全与运维增强（v1.4.0）**：黑名单联系人、消息置顶、IP 黑名单 + 频率限制、审计日志查看器、连接质量仪表板、会话录像回放、聊天备份/恢复、快捷键管理器、自动更新、双因素认证（TOTP）、无人值守访问。
+
 
 ## 架构概览
 
@@ -96,6 +99,7 @@ export QT_QPA_PLATFORM=offscreen
 | SettingsWidget | `settings_widget.h/cpp` | 设置（5标签页: 基本/安全/视频/网络/外观） |
 | TerminalWidget | `terminal_widget.h/cpp` | 远程终端 |
 | SystemInfoWidget | `system_info_widget.h/cpp` | 系统信息 |
+| RemoteProcessWidget | `remote_process_widget.h/cpp` | 远程进程管理器（列表/结束/启动） |
 | ClipboardHistoryWidget | `clipboard_history_widget.h/cpp` | 剪贴板历史 |
 | GroupStatisticsWidget | `group_statistics_widget.h/cpp` | 群统计图表 |
 | GroupMemberManagementWidget | `group_member_management_widget.h/cpp` | 群成员管理 |

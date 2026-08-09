@@ -132,6 +132,15 @@ AUDIO_START = 140,
     FILE_BROWSER_RESP = 161,
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
+
+    // Remote Process Manager (v1.5.0)
+    PROCESS_LIST_REQ = 172,    // controller -> host: request running process list
+    PROCESS_LIST_RESP = 173,   // host -> controller: process list
+    PROCESS_KILL_REQ = 174,    // controller -> host: terminate a process (needs consent)
+    PROCESS_KILL_RESP = 175,   // host -> controller: kill result
+    PROCESS_START_REQ = 176,   // controller -> host: start a process (needs consent)
+    PROCESS_START_RESP = 177,  // host -> controller: start result
+
     PRIVACY_SCREEN = 180,
     SET_QUALITY = 181,
     INPUT_BLOCK = 182,      // silent monitoring: controller locks the controlled machine's local KB/mouse
@@ -768,6 +777,40 @@ struct EmojiReaction {
     QString userId;
     QString userName;
     qint64 timestamp = 0;
+};
+
+// ───────────── Remote Process Manager (v1.5.0) ─────────────
+struct ProcessEntry {
+    qint64 pid = 0;
+    QString name;          // executable name / command
+    qint64 memoryBytes = 0; // working set, 0 if unknown
+};
+
+struct ProcessListResponse {
+    bool success = false;
+    QString errorMessage;
+    QList<ProcessEntry> entries;
+};
+
+struct ProcessKillRequest {
+    qint64 pid = 0;
+};
+
+struct ProcessKillResponse {
+    bool success = false;
+    qint64 pid = 0;
+    QString errorMessage;
+};
+
+struct ProcessStartRequest {
+    QString command;       // command line to execute
+    QString workingDir;   // optional working directory
+};
+
+struct ProcessStartResponse {
+    bool success = false;
+    qint64 pid = 0;
+    QString errorMessage;
 };
 
 } // namespace xrk

@@ -2,6 +2,13 @@
 
 ## 版本历史
 
+### v1.5.0 — 远程进程管理器
+- **远程进程管理器**：控制端连接后可查看/结束/启动被控端进程
+  - 协议：`PROCESS_LIST_REQ/RESP`(172/173)、`PROCESS_KILL_REQ/RESP`(174/175)、`PROCESS_START_REQ/RESP`(176/177)
+  - 后端 `ProcessCollector`：跨平台进程枚举（Win `CreateToolhelp32Snapshot` / Linux `/proc` / macOS `sysctl`）、结束（`TerminateProcess`/`kill`）、启动（`QProcess::startDetached`）
+  - Host 高危操作（结束/启动）强制 `consented` 门禁 + 审计日志 `process_kill` / `process_start`
+  - UI `RemoteProcessWidget`：进程表格（PID/名称/内存）+ 3 秒轮询刷新 + 结束/启动按钮，挂载为「进程」分页
+
 ### v1.4.0 (2026-08-09) — 12项功能增强
 
 #### 新增功能
