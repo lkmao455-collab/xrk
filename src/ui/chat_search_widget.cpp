@@ -1,5 +1,7 @@
 #include "chat_search_widget.h"
 #include <QKeyEvent>
+#include <QCheckBox>
+#include <QDateTime>
 
 namespace xrk {
 
@@ -8,7 +10,7 @@ ChatSearchWidget::ChatSearchWidget(QWidget* parent)
 {
     setupUI();
     setFixedHeight(44);
-    setMinimumWidth(360);
+    setMinimumWidth(500);
     move(10, 10);
     hide();
 
@@ -84,6 +86,31 @@ void ChatSearchWidget::setupUI() {
     m_countLabel->setMinimumWidth(50);
     layout->addWidget(m_countLabel);
 
+    // Date range filter
+    m_dateFilterCheck = new QCheckBox(tr("日期"), this);
+    m_dateFilterCheck->setStyleSheet("color: #aaa; font-size: 11px; background: transparent; border: none;");
+    layout->addWidget(m_dateFilterCheck);
+
+    m_fromDate = new QDateEdit(QDate::currentDate().addDays(-30), this);
+    m_fromDate->setDisplayFormat("MM-dd");
+    m_fromDate->setCalendarPopup(true);
+    m_fromDate->setFixedWidth(70);
+    m_fromDate->setEnabled(false);
+    layout->addWidget(m_fromDate);
+
+    m_toDate = new QDateEdit(QDate::currentDate(), this);
+    m_toDate->setDisplayFormat("MM-dd");
+    m_toDate->setCalendarPopup(true);
+    m_toDate->setFixedWidth(70);
+    m_toDate->setEnabled(false);
+    layout->addWidget(m_toDate);
+
+    connect(m_dateFilterCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_fromDate->setEnabled(checked);
+        m_toDate->setEnabled(checked);
+        emit searchChanged(m_input->text());
+    });
+
     layout->addStretch();
 
     m_closeBtn = new QPushButton(tr("✕"), this);
@@ -147,6 +174,18 @@ bool ChatSearchWidget::eventFilter(QObject* obj, QEvent* event) {
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+QDateTime ChatSearchWidget::fromDate() const {
+    return QDateTime(m_fromDate->date(), QTime(0, 0, 0));
+}
+
+QDateTime ChatSearchWidget::toDate() const {
+    return QDateTime(m_toDate->date(), QTime(23, 59, 59));
+}
+
+bool ChatSearchWidget::hasDateFilter() const {
+    return m_dateFilterCheck && m_dateFilterCheck->isChecked();
 }
 
 } // namespace xrk

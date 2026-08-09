@@ -23,6 +23,14 @@ set(UI_SOURCES
     group_announcement_widget.cpp
     group_todo_widget.cpp
     group_vote_widget.cpp
+    voice_playback_widget.cpp
+    audit_log_viewer.cpp
+    recording_player.cpp
+    shortcut_manager_widget.cpp
+    totp_setup_widget.cpp
+    device_trust_widget.cpp
+    notification_center_widget.cpp
+    key_verification_dialog.cpp
 )
 
 set(UI_HEADERS
@@ -50,10 +58,18 @@ set(UI_HEADERS
     group_announcement_widget.h
     group_todo_widget.h
     group_vote_widget.h
+    voice_playback_widget.h
+    audit_log_viewer.h
+    recording_player.h
+    shortcut_manager_widget.h
+    totp_setup_widget.h
+    device_trust_widget.h
+    notification_center_widget.h
+    key_verification_dialog.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})
 
 target_include_directories(xrk_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(xrk_ui PUBLIC xrk_app Qt6::Widgets Qt6::MultimediaWidgets)
+target_link_libraries(xrk_ui PUBLIC xrk_app Qt6::Widgets Qt6::Multimedia Qt6::MultimediaWidgets)

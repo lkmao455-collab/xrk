@@ -8,6 +8,7 @@
 #include "system_info_widget.h"
 #include "settings_widget.h"
 #include "core/network_manager.h"
+#include <QCloseEvent>
 #include "core/device_discovery.h"
 #include "app/device_manager.h"
 #include "app/session_manager.h"
@@ -298,6 +299,13 @@ void MainWindow::setupStatusBar() {
     trayMenu->addSeparator();
     trayMenu->addAction(m_exitAction);
     m_trayIcon->setContextMenu(trayMenu);
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+            show();
+            raise();
+            activateWindow();
+        }
+    });
 }
 
 // ────────── Event Handlers ──────────
@@ -384,11 +392,22 @@ void MainWindow::onSettingsClicked() {
 }
 
 void MainWindow::onAboutClicked() {
-    QMessageBox::about(this, "\u5173\u4e8e XRK",
-        "XRK \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236\u8f6f\u4ef6 v1.0.0\n\n"
-        "\u4f7f\u7528\u65b9\u6cd5:\n"
-        "1. \u88ab\u63a7\u7aef: \u70b9\u51fb\"\u542f\u52a8\u670d\u52a1\"\u6309\u94ae\n"
-        "2. \u4e3b\u63a7\u7aef: \u8f93\u5165\u88ab\u63a7\u7aefIP\u5730\u5740\uff0c\u70b9\u51fb\"\u8fde\u63a5\u5230IP\"");
+    QMessageBox::about(this, tr("关于 XRK"),
+        QString("XRK 局域网远程控制软件 %1\n\n"
+        "使用方法:\n"
+        "1. 被控端: 点击\"启动服务\"按钮\n"
+        "2. 主控端: 输入被控端IP地址，点击\"连接到IP\"\n\n"
+        "功能特性:\n"
+        "• 多显示器切换与热插拔检测\n"
+        "• 文件传输与文件夹同步\n"
+        "• 文字/语音/视频/位置消息\n"
+        "• 端到端加密通信\n"
+        "• 屏幕录制与回放\n"
+        "• 远程音频转发\n"
+        "• 屏幕缩放与标注\n"
+        "• 2FA双因素认证\n"
+        "• 系统托盘最小化\n"
+        "• 自动更新").arg(XRK_VERSION));
 }
 
 void MainWindow::onMediaTestClicked() {
@@ -1074,6 +1093,16 @@ void MainWindow::createActions() {
 
     m_webConsoleAction = new QAction("\u6253\u5f00 Web \u63a7\u5236\u53f0", this);
     connect(m_webConsoleAction, &QAction::triggered, this, &MainWindow::onOpenWebConsole);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (m_trayIcon && m_trayIcon->isVisible()) {
+        hide();
+        m_trayIcon->showMessage(tr("XRK"), tr("已最小化到系统托盘"), QSystemTrayIcon::Information, 2000);
+        event->ignore();
+    } else {
+        event->accept();
+    }
 }
 
 } // namespace xrk

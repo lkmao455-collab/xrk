@@ -47,7 +47,12 @@
 #include <QMouseEvent>
 #include <QButtonGroup>
 #include <QRadioButton>
+#include <QMediaPlayer>
+#include <QVideoSink>
+#include <QVideoFrame>
+#include <QTemporaryFile>
 #include "chat_search_widget.h"
+#include "key_verification_dialog.h"
 
 namespace xrk {
 
@@ -169,6 +174,14 @@ IPMsgWidget::IPMsgWidget(IPMsgManager* manager, QWidget* parent)
     connect(m_manager, &IPMsgManager::syncFailed, this, &IPMsgWidget::onSyncFailed);
     connect(m_manager, &IPMsgManager::dataSynced, this, &IPMsgWidget::onDataSynced);
     connect(m_manager, &IPMsgManager::sameAccountDeviceFound, this, &IPMsgWidget::onSameAccountDeviceFound);
+    connect(m_manager, &IPMsgManager::encryptionReady, this, [this](const QString& deviceId) {
+        Q_UNUSED(deviceId);
+        updateE2eeStatus();
+    });
+    connect(m_manager, &IPMsgManager::sessionVerified, this, [this](const QString& deviceId) {
+        Q_UNUSED(deviceId);
+        updateE2eeStatus();
+    });
     }
     
     // Setup auto cleanup timer (daily at 3 AM)
@@ -303,6 +316,24 @@ void IPMsgWidget::setupUI() {
     m_chatTitleLabel = new QLabel(tr("选择联系人开始聊天"), this);
     m_chatTitleLabel->setStyleSheet("color: white; font-size: 17px; font-weight: 600;");
     chatHeaderLayout->addWidget(m_chatTitleLabel);
+
+    // E2EE lock indicator
+    m_e2eeLockLabel = new QLabel(this);
+    m_e2eeLockLabel->setStyleSheet("font-size: 14px; padding: 2px 6px;");
+    m_e2eeLockLabel->setToolTip(tr("端到端加密状态"));
+    m_e2eeLockLabel->setVisible(false);
+    chatHeaderLayout->addWidget(m_e2eeLockLabel);
+
+    // E2EE verify button
+    m_e2eeVerifyBtn = new QPushButton(tr("验证"), this);
+    m_e2eeVerifyBtn->setStyleSheet(
+        "QPushButton { background: transparent; color: #4a9eff; border: 1px solid #4a9eff; "
+        "border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
+        "QPushButton:hover { background: rgba(74,158,255,0.15); }");
+    m_e2eeVerifyBtn->setToolTip(tr("验证密钥指纹"));
+    m_e2eeVerifyBtn->setVisible(false);
+    connect(m_e2eeVerifyBtn, &QPushButton::clicked, this, &IPMsgWidget::onE2eeVerifyClicked);
+    chatHeaderLayout->addWidget(m_e2eeVerifyBtn);
     
     m_typingLabel = new QLabel(this);
     m_typingLabel->setStyleSheet("color: #07C160; font-size: 12px; font-style: italic;");
@@ -1052,6 +1083,130 @@ void IPMsgWidget::addImageMessage(const QString& sender, const QByteArray& image
 
     m_chatDisplay->append(html);
     scrollToBottom();
+}
+
+QImage IPMsgWidget::extractVideoThumbnail(const QByteArray& videoData) {
+    if (videoData.isEmpty()) return QImage();
+    // Write video data to a temp file, use QMediaPlayer to extract first frame
+    QTemporaryFile tmpFile(QDir::tempPath() + "/xrk_video_XXXXXX.mp4");
+    tmpFile.setAutoRemove(true);
+    if (!tmpFile.open()) return QImage();
+    tmpFile.write(videoData);
+    tmpFile.close();
+
+    // Use a QMediaPlayer in blocking-ish mode: we just want the first frame
+    QMediaPlayer player;
+    QVideoSink videoSink;
+    player.setVideoSink(&videoSink);
+
+    QEventLoop loop;
+    QImage firstFrame;
+    bool gotFrame = false;
+    connect(&videoSink, &QVideoSink::videoFrameChanged, &loop, [&](const QVideoFrame& frame) {
+        if (!gotFrame && frame.isValid()) {
+            firstFrame = frame.toImage();
+            gotFrame = true;
+            loop.quit();
+        }
+    });
+    connect(&player, &QMediaPlayer::errorOccurred, &loop, [&]() { loop.quit(); });
+
+    player.setSource(QUrl::fromLocalFile(tmpFile.fileName()));
+    player.play();
+    // Wait up to 3 seconds for first frame
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    loop.exec();
+    player.stop();
+
+    if (firstFrame.isNull()) return QImage();
+    // Scale to thumbnail size
+    return firstFrame.scaled(220, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+
+void IPMsgWidget::addVideoMessage(const QString& sender, const QByteArray& videoData, int duration, int width, int height, bool isSelf) {
+    ChatMessage cm;
+    cm.sender = sender;
+    cm.content = QString("[视频: %1秒]").arg(duration);
+    cm.isSelf = isSelf;
+    cm.isVideo = true;
+    cm.videoData = videoData;
+    cm.videoDuration = duration;
+    cm.videoWidth = width;
+    cm.videoHeight = height;
+    cm.msgTimestamp = QDateTime::currentMSecsSinceEpoch();
+    cm.messageId = QString("vid_%1_%2").arg(sender).arg(cm.msgTimestamp);
+    m_chatMessages.append(cm);
+
+    // Extract thumbnail in background
+    QImage thumbnail = extractVideoThumbnail(videoData);
+    cm.videoThumbnail = thumbnail;
+
+    QString time = QDateTime::currentDateTime().toString("HH:mm");
+    QString avatarBg = getAvatarColor(sender);
+    QString avatarLetter = getAvatarLetter(sender);
+
+    QString thumbnailHtml;
+    if (!thumbnail.isNull()) {
+        QByteArray thumbBase64;
+        QBuffer buf(&thumbBase64);
+        buf.open(QIODevice::WriteOnly);
+        thumbnail.save(&buf, "PNG");
+        buf.close();
+        thumbnailHtml = QString(
+            "<img src='data:image/png;base64,%1' style='max-width: 220px; max-height: 160px; border-radius: 6px; cursor: pointer;' />")
+            .arg(QString::fromLatin1(thumbBase64));
+    } else {
+        thumbnailHtml = QString(
+            "<div style='width: 220px; height: 120px; background: #1a1a2c; border-radius: 6px; "
+            "display: flex; align-items: center; justify-content: center; color: #8E24AA; font-size: 48px;'>▶</div>");
+    }
+
+    QString html;
+    if (isSelf) {
+        html = QString(
+            "<div style='margin: 6px 0 6px 60px; text-align: right;'>"
+            "<span style='color: #999; font-size: 10px; margin-right: 8px;'>%1</span><br>"
+            "<span style='background-color: #95EC69; color: #000; padding: 8px; "
+            "border-radius: 12px 12px 2px 12px; display: inline-block; max-width: 65%%; text-align: left; "
+            "box-shadow: 0 1px 2px rgba(0,0,0,0.1);'>"
+            "%2"
+            "<br><span style='color: #666; font-size: 11px;'>🎬 %3秒 | %4x%5</span></span>"
+            "<span style='display: inline-block; width: 36px; height: 36px; border-radius: 18px; "
+            "background-color: %6; color: white; text-align: center; line-height: 36px; "
+            "font-weight: 600; font-size: 15px; margin-left: 8px; vertical-align: bottom;'>%7</span>"
+            "</div>")
+            .arg(time, thumbnailHtml, QString::number(duration), QString::number(width),
+                 QString::number(height), avatarBg, avatarLetter);
+    } else {
+        html = QString(
+            "<div style='margin: 6px 60px 6px 0;'>"
+            "<span style='display: inline-block; width: 36px; height: 36px; border-radius: 18px; "
+            "background-color: %1; color: white; text-align: center; line-height: 36px; "
+            "font-weight: 600; font-size: 15px; margin-right: 8px; vertical-align: bottom;'>%2</span>"
+            "<span style='background-color: #FFFFFF; color: #000; padding: 8px; "
+            "border-radius: 12px 12px 12px 2px; display: inline-block; max-width: 65%%; text-align: left; "
+            "box-shadow: 0 1px 2px rgba(0,0,0,0.1);'>"
+            "%3"
+            "<br><span style='color: #666; font-size: 11px;'>🎬 %4秒 | %5x%6</span>"
+            "<br><span style='color: #999; font-size: 10px; margin-left: 44px;'>%7</span></span>"
+            "</div>")
+            .arg(avatarBg, avatarLetter, thumbnailHtml, QString::number(duration),
+                 QString::number(width), QString::number(height), time);
+    }
+
+    m_chatDisplay->append(html);
+    scrollToBottom();
+}
+
+void IPMsgWidget::updateReadReceipt(const QString& messageId, int readByCount) {
+    // Find the message in chat history and update its read receipt display
+    for (int i = m_chatMessages.size() - 1; i >= 0; --i) {
+        if (m_chatMessages[i].messageId == messageId) {
+            m_chatMessages[i].readByCount = readByCount;
+            break;
+        }
+    }
+    // The receipt display is handled per-message in addChatMessageDirect
 }
 
 void IPMsgWidget::addChatMessageDirect(const ChatMessage& cm, int msgIndex) {
@@ -2063,16 +2218,8 @@ void IPMsgWidget::onVoiceMessageReceived(const IPMsgMessage& message) {
 }
 
 void IPMsgWidget::onVideoMessageReceived(const IPMsgMessage& message) {
-    // Rich video message card
-    QString videoHtml = QString(
-        "<div style='margin: 6px 60px 6px 0; padding: 12px 16px; background: linear-gradient(135deg, #2a1a3c, #1a1a2c); "
-        "border-radius: 12px; border-left: 4px solid #8E24AA; cursor: pointer;'>"
-        "<span style='color: #8E24AA; font-weight: bold; font-size: 13px;'>🎬 视频消息</span><br>"
-        "<span style='color: #E0E0E0; font-size: 12px;'>时长: %1 秒 | 分辨率: %2x%3</span><br>"
-        "<span style='color: #888; font-size: 11px;'>点击播放</span>"
-        "</div>")
-        .arg(message.videoDuration).arg(message.videoWidth).arg(message.videoHeight);
-    m_chatDisplay->append(videoHtml);
+    addVideoMessage(message.senderName, message.videoData, message.videoDuration,
+                    message.videoWidth, message.videoHeight, false);
     updateRecentChats(message.senderId, message.senderName, "[视频消息]");
 
     if (!m_contacts[message.senderId].dnd) {
@@ -2860,6 +3007,9 @@ void IPMsgWidget::selectContact(const QString& ip) {
     addChatMessage("", tr("开始与 %1 的对话").arg(m_targetName), false, QDateTime::currentDateTime().toString("HH:mm"));
 
     m_messageInput->setFocus();
+
+    // Update E2EE status indicator
+    updateE2eeStatus();
 }
 
 void IPMsgWidget::onForwardMessage(const QString& message) {
@@ -3234,12 +3384,28 @@ void IPMsgWidget::onMessageRecalled(const QString& recallId, const QString& send
 }
 
 void IPMsgWidget::onMessageRead(const QString& messageId, const QString& readerName) {
-    Q_UNUSED(messageId);
-    QString time = QDateTime::currentDateTime().toString("HH:mm");
+    // Update the readByCount for this message
+    updateReadReceipt(messageId, m_chatMessages.isEmpty() ? 0 :
+        [&]() -> int {
+            for (const auto& msg : m_chatMessages) {
+                if (msg.messageId == messageId) return msg.readByCount;
+            }
+            return 0;
+        }() + 1);
+
+    // Find the latest readByCount for display
+    int readCount = 0;
+    for (const auto& msg : m_chatMessages) {
+        if (msg.messageId == messageId) {
+            readCount = msg.readByCount;
+            break;
+        }
+    }
+
     QString receiptHtml = QString(
         "<div style='margin: 2px 0 2px 60px; text-align: right;'>"
-        "<span style='color: #07C160; font-size: 10px;'>✓✓ %1 已读</span>"
-        "</div>").arg(readerName);
+        "<span style='color: #07C160; font-size: 10px;'>✓✓ %1 已读 · %2人已读</span>"
+        "</div>").arg(readerName).arg(readCount);
     m_chatDisplay->append(receiptHtml);
     scrollToBottom();
 }
@@ -3495,6 +3661,43 @@ void IPMsgWidget::onFileCompleted(const QString& fileName, bool integrityOk) {
 
 void IPMsgWidget::onFileResuming(const QString& fileName, qint64 offset) {
     addChatMessage("", tr("正在续传 %1").arg(fileName), false);
+}
+
+void IPMsgWidget::onE2eeVerifyClicked() {
+    if (!m_manager || m_targetIp.isEmpty()) return;
+    QString deviceId = m_contacts.value(m_targetIp).deviceId;
+    if (deviceId.isEmpty()) return;
+    QString peerName = m_contacts.value(m_targetIp).name;
+    if (peerName.isEmpty()) peerName = m_targetIp;
+
+    KeyVerificationDialog::showVerification(m_manager, deviceId, peerName, this);
+}
+
+void IPMsgWidget::updateE2eeStatus() {
+    if (!m_manager || m_targetIp.isEmpty() || !m_e2eeLockLabel || !m_e2eeVerifyBtn) return;
+    QString deviceId = m_contacts.value(m_targetIp).deviceId;
+    if (deviceId.isEmpty()) {
+        m_e2eeLockLabel->setVisible(false);
+        m_e2eeVerifyBtn->setVisible(false);
+        return;
+    }
+
+    if (m_manager->hasEstablishedSession(deviceId)) {
+        m_e2eeLockLabel->setVisible(true);
+        m_e2eeVerifyBtn->setVisible(true);
+        if (m_manager->isSessionVerified(deviceId)) {
+            m_e2eeLockLabel->setText(tr("[已验证]"));
+            m_e2eeLockLabel->setStyleSheet("font-size: 12px; padding: 2px 6px; color: #4caf50; font-weight: bold;");
+            m_e2eeLockLabel->setToolTip(tr("已验证的端到端加密"));
+        } else {
+            m_e2eeLockLabel->setText(tr("[加密]"));
+            m_e2eeLockLabel->setStyleSheet("font-size: 12px; padding: 2px 6px; color: #ff9800; font-weight: bold;");
+            m_e2eeLockLabel->setToolTip(tr("端到端加密（未验证）"));
+        }
+    } else {
+        m_e2eeLockLabel->setVisible(false);
+        m_e2eeVerifyBtn->setVisible(false);
+    }
 }
 
 void IPMsgWidget::onRefreshDevices() {

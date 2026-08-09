@@ -182,6 +182,13 @@ public:
     QString password() const;
     bool isPasswordRequired() const;
 
+    // Unattended access - persistent password that survives restarts
+    void setUnattendedAccessEnabled(bool enabled);
+    bool isUnattendedAccessEnabled() const;
+    void setUnattendedPassword(const QString& password);
+    QString unattendedPassword() const;
+    bool verifyUnattendedPassword(const QString& password) const;
+
     void setEncoderType(EncoderType type);
     EncoderType encoderType() const;
 
@@ -425,6 +432,10 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     bool m_privacyScreenEnabled = false;
     PrivacyScreen* m_localLock = nullptr;
     QStringList m_trustedIps;
+
+    // Unattended access
+    bool m_unattendedEnabled = false;
+    QString m_unattendedPasswordHash;
 
     // Host-side clipboard monitor; broadcasts local clipboard changes to all
     // authenticated clients (enables host -> controller sync).

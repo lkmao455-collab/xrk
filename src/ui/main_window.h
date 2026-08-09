@@ -83,6 +83,7 @@ private:
     void configureRelay();
     void switchToPage(int index);
     void updateNavButtons();
+    void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<NetworkManager> m_network;
     std::unique_ptr<DeviceManager> m_deviceManager;

@@ -13,6 +13,8 @@
 #include <QVector>
 #include <QScrollArea>
 #include <QPropertyAnimation>
+#include <QLineEdit>
+#include <QTextBrowser>
 #include <memory>
 #include "core/types.h"
 
@@ -43,6 +45,7 @@ signals:
     void keyEventSent(const KeyEvent& event);
     void filesDropped(const QStringList& filePaths);
     void downloadFileRequested();
+    void sessionChatMessage(const QString& message);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -112,6 +115,14 @@ private:
     QualityInfo m_currentQuality;
     qint64 m_roundTripMs = 0;
     QLabel* m_qualityLabel = nullptr;
+    QPushButton* m_statsToggleBtn = nullptr;  // toggle connection stats overlay
+    QWidget* m_statsPanel = nullptr;         // overlay panel with detailed stats
+    QLabel* m_statsFpsLabel = nullptr;
+    QLabel* m_statsBandwidthLabel = nullptr;
+    QLabel* m_statsLatencyLabel = nullptr;
+    QLabel* m_statsCodecLabel = nullptr;
+    QLabel* m_statsResolutionLabel = nullptr;
+    bool m_statsPanelVisible = false;
     QPushButton* m_privacyButton = nullptr;
     QComboBox* m_monitorCombo = nullptr;
     QComboBox* m_qualityCombo = nullptr;   // gear selector: 自动/流畅/标准/高清/游戏
@@ -166,6 +177,36 @@ private:
     QWidget* m_thumbnailPanel = nullptr;              // side panel for thumbnails
     QVBoxLayout* m_thumbnailLayout = nullptr;
     QScrollArea* m_thumbnailScrollArea = nullptr;
+
+    // Ctrl+Alt+Del button
+    QPushButton* m_ctrlAltDelButton = nullptr;
+
+    // Screen zoom (Ctrl+mouse wheel)
+    double m_zoomFactor = 1.0;
+    static constexpr double kMinZoom = 0.25;
+    static constexpr double kMaxZoom = 4.0;
+
+    // Remote audio forwarding toggle
+    QPushButton* m_audioButton = nullptr;
+    bool m_audioEnabled = false;
+    void onAudioToggled(bool checked);
+
+    // Session idle lock
+    QTimer* m_idleTimer = nullptr;
+    int m_idleTimeoutSec = 300;  // default 5 minutes
+    bool m_idleLockEnabled = false;
+    QLabel* m_idleLockOverlay = nullptr;
+    void resetIdleTimer();
+    void onIdleTimeout();
+    void setIdleLockEnabled(bool enabled, int timeoutSec = 300);
+
+    // In-session chat overlay
+    QWidget* m_chatOverlay = nullptr;
+    QTextBrowser* m_chatOverlayDisplay = nullptr;
+    QLineEdit* m_chatOverlayInput = nullptr;
+    QPushButton* m_chatOverlaySendBtn = nullptr;
+    QPushButton* m_chatOverlayToggleBtn = nullptr;
+    bool m_chatOverlayVisible = false;
     struct ThumbnailInfo {
         QLabel* label = nullptr;
         QImage currentImage;

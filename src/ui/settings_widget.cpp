@@ -7,6 +7,7 @@
 #include <QGroupBox>
 #include <QFileDialog>
 #include <QLabel>
+#include <QCoreApplication>
 
 namespace xrk {
 
@@ -220,6 +221,31 @@ void SettingsWidget::setupUI() {
     }
     generalLayout->addRow(tr("语言:"), m_languageCombo);
 
+    m_startWithWindowsCheckBox = new QCheckBox(tr("开机自启动"), generalTab);
+    generalLayout->addRow("", m_startWithWindowsCheckBox);
+
+    // Read current registry state
+    QSettings autoStart("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                       QSettings::NativeFormat);
+    QString appName = QCoreApplication::applicationName();
+    m_startWithWindowsCheckBox->setChecked(autoStart.contains(appName));
+
+    // Connect to actually write registry when toggled
+    connect(m_startWithWindowsCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        QSettings autoStart("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                           QSettings::NativeFormat);
+        QString appName = QCoreApplication::applicationName();
+        if (checked) {
+            autoStart.setValue(appName, QCoreApplication::applicationFilePath().replace('/', '\\'));
+        } else {
+            autoStart.remove(appName);
+        }
+    });
+
+    m_minimizeToTrayCheckBox = new QCheckBox(tr("关闭时最小化到托盘"), generalTab);
+    m_minimizeToTrayCheckBox->setChecked(true);
+    generalLayout->addRow("", m_minimizeToTrayCheckBox);
+
     m_tabWidget->addTab(generalTab, tr("基本"));
 
     // ==================== Tab 2: Security ====================
@@ -236,6 +262,18 @@ void SettingsWidget::setupUI() {
 
     m_autoGrantConsentCheckBox = new QCheckBox(tr("自动允许受信任连接 (无需确认)"), securityTab);
     securityLayout->addRow("", m_autoGrantConsentCheckBox);
+
+    // Password strength indicator
+    m_passwordStrengthBar = new QProgressBar(securityTab);
+    m_passwordStrengthBar->setRange(0, 100);
+    m_passwordStrengthBar->setValue(0);
+    m_passwordStrengthBar->setFormat(tr("密码强度: %p%"));
+    m_passwordStrengthBar->setFixedHeight(20);
+    securityLayout->addRow(tr("访问密码强度:"), m_passwordStrengthBar);
+
+    m_notificationSoundCheckBox = new QCheckBox(tr("启用消息通知音"), securityTab);
+    m_notificationSoundCheckBox->setChecked(true);
+    securityLayout->addRow("", m_notificationSoundCheckBox);
 
     securityLayout->addRow(new QLabel("", securityTab));
 
@@ -373,6 +411,18 @@ void SettingsWidget::setupUI() {
     buttonLayout->addWidget(m_cancelButton);
 
     mainLayout->addLayout(buttonLayout);
+}
+
+bool SettingsWidget::startWithWindows() const {
+    return m_startWithWindowsCheckBox && m_startWithWindowsCheckBox->isChecked();
+}
+
+bool SettingsWidget::minimizeToTray() const {
+    return m_minimizeToTrayCheckBox && m_minimizeToTrayCheckBox->isChecked();
+}
+
+bool SettingsWidget::notificationSoundEnabled() const {
+    return m_notificationSoundCheckBox && m_notificationSoundCheckBox->isChecked();
 }
 
 } // namespace xrk

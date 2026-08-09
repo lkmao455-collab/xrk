@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(XRK VERSION 1.0.0 LANGUAGES CXX)
+project(XRK VERSION 1.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+
+# Pass version to source code
+add_compile_definitions(XRK_VERSION="${PROJECT_VERSION}")
 
 # Universal binary option (macOS only)
 option(XRK_BUILD_UNIVERSAL "Build universal binary (arm64 + x86_64) on macOS" OFF)

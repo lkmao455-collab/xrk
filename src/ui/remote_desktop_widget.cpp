@@ -45,6 +45,42 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     m_qualityLabel->setText("\u753b\u8d28: \u81ea\u52a8");
     m_qualityLabel->adjustSize();
 
+    // Connection quality stats toggle button
+    m_statsToggleBtn = new QPushButton(QString::fromUtf8("\u2139"), this);
+    m_statsToggleBtn->setFixedSize(28, 28);
+    m_statsToggleBtn->setToolTip(tr("连接质量统计"));
+    m_statsToggleBtn->setCheckable(true);
+    connect(m_statsToggleBtn, &QPushButton::toggled, this, [this](bool checked) {
+        m_statsPanelVisible = checked;
+        if (m_statsPanel) m_statsPanel->setVisible(checked);
+    });
+
+    // Stats overlay panel
+    m_statsPanel = new QWidget(this);
+    m_statsPanel->setObjectName("stats-panel");
+    m_statsPanel->setFixedSize(220, 140);
+    m_statsPanel->setVisible(false);
+    auto* statsLayout = new QVBoxLayout(m_statsPanel);
+    statsLayout->setContentsMargins(10, 8, 10, 8);
+    statsLayout->setSpacing(4);
+
+    auto makeStatLabel = [this](const QString& text) -> QLabel* {
+        auto* lbl = new QLabel(text, m_statsPanel);
+        lbl->setStyleSheet("color: #ddd; font-size: 12px; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 2px 6px;");
+        return lbl;
+    };
+    m_statsFpsLabel = makeStatLabel("FPS: -");
+    m_statsBandwidthLabel = makeStatLabel("带宽: -");
+    m_statsLatencyLabel = makeStatLabel("延迟: -");
+    m_statsCodecLabel = makeStatLabel("编码: JPEG");
+    m_statsResolutionLabel = makeStatLabel("分辨率: -");
+    statsLayout->addWidget(m_statsFpsLabel);
+    statsLayout->addWidget(m_statsBandwidthLabel);
+    statsLayout->addWidget(m_statsLatencyLabel);
+    statsLayout->addWidget(m_statsCodecLabel);
+    statsLayout->addWidget(m_statsResolutionLabel);
+    m_statsPanel->setStyleSheet("#stats-panel { background: rgba(0,0,0,0.75); border-radius: 6px; }");
+
     m_privacyButton = new QPushButton(tr("隐私屏"), this);
     m_privacyButton->setCheckable(true);
     m_privacyButton->setObjectName("privacy-button");
@@ -283,9 +319,49 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
         m_toolbarLayout->addWidget(m_annotateClearButton);
         m_toolbarLayout->addWidget(m_watermarkButton);
         m_toolbarLayout->addWidget(m_micButton);
+
+        // Remote audio forwarding toggle
+        m_audioButton = new QPushButton(tr("喇叭"), m_toolbar);
+        m_audioButton->setToolTip(tr("远程音频转发"));
+        m_audioButton->setCheckable(true);
+        m_audioButton->setObjectName("audio-button");
+        m_audioButton->adjustSize();
+        connect(m_audioButton, &QPushButton::toggled, this, &RemoteDesktopWidget::onAudioToggled);
+        m_toolbarLayout->addWidget(m_audioButton);
+
         m_toolbarLayout->addWidget(m_privacyButton);
         m_toolbarLayout->addWidget(m_takeoverButton);
         m_toolbarLayout->addWidget(m_blockInputButton);
+
+        // Ctrl+Alt+Del button
+        m_ctrlAltDelButton = new QPushButton("Ctrl+Alt+Del", m_toolbar);
+        m_ctrlAltDelButton->setToolTip(tr("发送 Ctrl+Alt+Del"));
+        m_ctrlAltDelButton->setObjectName("ctrlaltdel-button");
+        m_ctrlAltDelButton->adjustSize();
+        connect(m_ctrlAltDelButton, &QPushButton::clicked, this, [this]() {
+            if (!m_controller || !m_active) return;
+            // Send Ctrl+Alt+Del: press all three keys in sequence, then release
+            // VK_CONTROL=0x11, VK_MENU=0x12 (Alt), VK_DELETE=0x2E
+            sendKeyEventToRemote(0x11, true, 0, QString());  // Ctrl down
+            sendKeyEventToRemote(0x12, true, 0x11, QString());  // Alt down
+            sendKeyEventToRemote(0x2E, true, 0x13, QString());  // Delete down
+            sendKeyEventToRemote(0x2E, false, 0x13, QString()); // Delete up
+            sendKeyEventToRemote(0x12, false, 0x11, QString()); // Alt up
+            sendKeyEventToRemote(0x11, false, 0, QString());    // Ctrl up
+        });
+        m_toolbarLayout->addWidget(m_ctrlAltDelButton);
+
+        // In-session chat toggle
+        m_chatOverlayToggleBtn = new QPushButton(tr("聊天"), m_toolbar);
+        m_chatOverlayToggleBtn->setToolTip(tr("会话聊天"));
+        m_chatOverlayToggleBtn->setCheckable(true);
+        m_chatOverlayToggleBtn->adjustSize();
+        connect(m_chatOverlayToggleBtn, &QPushButton::toggled, this, [this](bool checked) {
+            m_chatOverlayVisible = checked;
+            if (m_chatOverlay) m_chatOverlay->setVisible(checked);
+        });
+        m_toolbarLayout->addWidget(m_chatOverlayToggleBtn);
+
         m_toolbarLayout->addStretch(1);
     }
 
@@ -295,10 +371,11 @@ RemoteDesktopWidget::RemoteDesktopWidget(RemoteController* controller, QWidget* 
     // the host keeps working after toggling any toolbar action.
     for (QPushButton* b : {m_annotateButton, m_annotateColorButton,
                             m_annotateClearButton, m_watermarkButton,
-                            m_micButton, m_privacyButton,
+                            m_micButton, m_audioButton, m_privacyButton,
                             m_takeoverButton, m_blockInputButton,
                             m_autoSwitchStartButton, m_autoSwitchStopButton,
-                            m_autoSwitchPauseButton, m_thumbnailToggleButton}) {
+                            m_autoSwitchPauseButton, m_thumbnailToggleButton,
+                            m_ctrlAltDelButton, m_chatOverlayToggleBtn}) {
         if (b) b->setFocusPolicy(Qt::NoFocus);
     }
     // The gear selector and spin box must also not steal keyboard focus
@@ -335,6 +412,8 @@ void RemoteDesktopWidget::stopRemote() {
     m_currentFrame = QImage();
     m_fpsTimer->stop();
     m_frameRequestTimer->stop();
+    if (m_idleTimer) m_idleTimer->stop();
+    if (m_idleLockOverlay) m_idleLockOverlay->hide();
     if (m_monitorCombo) m_monitorCombo->hide();
     // Clear annotation state so a new session starts clean.
     m_strokes.clear();
@@ -386,12 +465,15 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
         return;
     }
 
-    QImage scaled = m_currentFrame.scaled(display.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage scaled = m_currentFrame.scaled(
+        static_cast<int>(display.width() * m_zoomFactor),
+        static_cast<int>(display.height() * m_zoomFactor),
+        Qt::KeepAspectRatio, Qt::SmoothTransformation);
     QRect targetRect(display.x() + (display.width() - scaled.width()) / 2,
                      display.y() + (display.height() - scaled.height()) / 2,
                      scaled.width(), scaled.height());
     m_frameTargetRect = targetRect;
-    
+
     // Apply fade-in opacity during transition
     if (m_switchFadeOpacity > 0.0 && m_switchFadeOpacity < 1.0) {
         painter.setOpacity(m_switchFadeOpacity);
@@ -453,6 +535,18 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
         m_qualityLabel->move(width() - m_qualityLabel->width() - 8, top + 8);
         m_qualityLabel->raise();
     }
+    if (m_statsToggleBtn) {
+        m_statsToggleBtn->move(width() - 36, top + 8);
+        m_statsToggleBtn->raise();
+    }
+    if (m_statsPanel) {
+        m_statsPanel->move(width() - 228, top + 40);
+        m_statsPanel->raise();
+    }
+    if (m_chatOverlay) {
+        m_chatOverlay->move(width() - 290, height() - 220);
+        m_chatOverlay->raise();
+    }
 
     if (m_consentLabel && m_consentLabel->isVisible()) {
         m_consentLabel->adjustSize();
@@ -463,6 +557,7 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
 }
 
 void RemoteDesktopWidget::mouseMoveEvent(QMouseEvent* event) {
+    resetIdleTimer();
     if (!m_active) return;
 
     // Toolbar auto-show in fullscreen: show when mouse near top
@@ -492,6 +587,7 @@ void RemoteDesktopWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void RemoteDesktopWidget::mousePressEvent(QMouseEvent* event) {
+    resetIdleTimer();
     if (!m_active) return;
 
     // Phase 4: begin a local annotation stroke.
@@ -540,12 +636,29 @@ void RemoteDesktopWidget::mouseReleaseEvent(QMouseEvent* event) {
 void RemoteDesktopWidget::wheelEvent(QWheelEvent* event) {
     if (!m_active) return;
     
+    // Ctrl+mouse wheel = zoom in/out
+    if (event->modifiers() & Qt::ControlModifier) {
+        int delta = event->angleDelta().y();
+        double oldZoom = m_zoomFactor;
+        if (delta > 0) {
+            m_zoomFactor = qMin(m_zoomFactor * 1.15, kMaxZoom);
+        } else {
+            m_zoomFactor = qMax(m_zoomFactor / 1.15, kMinZoom);
+        }
+        if (qAbs(m_zoomFactor - oldZoom) > 0.001) {
+            update();
+        }
+        event->accept();
+        return;
+    }
+    
     int delta = event->angleDelta().y();
     QPoint pos = mapToRemote(event->position().toPoint());
     sendMouseEventToRemote(MouseAction::SCROLL, MouseButton::LEFT, pos.x(), pos.y(), delta);
 }
 
 void RemoteDesktopWidget::keyPressEvent(QKeyEvent* event) {
+    resetIdleTimer();
     if (!m_active) return;
     // Use nativeVirtualKey() which gives the platform VK code (Windows VK_*, Linux KeySym, macOS CGKeyCode).
     // nativeScanCode() gives hardware scan codes which are NOT virtual key codes
@@ -700,6 +813,14 @@ void RemoteDesktopWidget::updateQualityLabel() {
             .arg(info.captureFps)
             .arg(rttText));
     m_qualityLabel->adjustSize();
+
+    // Update stats panel
+    if (m_statsFpsLabel) m_statsFpsLabel->setText(QString("FPS: %1").arg(info.captureFps));
+    if (m_statsBandwidthLabel) m_statsBandwidthLabel->setText(QString("带宽: %1").arg(bwText));
+    if (m_statsLatencyLabel) m_statsLatencyLabel->setText(QString("延迟: %1ms").arg(m_roundTripMs > 0 ? m_roundTripMs : -1));
+    if (m_statsCodecLabel) m_statsCodecLabel->setText(QString("编码: %1").arg(m_h264Decoder ? "H.264" : "JPEG"));
+    if (m_statsResolutionLabel) m_statsResolutionLabel->setText(
+        QString("分辨率: %1x%2").arg(m_currentFrame.width()).arg(m_currentFrame.height()));
 }
 
 void RemoteDesktopWidget::onPrivacyScreenClicked() {
@@ -1001,6 +1122,54 @@ void RemoteDesktopWidget::onMicToggled(bool checked) {
     LOG_INFO("Microphone " + QString(checked ? "enabled" : "disabled") + " by controller");
 }
 
+void RemoteDesktopWidget::onAudioToggled(bool checked) {
+    if (!m_controller) return;
+    m_audioEnabled = checked;
+    m_controller->setAudioEnabled(checked);
+    LOG_INFO("Remote audio " + QString(checked ? "enabled" : "disabled") + " by controller");
+}
+
+void RemoteDesktopWidget::resetIdleTimer() {
+    if (m_idleLockEnabled && m_idleTimer && m_active) {
+        m_idleTimer->start(m_idleTimeoutSec * 1000);
+        // Hide lock overlay if visible
+        if (m_idleLockOverlay && m_idleLockOverlay->isVisible()) {
+            m_idleLockOverlay->hide();
+            update();
+        }
+    }
+}
+
+void RemoteDesktopWidget::onIdleTimeout() {
+    if (!m_idleLockEnabled || !m_active) return;
+    LOG_INFO("Session idle timeout reached, locking input");
+
+    // Show lock overlay
+    if (!m_idleLockOverlay) {
+        m_idleLockOverlay = new QLabel(this);
+        m_idleLockOverlay->setObjectName("idle-lock-overlay");
+        m_idleLockOverlay->setStyleSheet(
+            "QLabel { background-color: rgba(0, 0, 0, 180); color: white; "
+            "font-size: 18px; font-weight: bold; border-radius: 8px; "
+            "padding: 20px; }");
+        m_idleLockOverlay->setAlignment(Qt::AlignCenter);
+    }
+    m_idleLockOverlay->setText(tr("会话已锁定\n移动鼠标或按键解锁"));
+    m_idleLockOverlay->setGeometry(rect());
+    m_idleLockOverlay->show();
+    m_idleLockOverlay->raise();
+}
+
+void RemoteDesktopWidget::setIdleLockEnabled(bool enabled, int timeoutSec) {
+    m_idleLockEnabled = enabled;
+    m_idleTimeoutSec = timeoutSec > 0 ? timeoutSec : 300;
+    if (enabled && m_active) {
+        m_idleTimer->start(m_idleTimeoutSec * 1000);
+    } else if (m_idleTimer) {
+        m_idleTimer->stop();
+    }
+}
+
 void RemoteDesktopWidget::onConsentRequested() {
     if (!m_consentLabel) return;
     m_consentLabel->setText(tr("等待主机授权..."));
@@ -1070,6 +1239,37 @@ void RemoteDesktopWidget::setupUI() {
 
     mainLayout->addWidget(m_thumbnailPanel, 0);
 
+    // In-session chat overlay (floating, bottom-right)
+    m_chatOverlay = new QWidget(this);
+    m_chatOverlay->setObjectName("chat-overlay");
+    m_chatOverlay->setFixedSize(280, 200);
+    m_chatOverlay->hide();
+    auto* chatLayout = new QVBoxLayout(m_chatOverlay);
+    chatLayout->setContentsMargins(6, 6, 6, 6);
+    chatLayout->setSpacing(4);
+    m_chatOverlayDisplay = new QTextBrowser(m_chatOverlay);
+    m_chatOverlayDisplay->setReadOnly(true);
+    m_chatOverlayDisplay->setStyleSheet("background: rgba(30,30,30,0.85); color: #ddd; border: 1px solid #555; border-radius: 4px; font-size: 12px;");
+    chatLayout->addWidget(m_chatOverlayDisplay, 1);
+    auto* chatInputLayout = new QHBoxLayout();
+    m_chatOverlayInput = new QLineEdit(m_chatOverlay);
+    m_chatOverlayInput->setPlaceholderText(tr("发送消息..."));
+    m_chatOverlayInput->setStyleSheet("background: #3a3a3a; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 3px 6px; font-size: 12px;");
+    chatInputLayout->addWidget(m_chatOverlayInput, 1);
+    m_chatOverlaySendBtn = new QPushButton(tr("发送"), m_chatOverlay);
+    m_chatOverlaySendBtn->setFixedSize(40, 24);
+    m_chatOverlaySendBtn->setStyleSheet("background: #4a9eff; color: white; border: none; border-radius: 4px; font-size: 11px;");
+    connect(m_chatOverlaySendBtn, &QPushButton::clicked, this, [this]() {
+        if (m_chatOverlayInput->text().isEmpty()) return;
+        emit sessionChatMessage(m_chatOverlayInput->text());
+        m_chatOverlayDisplay->append("<b>我:</b> " + m_chatOverlayInput->text());
+        m_chatOverlayInput->clear();
+    });
+    connect(m_chatOverlayInput, &QLineEdit::returnPressed, m_chatOverlaySendBtn, &QPushButton::click);
+    chatInputLayout->addWidget(m_chatOverlaySendBtn);
+    chatLayout->addLayout(chatInputLayout);
+    m_chatOverlay->setStyleSheet("#chat-overlay { background: rgba(40,40,40,0.9); border: 1px solid #555; border-radius: 6px; }");
+
     // Thumbnail update timer (1 second)
     m_thumbnailTimer = new QTimer(this);
     m_thumbnailTimer->setInterval(1000);
@@ -1089,6 +1289,11 @@ void RemoteDesktopWidget::setupUI() {
     m_toolbarHideAnim = new QPropertyAnimation(m_toolbar, "maximumHeight", this);
     m_toolbarHideAnim->setDuration(200);
     m_toolbarHideAnim->setEasingCurve(QEasingCurve::InCubic);
+
+    // Idle lock timer
+    m_idleTimer = new QTimer(this);
+    m_idleTimer->setSingleShot(true);
+    connect(m_idleTimer, &QTimer::timeout, this, &RemoteDesktopWidget::onIdleTimeout);
 
     // Apply dark theme
     applyDarkTheme();
@@ -1151,16 +1356,24 @@ QPoint RemoteDesktopWidget::mapToRemote(const QPoint& localPos) {
     QSize widgetSize(width(), height() - top);
     QSize frameSize = m_currentFrame.size();
     
-    double scaleX = static_cast<double>(frameSize.width()) / widgetSize.width();
-    double scaleY = static_cast<double>(frameSize.height()) / widgetSize.height();
-    double scale = qMax(scaleX, scaleY);
+    // Compute the actual scaled size accounting for zoom
+    int scaledW = static_cast<int>(widgetSize.width() * m_zoomFactor);
+    int scaledH = static_cast<int>(widgetSize.height() * m_zoomFactor);
+    double aspectRatio = static_cast<double>(frameSize.width()) / frameSize.height();
+    int drawW, drawH;
+    if (static_cast<double>(scaledW) / scaledH > aspectRatio) {
+        drawH = scaledH;
+        drawW = static_cast<int>(drawH * aspectRatio);
+    } else {
+        drawW = scaledW;
+        drawH = static_cast<int>(drawW / aspectRatio);
+    }
+
+    int offsetX = (widgetSize.width() - drawW) / 2;
+    int offsetY = (widgetSize.height() - drawH) / 2;
     
-    QSize scaledSize(frameSize.width() / scale, frameSize.height() / scale);
-    int offsetX = (widgetSize.width() - scaledSize.width()) / 2;
-    int offsetY = (widgetSize.height() - scaledSize.height()) / 2;
-    
-    int remoteX = static_cast<int>((localPos.x() - offsetX) * scale);
-    int remoteY = static_cast<int>((localPos.y() - top - offsetY) * scale);
+    int remoteX = static_cast<int>((localPos.x() - offsetX) * static_cast<double>(frameSize.width()) / drawW);
+    int remoteY = static_cast<int>((localPos.y() - top - offsetY) * static_cast<double>(frameSize.height()) / drawH);
     
     remoteX = qBound(0, remoteX, frameSize.width() - 1);
     remoteY = qBound(0, remoteY, frameSize.height() - 1);

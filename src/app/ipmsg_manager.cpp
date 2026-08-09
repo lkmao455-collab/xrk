@@ -96,6 +96,9 @@ bool IPMsgManager::start(quint16 port) {
     // Load friends from database
     m_friends = m_database->loadFriends();
 
+    // Load blocked users from database
+    m_blockedUsers = m_database->loadBlockedUsers();
+
     // Load groups from database
     QList<IPMsgGroup> groups = m_database->loadAllGroups();
     for (const IPMsgGroup& group : groups) {
@@ -2631,6 +2634,60 @@ bool IPMsgManager::hasEstablishedSession(const QString& deviceId) const {
     return m_e2eeSessions.contains(deviceId) && !m_e2eeSessions[deviceId].sharedSecret.isEmpty();
 }
 
+QByteArray IPMsgManager::computeFingerprint(const QByteArray& sharedSecret) const {
+    // Double SHA-256 for fingerprint (similar to Bitcoin address generation)
+    QByteArray first = QCryptographicHash::hash(sharedSecret, QCryptographicHash::Sha256);
+    return QCryptographicHash::hash(first, QCryptographicHash::Sha256);
+}
+
+QString IPMsgManager::fingerprintToDisplay(const QByteArray& fingerprint) const {
+    // Format as 8 groups of 4 hex digits for easy verbal comparison
+    // Example: "A3F2 8B1C D4E5 9A76 2F3C 8D1E 5A4B 7C9D"
+    QString hex = fingerprint.toHex().toUpper();
+    QStringList groups;
+    for (int i = 0; i < hex.size() && i < 64; i += 4) {
+        groups.append(hex.mid(i, 4));
+    }
+    return groups.join(" ");
+}
+
+QByteArray IPMsgManager::getLocalFingerprint(const QString& deviceId) const {
+    if (!m_e2eeSessions.contains(deviceId)) return QByteArray();
+    const E2EESession& session = m_e2eeSessions[deviceId];
+    if (session.sharedSecret.isEmpty()) return QByteArray();
+    return computeFingerprint(session.sharedSecret);
+}
+
+QByteArray IPMsgManager::getPeerFingerprint(const QString& deviceId) const {
+    // Both peers derive the same shared secret, so the fingerprint is identical
+    return getLocalFingerprint(deviceId);
+}
+
+QString IPMsgManager::getFingerprintDisplay(const QString& deviceId) const {
+    QByteArray fp = getLocalFingerprint(deviceId);
+    if (fp.isEmpty()) return QString();
+    return fingerprintToDisplay(fp);
+}
+
+bool IPMsgManager::isSessionVerified(const QString& deviceId) const {
+    if (!m_e2eeSessions.contains(deviceId)) return false;
+    return m_e2eeSessions[deviceId].isVerified;
+}
+
+void IPMsgManager::verifySession(const QString& deviceId) {
+    if (!m_e2eeSessions.contains(deviceId)) return;
+    m_e2eeSessions[deviceId].isVerified = true;
+    LOG_INFO("E2EE session with " + deviceId + " verified by user");
+    emit sessionVerified(deviceId);
+}
+
+void IPMsgManager::unverifySession(const QString& deviceId) {
+    if (!m_e2eeSessions.contains(deviceId)) return;
+    m_e2eeSessions[deviceId].isVerified = false;
+    LOG_INFO("E2EE session with " + deviceId + " unverified by user");
+    emit sessionUnverified(deviceId);
+}
+
 // ────────── Private Methods ──────────
 
 void IPMsgManager::processUdpMessage(const QByteArray& data, const QHostAddress& sender) {
@@ -2697,8 +2754,11 @@ void IPMsgManager::processTcpCommand(const QByteArray& data, QTcpSocket* socket)
     QString command = json["command"].toString();
 
     if (command == QString::fromUtf8(IPMSG_MSG)) {
+        QString senderId = json["id"].toString();
+        if (isBlocked(senderId)) return; // silently drop messages from blocked users
+
         IPMsgMessage msg;
-        msg.senderId = json["id"].toString();
+        msg.senderId = senderId;
         msg.senderName = json["name"].toString();
         msg.senderIp = socket->peerAddress().toString();
         msg.content = json["message"].toString();
@@ -3991,6 +4051,53 @@ void IPMsgManager::handleResumeRequest(const QString& fileId, qint64 offset, QTc
     QJsonDocument doc(json);
     socket->write(doc.toJson());
     socket->flush();
+}
+
+// --- Block Contacts ---
+
+void IPMsgManager::blockUser(const QString& deviceId, const QString& reason) {
+    if (!m_blockedUsers.contains(deviceId)) {
+        m_blockedUsers.append(deviceId);
+    }
+    if (m_database) {
+        m_database->blockUser(deviceId, reason);
+    }
+}
+
+void IPMsgManager::unblockUser(const QString& deviceId) {
+    m_blockedUsers.removeOne(deviceId);
+    if (m_database) {
+        m_database->unblockUser(deviceId);
+    }
+}
+
+bool IPMsgManager::isBlocked(const QString& deviceId) const {
+    return m_blockedUsers.contains(deviceId);
+}
+
+QList<QString> IPMsgManager::getBlockedUsers() const {
+    return m_blockedUsers;
+}
+
+// --- Message Pinning ---
+
+void IPMsgManager::pinMessage(const QString& messageId) {
+    if (m_database) {
+        m_database->pinMessage(messageId);
+    }
+}
+
+void IPMsgManager::unpinMessage(const QString& messageId) {
+    if (m_database) {
+        m_database->unpinMessage(messageId);
+    }
+}
+
+bool IPMsgManager::isMessagePinned(const QString& messageId) const {
+    if (m_database) {
+        return m_database->isMessagePinned(messageId);
+    }
+    return false;
 }
 
 } // namespace xrk

@@ -53,11 +53,37 @@ public:
     QList<IPMsgDevice> loadAllDevices();
     bool removeDevice(const QString& deviceId);
 
+    // Device notes
+    bool saveDeviceNote(const QString& deviceId, const QString& note);
+    QString loadDeviceNote(const QString& deviceId) const;
+
     // Friends
     bool addFriend(const QString& deviceId);
     bool removeFriend(const QString& deviceId);
     QList<QString> loadFriends();
     bool isFriend(const QString& deviceId) const;
+
+    // Blocked users
+    bool blockUser(const QString& deviceId, const QString& reason = QString());
+    bool unblockUser(const QString& deviceId);
+    bool isBlocked(const QString& deviceId) const;
+    QList<QString> loadBlockedUsers();
+
+    // Message pinning
+    bool pinMessage(const QString& messageId);
+    bool unpinMessage(const QString& messageId);
+    bool isMessagePinned(const QString& messageId) const;
+    QList<IPMsgMessage> loadPinnedMessages(const QString& targetId, bool isGroup = false);
+
+    // Chat backup/restore
+    bool exportDatabase(const QString& filePath);
+    bool importDatabase(const QString& filePath);
+
+    // IP blacklist
+    bool addBlacklistedIp(const QString& ip, const QString& reason = QString());
+    bool removeBlacklistedIp(const QString& ip);
+    bool isIpBlacklisted(const QString& ip) const;
+    QList<QPair<QString, QString>> loadBlacklistedIps(); // ip, reason
 
     // Groups
     bool saveGroup(const IPMsgGroup& group);

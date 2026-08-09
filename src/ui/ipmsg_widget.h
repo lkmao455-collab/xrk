@@ -111,6 +111,7 @@ private slots:
     void onStatsToggled(bool checked);
     void onMemberManagementToggled(bool checked);
     void onTransferToggled(bool checked);
+    void onE2eeVerifyClicked();
 
 private:
     // In-memory chat message storage
@@ -125,6 +126,14 @@ private:
         QString fileName;
         bool isImage = false;
         QByteArray imageData;
+        bool isVideo = false;
+        QByteArray videoData;
+        int videoDuration = 0;
+        int videoWidth = 0;
+        int videoHeight = 0;
+        QImage videoThumbnail;  // extracted first frame for preview
+        int readByCount = 0;    // number of people who read this message
+        QString messageId;      // unique ID for read receipt tracking
         qint64 msgTimestamp = 0; // epoch ms
     };
     QList<ChatMessage> m_chatMessages;
@@ -133,6 +142,9 @@ private:
     void addChatMessage(const QString& sender, const QString& message, bool isSelf, const QString& timestamp = "", const QString& replyTo = "", const QString& replyContent = "");
     void addFileMessage(const QString& sender, const QString& fileName, qint64 fileSize, bool isSelf);
     void addImageMessage(const QString& sender, const QByteArray& imageData, const QString& fileName, bool isSelf);
+    void addVideoMessage(const QString& sender, const QByteArray& videoData, int duration, int width, int height, bool isSelf);
+    void updateReadReceipt(const QString& messageId, int readByCount);
+    QImage extractVideoThumbnail(const QByteArray& videoData);
     void updateContactList();
     void selectContact(const QString& ip);
     QString getAvatarColor(const QString& name) const;
@@ -180,6 +192,11 @@ protected:
     QPushButton* m_exportChatBtn = nullptr;
     QPushButton* m_multiSelectBtn = nullptr;
     QPushButton* m_syncBtn = nullptr;
+
+    // E2EE lock indicator & verify button
+    QLabel* m_e2eeLockLabel = nullptr;
+    QPushButton* m_e2eeVerifyBtn = nullptr;
+    void updateE2eeStatus();
 
     // Status
     QLabel* m_statusLabel = nullptr;

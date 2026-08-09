@@ -519,6 +519,30 @@ bool DatabaseManager::createTables() {
         return false;
     }
 
+    // Blocked users table
+    if (!query.exec(R"(
+        CREATE TABLE IF NOT EXISTS blocked_users (
+            device_id TEXT PRIMARY KEY,
+            reason TEXT,
+            blocked_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    )")) {
+        emit databaseError(tr("创建blocked_users表失败: %1").arg(query.lastError().text()));
+        return false;
+    }
+
+    // Blacklisted IPs table
+    if (!query.exec(R"(
+        CREATE TABLE IF NOT EXISTS blacklisted_ips (
+            ip TEXT PRIMARY KEY,
+            reason TEXT,
+            blocked_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    )")) {
+        emit databaseError(tr("创建blacklisted_ips表失败: %1").arg(query.lastError().text()));
+        return false;
+    }
+
     return true;
 }
 
@@ -532,7 +556,7 @@ void DatabaseManager::runMigrations() {
         currentVersion = query.value(0).toInt();
     }
 
-    const int LATEST_VERSION = 3;
+    const int LATEST_VERSION = 4;
     if (currentVersion < 1) {
         // Version 1: Initial schema (already created above)
         query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (1);");
@@ -567,6 +591,14 @@ void DatabaseManager::runMigrations() {
         transferQuery.exec("ALTER TABLE file_transfers ADD COLUMN session_id TEXT");
         transferQuery.exec("CREATE INDEX IF NOT EXISTS idx_file_transfers_status ON file_transfers(status, target_id)");
         query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (3);");
+    }
+    if (currentVersion < 4) {
+        // Version 4: Add pinned column to messages, blocked_users, blacklisted_ips tables
+        QSqlQuery migQuery(m_db);
+        migQuery.exec("ALTER TABLE messages ADD COLUMN is_pinned INTEGER DEFAULT 0");
+        migQuery.exec("CREATE TABLE IF NOT EXISTS blocked_users (device_id TEXT PRIMARY KEY, reason TEXT, blocked_at INTEGER DEFAULT (strftime('%s','now')))");
+        migQuery.exec("CREATE TABLE IF NOT EXISTS blacklisted_ips (ip TEXT PRIMARY KEY, reason TEXT, blocked_at INTEGER DEFAULT (strftime('%s','now')))");
+        query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (4);");
     }
 }
 
@@ -2703,6 +2735,238 @@ int DatabaseManager::applySyncSnapshot(const DatabaseManager::SyncSnapshot& snap
     }
 
     return applied;
+}
+
+// --- Device Notes ---
+
+bool DatabaseManager::saveDeviceNote(const QString& deviceId, const QString& note) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE devices SET friend_remark = ? WHERE device_id = ?");
+    query.addBindValue(note);
+    query.addBindValue(deviceId);
+    return query.exec();
+}
+
+QString DatabaseManager::loadDeviceNote(const QString& deviceId) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return QString();
+    QSqlQuery query(m_db);
+    query.prepare("SELECT friend_remark FROM devices WHERE device_id = ?");
+    query.addBindValue(deviceId);
+    if (query.exec() && query.next()) return query.value(0).toString();
+    return QString();
+}
+
+// --- Blocked Users ---
+
+bool DatabaseManager::blockUser(const QString& deviceId, const QString& reason) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("INSERT OR REPLACE INTO blocked_users (device_id, reason) VALUES (?, ?)");
+    query.addBindValue(deviceId);
+    query.addBindValue(reason);
+    return query.exec();
+}
+
+bool DatabaseManager::unblockUser(const QString& deviceId) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("DELETE FROM blocked_users WHERE device_id = ?");
+    query.addBindValue(deviceId);
+    return query.exec();
+}
+
+bool DatabaseManager::isBlocked(const QString& deviceId) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("SELECT COUNT(*) FROM blocked_users WHERE device_id = ?");
+    query.addBindValue(deviceId);
+    if (query.exec() && query.next()) return query.value(0).toInt() > 0;
+    return false;
+}
+
+QList<QString> DatabaseManager::loadBlockedUsers() {
+    QMutexLocker locker(&m_mutex);
+    QList<QString> result;
+    if (!m_db.isOpen()) return result;
+    QSqlQuery query(m_db);
+    if (query.exec("SELECT device_id FROM blocked_users ORDER BY blocked_at DESC")) {
+        while (query.next()) result.append(query.value(0).toString());
+    }
+    return result;
+}
+
+// --- Message Pinning ---
+
+bool DatabaseManager::pinMessage(const QString& messageId) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE messages SET is_pinned = 1 WHERE message_id = ?");
+    query.addBindValue(messageId);
+    return query.exec();
+}
+
+bool DatabaseManager::unpinMessage(const QString& messageId) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE messages SET is_pinned = 0 WHERE message_id = ?");
+    query.addBindValue(messageId);
+    return query.exec();
+}
+
+bool DatabaseManager::isMessagePinned(const QString& messageId) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("SELECT is_pinned FROM messages WHERE message_id = ?");
+    query.addBindValue(messageId);
+    if (query.exec() && query.next()) return query.value(0).toInt() != 0;
+    return false;
+}
+
+QList<IPMsgMessage> DatabaseManager::loadPinnedMessages(const QString& targetId, bool isGroup) {
+    QMutexLocker locker(&m_mutex);
+    QList<IPMsgMessage> result;
+    if (!m_db.isOpen()) return result;
+    QSqlQuery query(m_db);
+    query.prepare("SELECT * FROM messages WHERE target_id = ? AND is_group = ? AND is_pinned = 1 ORDER BY timestamp DESC");
+    query.addBindValue(targetId);
+    query.addBindValue(isGroup ? 1 : 0);
+    if (query.exec()) {
+        while (query.next()) {
+            IPMsgMessage msg;
+            msg.senderId = query.value("sender_id").toString();
+            msg.senderName = query.value("sender_name").toString();
+            msg.senderIp = query.value("sender_ip").toString();
+            msg.content = query.value("content").toString();
+            msg.timestamp = query.value("timestamp").toLongLong();
+            msg.isFile = query.value("is_file").toBool();
+            msg.filePath = query.value("file_path").toString();
+            msg.fileSize = query.value("file_size").toLongLong();
+            msg.isImage = query.value("is_image").toBool();
+            msg.imageData = query.value("image_data").toByteArray();
+            msg.imageFileName = query.value("image_file_name").toString();
+            msg.replyTo = query.value("reply_to").toString();
+            msg.replyContent = query.value("reply_content").toString();
+            msg.recallId = query.value("recall_id").toString();
+            msg.isRecalled = query.value("is_recalled").toBool();
+            result.append(msg);
+        }
+    }
+    return result;
+}
+
+// --- Chat Backup/Restore ---
+
+bool DatabaseManager::exportDatabase(const QString& filePath) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    // Use SQLite backup API via QSqlDatabase
+    QSqlDatabase backupDb = QSqlDatabase::addDatabase("QSQLITE", "backup_connection");
+    backupDb.setDatabaseName(filePath);
+    if (!backupDb.open()) {
+        QSqlDatabase::removeDatabase("backup_connection");
+        return false;
+    }
+    // Copy all data via SQL dump approach
+    QSqlQuery src(m_db);
+    QSqlQuery dst(backupDb);
+    // Create tables in backup
+    dst.exec("PRAGMA journal_mode=WAL");
+    QStringList tables = {"messages", "devices", "groups", "settings", "recent_chats",
+                          "file_transfers", "offline_messages", "e2ee_sessions",
+                          "voice_messages", "video_messages", "location_messages",
+                          "card_messages", "merge_forward_messages",
+                          "group_announcements", "group_mentions", "group_votes",
+                          "group_files", "group_albums", "group_todos",
+                          "blocked_users", "blacklisted_ips"};
+    for (const QString& table : tables) {
+        if (src.exec(QString("SELECT sql FROM sqlite_master WHERE type='table' AND name='%1'").arg(table)) && src.next()) {
+            dst.exec(src.value(0).toString());
+        }
+        if (src.exec(QString("SELECT * FROM %1").arg(table))) {
+            QSqlRecord rec = src.record();
+            int cols = rec.count();
+            QString placeholders = QString("?,").repeated(cols).chopped(1);
+            dst.exec(QString("DELETE FROM %1").arg(table));
+            QSqlQuery ins(backupDb);
+            ins.prepare(QString("INSERT OR REPLACE INTO %1 VALUES (%2)").arg(table, placeholders));
+            while (src.next()) {
+                ins.bindValue(0, src.value(0));
+                for (int i = 1; i < cols; ++i) ins.bindValue(i, src.value(i));
+                ins.exec();
+            }
+        }
+    }
+    backupDb.close();
+    QSqlDatabase::removeDatabase("backup_connection");
+    return true;
+}
+
+bool DatabaseManager::importDatabase(const QString& filePath) {
+    QMutexLocker locker(&m_mutex);
+    if (!QFile::exists(filePath)) return false;
+    // Close current, copy file, reopen
+    QString currentPath = m_dbPath;
+    m_db.close();
+    if (!QFile::remove(currentPath)) return false;
+    if (!QFile::copy(filePath, currentPath)) return false;
+    m_db = QSqlDatabase::database("ipmsg_connection");
+    m_db.setDatabaseName(currentPath);
+    if (!m_db.open()) return false;
+    QSqlQuery(m_db).exec("PRAGMA journal_mode=WAL");
+    return true;
+}
+
+// --- IP Blacklist ---
+
+bool DatabaseManager::addBlacklistedIp(const QString& ip, const QString& reason) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("INSERT OR REPLACE INTO blacklisted_ips (ip, reason) VALUES (?, ?)");
+    query.addBindValue(ip);
+    query.addBindValue(reason);
+    return query.exec();
+}
+
+bool DatabaseManager::removeBlacklistedIp(const QString& ip) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("DELETE FROM blacklisted_ips WHERE ip = ?");
+    query.addBindValue(ip);
+    return query.exec();
+}
+
+bool DatabaseManager::isIpBlacklisted(const QString& ip) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return false;
+    QSqlQuery query(m_db);
+    query.prepare("SELECT COUNT(*) FROM blacklisted_ips WHERE ip = ?");
+    query.addBindValue(ip);
+    if (query.exec() && query.next()) return query.value(0).toInt() > 0;
+    return false;
+}
+
+QList<QPair<QString, QString>> DatabaseManager::loadBlacklistedIps() {
+    QMutexLocker locker(&m_mutex);
+    QList<QPair<QString, QString>> result;
+    if (!m_db.isOpen()) return result;
+    QSqlQuery query(m_db);
+    if (query.exec("SELECT ip, reason FROM blacklisted_ips ORDER BY blocked_at DESC")) {
+        while (query.next()) {
+            result.append({query.value(0).toString(), query.value(1).toString()});
+        }
+    }
+    return result;
 }
 
 } // namespace xrk

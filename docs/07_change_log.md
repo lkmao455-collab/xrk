@@ -2,6 +2,76 @@
 
 ## 版本历史
 
+### v1.4.0 (2026-08-09) — 12项功能增强
+
+#### 新增功能
+- **黑名单联系人**：阻止联系人发消息
+  - `blockUser()` / `unblockUser()` / `isBlocked()` API
+  - 数据库 `blocked_users` 表持久化
+  - `processTcpCommand` 中静默丢弃被阻止用户的消息
+- **消息置顶**：群聊中置顶重要消息
+  - `pinMessage()` / `unpinMessage()` / `isMessagePinned()` API
+  - 数据库 `is_pinned` 字段
+  - `loadPinnedMessages()` 查询已置顶消息
+- **语音消息播放控件**：`VoicePlaybackWidget`
+  - 播放/暂停按钮
+  - 进度条拖拽
+  - 速度选择器（1x / 1.25x / 1.5x / 2x）
+  - 播放时间显示
+- **审计日志查看器**：`AuditLogViewer`
+  - 表格展示审计日志条目
+  - 按类型/时间范围/关键字过滤
+  - 导出为 JSON 文件
+  - 清除旧日志（保留 30 天）
+- **IP 黑名单 + 频率限制**：
+  - `SecurityManager` 新增 `addBlacklistedIp()` / `removeBlacklistedIp()` / `isIpBlacklisted()`
+  - `checkRateLimit()` / `recordFailedAttempt()` / `isIpLockedOut()` 频率限制
+  - 数据库 `blacklisted_ips` 表
+- **连接质量仪表板**：
+  - `RemoteDesktopWidget` 新增可切换的统计覆盖层
+  - 实时显示 FPS、带宽、延迟、编码格式、分辨率
+  - 信息按钮切换显示/隐藏
+- **会话录像回放**：`RecordingPlayer`
+  - 解析 AVI 格式录像文件
+  - 播放/暂停/停止控制
+  - 进度条拖拽定位
+  - 速度切换（0.5x / 1x / 1.5x / 2x）
+- **聊天备份/恢复**：
+  - `exportDatabase()` / `importDatabase()` API
+  - 数据库完整导出/导入（所有表）
+  - 一键恢复聊天记录
+- **快捷键管理器**：`ShortcutManager` + `ShortcutManagerWidget`
+  - 全局快捷键注册和自定义
+  - 双击编辑快捷键
+  - 恢复默认设置
+  - QSettings 持久化
+- **自动更新**：`Updater`
+  - GitHub Releases API 版本检查
+  - 当前版本对比（`QVersionNumber`）
+  - 可配置自动检查间隔
+  - 更新信息展示（版本号、变更日志、文件大小）
+- **双因素认证 (2FA/TOTP)**：`TotpManager`
+  - TOTP 密钥生成（Base32 编码）
+  - 6 位动态验证码生成/验证
+  - 30 秒时间窗口，支持 +/- 1 步容错
+  - 备用恢复码（10 个 8 位数字码）
+  - QR 码 URI 生成（`otpauth://` 协议）
+- **无人值守访问**：
+  - `Host` 新增 `setUnattendedAccessEnabled()` / `setUnattendedPassword()`
+  - 持久化密码存储（SHA-256 哈希，QSettings）
+  - 重启后保持密码，支持远程无人值守连接
+
+#### 数据库变更
+- 新增 `blocked_users` 表（device_id, reason, blocked_at）
+- 新增 `blacklisted_ips` 表（ip, reason, blocked_at）
+- `messages` 表新增 `is_pinned` 列（默认 0）
+- 迁移版本升级至 4
+
+#### 构建变更
+- `xrk_app` 新增 `updater.cpp/h`、`totp_manager.cpp/h`
+- `xrk_ui` 新增 `voice_playback_widget`、`audit_log_viewer`、`recording_player`、`shortcut_manager_widget`
+- UI 链接新增 `Qt6::Multimedia`
+
 ### v1.3.0 (2026-08-08) — 6个新UI组件 + 代码质量修复
 
 #### 新增 UI 组件

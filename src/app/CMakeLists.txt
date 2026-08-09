@@ -22,6 +22,8 @@ set(APP_SOURCES
     database_manager.cpp
     web_socket_gateway.cpp
     connection_history_manager.cpp
+    updater.cpp
+    totp_manager.cpp
 )
 
 set(APP_HEADERS
@@ -48,6 +50,8 @@ set(APP_HEADERS
     database_manager.h
     web_socket_gateway.h
     connection_history_manager.h
+    updater.h
+    totp_manager.h
 )
 
 add_library(xrk_app STATIC ${APP_SOURCES} ${APP_HEADERS})

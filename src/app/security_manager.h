@@ -54,6 +54,19 @@ public:
     bool updateSessionActivity(const QString& deviceId);
     QByteArray getSessionId(const QString& deviceId) const;
 
+    // IP Blacklist
+    void addBlacklistedIp(const QString& ip, const QString& reason = QString());
+    void removeBlacklistedIp(const QString& ip);
+    bool isIpBlacklisted(const QString& ip) const;
+    QList<QPair<QString, QString>> blacklistedIps() const;
+
+    // Rate limiting
+    bool checkRateLimit(const QString& ip, int maxAttempts = 5, int windowSeconds = 300);
+    void recordFailedAttempt(const QString& ip);
+    void clearFailedAttempts(const QString& ip);
+    int failedAttemptCount(const QString& ip) const;
+    bool isIpLockedOut(const QString& ip, int maxAttempts = 5, int lockoutSeconds = 900) const;
+
 signals:
     void authenticationFailed(const QString& deviceId);
     void tokenExpired(const QString& token);
@@ -66,6 +79,14 @@ private:
     bool m_encryptionEnabled = false;
     QHash<QString, QString> m_activeTokens;
     QMap<QString, E2EESession> m_e2eeSessions;
+
+    // Rate limiting
+    struct RateLimitEntry {
+        QList<qint64> failedTimestamps; // timestamps of failed attempts
+        bool blacklisted = false;
+        QString blacklistReason;
+    };
+    QMap<QString, RateLimitEntry> m_rateLimits;
 };
 
 } // namespace xrk

@@ -911,6 +911,32 @@ bool Host::isPasswordRequired() const {
     return !m_password.isEmpty();
 }
 
+void Host::setUnattendedAccessEnabled(bool enabled) {
+    m_unattendedEnabled = enabled;
+    QSettings settings("XRK", "Host");
+    settings.setValue("unattended_access_enabled", enabled);
+}
+
+bool Host::isUnattendedAccessEnabled() const {
+    return m_unattendedEnabled;
+}
+
+void Host::setUnattendedPassword(const QString& password) {
+    m_unattendedPasswordHash = QCryptographicHash::hash(password.toUtf8(), QCryptographicHash::Sha256).toHex();
+    QSettings settings("XRK", "Host");
+    settings.setValue("unattended_password_hash", m_unattendedPasswordHash);
+}
+
+QString Host::unattendedPassword() const {
+    return m_unattendedPasswordHash;
+}
+
+bool Host::verifyUnattendedPassword(const QString& password) const {
+    if (m_unattendedPasswordHash.isEmpty()) return false;
+    QString hash = QCryptographicHash::hash(password.toUtf8(), QCryptographicHash::Sha256).toHex();
+    return hash == m_unattendedPasswordHash;
+}
+
 void Host::setJpegQuality(int quality) {
     m_jpegQuality = qBound(m_minJpegQuality, quality, m_maxJpegQuality);
     // m_quality in JpegEncoder is atomic, so it's safe to poke the live
@@ -2948,6 +2974,11 @@ bool Host::isLocalLockActive() const {
 void Host::loadTrustedIps() {
     QSettings settings("XRK", "LANRemote");
     m_trustedIps = settings.value("trustedIps").toStringList();
+
+    // Load unattended access settings
+    QSettings unattended("XRK", "Host");
+    m_unattendedEnabled = unattended.value("unattended_access_enabled", false).toBool();
+    m_unattendedPasswordHash = unattended.value("unattended_password_hash").toString();
 }
 
 void Host::saveTrustedIps() {

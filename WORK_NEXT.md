@@ -308,3 +308,24 @@
 
 **当前运行实例**: 网关 PID 24004（`--ws 8080`）+ 无头 Host PID 16128（`--host 9999`）已启动，
 SPA 已含解密修复；仅因环境无法抓屏而无画面流。
+
+---
+
+✅ **v1.4.0 功能增强 (2026-08-09)**: 12项新功能 + 构建修复
+
+1. **黑名单联系人** — `blockUser()`/`unblockUser()` API + 数据库 `blocked_users` 表 + 消息过滤
+2. **消息置顶** — `pinMessage()`/`unpinMessage()` API + `is_pinned` 字段 + `loadPinnedMessages()` 查询
+3. **语音消息播放控件** — `VoicePlaybackWidget`（播放/暂停/进度条/速度选择/时间显示）
+4. **审计日志查看器** — `AuditLogViewer`（表格/过滤/导出/清除）
+5. **IP 黑名单 + 频率限制** — `SecurityManager` 新增 `checkRateLimit()`/`recordFailedAttempt()`/`isIpLockedOut()` + `blacklisted_ips` 表
+6. **连接质量仪表板** — `RemoteDesktopWidget` 可切换统计覆盖层（FPS/带宽/延迟/编码/分辨率）
+7. **会话录像回放** — `RecordingPlayer`（AVI 解析/播放控制/进度条/速度切换）
+8. **聊天备份/恢复** — `exportDatabase()`/`importDatabase()` API
+9. **快捷键管理器** — `ShortcutManager` + `ShortcutManagerWidget`（注册/自定义/恢复默认/持久化）
+10. **自动更新** — `Updater`（GitHub Releases API/版本对比/自动检查/更新信息）
+11. **双因素认证 (2FA/TOTP)** — `Tot pManager`（密钥生成/验证码/备用码/QR URI）
+12. **无人值守访问** — `Host` 持久密码存储（SHA-256 + QSettings）
+
+**数据库**: 新增 `blocked_users`、`blacklisted_ips` 表，`messages.is_pinned` 列，迁移版本 4
+**构建**: `xrk_app` +4 文件，`xrk_ui` +4 文件，UI 链接 `Qt6::Multimedia`
+**编译**: 全量编译通过，633 测试框架就绪

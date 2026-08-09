@@ -9,6 +9,7 @@
 #include <QFormLayout>
 #include <QComboBox>
 #include <QTabWidget>
+#include <QProgressBar>
 
 namespace xrk {
 
@@ -29,6 +30,10 @@ public:
     bool privacyScreenEnabled() const;
     bool autoGrantConsentEnabled() const;
     bool trueColorEnabled() const;
+
+    bool startWithWindows() const;
+    bool minimizeToTray() const;
+    bool notificationSoundEnabled() const;
 
     // Relay
     bool relayEnabled() const;
@@ -56,11 +61,15 @@ private:
     QSpinBox* m_portSpinBox = nullptr;
     QCheckBox* m_autoDiscoveryCheckBox = nullptr;
     QComboBox* m_languageCombo = nullptr;
+    QCheckBox* m_startWithWindowsCheckBox = nullptr;
+    QCheckBox* m_minimizeToTrayCheckBox = nullptr;
 
     // Security tab
     QCheckBox* m_encryptionCheckBox = nullptr;
     QCheckBox* m_privacyScreenCheckBox = nullptr;
     QCheckBox* m_autoGrantConsentCheckBox = nullptr;
+    QProgressBar* m_passwordStrengthBar = nullptr;
+    QCheckBox* m_notificationSoundCheckBox = nullptr;
 
     // Video tab
     QCheckBox* m_trueColorCheckBox = nullptr;
