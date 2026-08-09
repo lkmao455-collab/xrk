@@ -417,7 +417,7 @@ void RemoteDesktopWidget::stopRemote() {
     if (m_monitorCombo) m_monitorCombo->hide();
     // Clear annotation state so a new session starts clean.
     m_strokes.clear();
-    m_currentStroke.clear();
+    m_currentStroke.points.clear();
     update();
     emit remoteStopped();
 }
@@ -493,25 +493,27 @@ void RemoteDesktopWidget::paintEvent(QPaintEvent* event) {
             .arg(m_currentFrame.height()));
 
     // Phase 4: draw local annotation strokes (in remote/frame coordinates).
-    if (!m_strokes.isEmpty() || !m_currentStroke.isEmpty()) {
-        QPen pen(m_annotationColor, m_annotationWidth);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        painter.setPen(pen);
-        auto drawStroke = [&](const QVector<QPoint>& stroke) {
-            if (stroke.size() < 2) {
-                if (stroke.size() == 1) {
-                    QPoint p = remoteToWidget(stroke.first());
-                    painter.drawPoint(p);
-                }
+    if (!m_strokes.isEmpty() || !m_currentStroke.points.isEmpty()) {
+        auto drawStroke = [&](const AnnotationStroke& stroke) {
+            if (stroke.points.isEmpty()) return;
+            QPen pen(stroke.color, stroke.width);
+            pen.setCapStyle(Qt::RoundCap);
+            pen.setJoinStyle(Qt::RoundJoin);
+            painter.setPen(pen);
+            if (stroke.points.size() == 1) {
+                painter.drawPoint(remoteToWidget(stroke.points.first()));
                 return;
             }
-            for (int i = 1; i < stroke.size(); ++i) {
-                painter.drawLine(remoteToWidget(stroke[i - 1]), remoteToWidget(stroke[i]));
+            for (int i = 1; i < stroke.points.size(); ++i) {
+                painter.drawLine(remoteToWidget(stroke.points[i - 1]), remoteToWidget(stroke.points[i]));
             }
         };
-        for (const QVector<QPoint>& s : m_strokes) drawStroke(s);
-        drawStroke(m_currentStroke);
+        for (const AnnotationStroke& s : m_strokes) drawStroke(s);
+        // The in-progress stroke uses the live (current) colour/width.
+        AnnotationStroke live = m_currentStroke;
+        live.color = m_annotationColor;
+        live.width = m_annotationWidth;
+        drawStroke(live);
     }
 
     // Phase 4: session watermark (viewer device id / ip) in bottom-right.
@@ -576,8 +578,8 @@ void RemoteDesktopWidget::mouseMoveEvent(QMouseEvent* event) {
     }
 
     // Phase 4: while annotating, capture the stroke locally instead of sending input.
-    if (m_annotationEnabled && !m_currentFrame.isNull() && !m_currentStroke.isEmpty()) {
-        m_currentStroke.append(mapToRemote(event->pos()));
+    if (m_annotationEnabled && !m_currentFrame.isNull() && !m_currentStroke.points.isEmpty()) {
+        m_currentStroke.points.append(mapToRemote(event->pos()));
         update();
         return;
     }
@@ -592,8 +594,10 @@ void RemoteDesktopWidget::mousePressEvent(QMouseEvent* event) {
 
     // Phase 4: begin a local annotation stroke.
     if (m_annotationEnabled && !m_currentFrame.isNull()) {
-        m_currentStroke.clear();
-        m_currentStroke.append(mapToRemote(event->pos()));
+        m_currentStroke.points.clear();
+        m_currentStroke.color = m_annotationColor;
+        m_currentStroke.width = m_annotationWidth;
+        m_currentStroke.points.append(mapToRemote(event->pos()));
         update();
         return;
     }
@@ -613,12 +617,21 @@ void RemoteDesktopWidget::mouseReleaseEvent(QMouseEvent* event) {
     if (!m_active) return;
 
     // Phase 4: commit the local annotation stroke.
-    if (m_annotationEnabled && !m_currentStroke.isEmpty()) {
-        if (m_currentStroke.size() > 1) {
+    if (m_annotationEnabled && !m_currentStroke.points.isEmpty()) {
+        if (m_currentStroke.points.size() > 1) {
             m_strokes.append(m_currentStroke);
         }
-        m_currentStroke.clear();
+        m_currentStroke.points.clear();
         update();
+        // v1.6.0: push the full committed stroke set to the host so its
+        // overlay mirrors exactly what the controller currently sees.
+        if (m_controller && !m_strokes.isEmpty() && !m_currentFrame.isNull()) {
+            AnnotationUpdate update;
+            update.frameWidth = m_currentFrame.width();
+            update.frameHeight = m_currentFrame.height();
+            update.strokes = m_strokes;
+            m_controller->sendAnnotationUpdate(update);
+        }
         return;
     }
     
@@ -1106,8 +1119,12 @@ void RemoteDesktopWidget::onAnnotateColorClicked() {
 
 void RemoteDesktopWidget::onAnnotateClearClicked() {
     m_strokes.clear();
-    m_currentStroke.clear();
+    m_currentStroke.points.clear();
     update();
+    // v1.6.0: clear the host's overlay too.
+    if (m_controller) {
+        m_controller->sendAnnotationClear();
+    }
 }
 
 void RemoteDesktopWidget::onWatermarkToggled(bool checked) {

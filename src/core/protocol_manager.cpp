@@ -2024,6 +2024,58 @@ bool ProtocolManager::decodePrivacyScreen(const QByteArray& data) {
     return val != 0;
 }
 
+QByteArray ProtocolManager::encodeAnnotationUpdate(const AnnotationUpdate& update) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << update.frameWidth;
+    stream << update.frameHeight;
+    stream << static_cast<uint32_t>(update.strokes.size());
+    for (const AnnotationStroke& st : update.strokes) {
+        stream << static_cast<quint32>(st.color.rgba());
+        stream << static_cast<int32_t>(st.width);
+        stream << static_cast<uint32_t>(st.points.size());
+        for (const QPoint& p : st.points) {
+            stream << p.x();
+            stream << p.y();
+        }
+    }
+    return data;
+}
+
+AnnotationUpdate ProtocolManager::decodeAnnotationUpdate(const QByteArray& data) {
+    AnnotationUpdate update;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> update.frameWidth;
+    stream >> update.frameHeight;
+    uint32_t count = 0;
+    stream >> count;
+    update.strokes.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        AnnotationStroke st;
+        quint32 rgba = 0;
+        int32_t w = 3;
+        stream >> rgba;
+        stream >> w;
+        st.color = QColor::fromRgba(rgba);
+        st.width = w;
+        uint32_t pc = 0;
+        stream >> pc;
+        st.points.reserve(static_cast<int>(pc));
+        for (uint32_t j = 0; j < pc; ++j) {
+            int x = 0, y = 0;
+            stream >> x;
+            stream >> y;
+            st.points.append(QPoint(x, y));
+        }
+        update.strokes.append(st);
+    }
+    return update;
+}
+
 QByteArray ProtocolManager::encodeConsent(bool allowed, const QString& deviceName) {
     QByteArray data;
     QDataStream stream(&data, QIODevice::WriteOnly);

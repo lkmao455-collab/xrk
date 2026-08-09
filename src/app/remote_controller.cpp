@@ -664,6 +664,19 @@ void RemoteController::sendPrivacyScreen(bool enabled) {
     m_connection->send(msg);
 }
 
+void RemoteController::sendAnnotationUpdate(const AnnotationUpdate& update) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload = ProtocolManager::encodeAnnotationUpdate(update);
+    QByteArray msg = ProtocolManager::encode(MessageType::ANNOTATION_UPDATE, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::sendAnnotationClear() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::ANNOTATION_CLEAR, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendQualityLevel(QualityLevel level, bool gameMode) {
     if (!m_active || !m_connection) return;
 

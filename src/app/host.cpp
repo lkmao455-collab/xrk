@@ -14,6 +14,7 @@
 #include "privacy_screen.h"
 #include "system_info_collector.h"
 #include "process_collector.h"
+#include "annotation_overlay.h"
 #include "core/logger.h"
 #include <QTcpSocket>
 #include <QHostInfo>
@@ -790,6 +791,12 @@ void Host::stop() {
         m_localLock = nullptr;
     }
 
+    if (m_annotationOverlay) {
+        m_annotationOverlay->hide();
+        m_annotationOverlay->deleteLater();
+        m_annotationOverlay = nullptr;
+    }
+
     if (m_clipboardManager) {
         m_clipboardManager->stopMonitoring();
         delete m_clipboardManager;
@@ -1537,6 +1544,12 @@ void Host::onClientDisconnected() {
         removeReverseSyncForClient(clientId);  // stop any host-side watchers
         LOG_INFO("Host: Client disconnected: " + clientId);
         logAudit(clientId, "disconnected");
+        // v1.6.0: drop the live annotation overlay when its session ends.
+        if (m_annotationOverlay) {
+            m_annotationOverlay->hide();
+            m_annotationOverlay->deleteLater();
+            m_annotationOverlay = nullptr;
+        }
         emit clientDisconnected(clientId);
         updateNetworkWorkerClients();
     }
@@ -2017,6 +2030,18 @@ case MessageType::VOICE_ACK: {
             handleProcessStartRequest(clientId, payload);
             break;
         }
+        case MessageType::ANNOTATION_UPDATE: {
+            // Live screen annotation: a benign visual aid the controller draws
+            // on the host's own screens to guide the user. It only requires an
+            // authenticated session (no consent needed) — it cannot inject
+            // input or read data, it merely paints.
+            handleAnnotationUpdate(clientId, payload);
+            break;
+        }
+        case MessageType::ANNOTATION_CLEAR: {
+            handleAnnotationClear(clientId, payload);
+            break;
+        }
         case MessageType::POWER_COMMAND: {
             if (payload.size() >= 1) {
                 PowerAction action = static_cast<PowerAction>(payload[0]);
@@ -2353,8 +2378,14 @@ void Host::updateNetworkWorkerClients() {
                 m_privacyScreen->hide();
                 m_privacyScreen->deleteLater();
                 m_privacyScreen = nullptr;
-            } else if (hasClient && m_privacyScreen && !m_privacyScreen->isVisible()) {
-                m_privacyScreen->show();
+            }
+            // Clear any live annotation overlay when no client is connected.
+            if (!hasClient && m_annotationOverlay) {
+                m_annotationOverlay->hide();
+                m_annotationOverlay->deleteLater();
+                m_annotationOverlay = nullptr;
+            } else if (hasClient && m_annotationOverlay && !m_annotationOverlay->isVisible()) {
+                m_annotationOverlay->show();
             }
         }
     }
@@ -2841,6 +2872,30 @@ void Host::handleProcessStartRequest(const QString& clientId, const QByteArray& 
     QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_START_RESP,
                                              ProtocolManager::encodeProcessStartResponse(resp));
     sendToClient(clientId, msg);
+}
+
+void Host::handleAnnotationUpdate(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(clientId);
+    AnnotationUpdate update = ProtocolManager::decodeAnnotationUpdate(payload);
+    if (update.strokes.isEmpty()) return;
+
+    if (!m_annotationOverlay) {
+        m_annotationOverlay = new AnnotationOverlay(nullptr);
+        m_annotationOverlay->show();
+        LOG_INFO("Host: annotation overlay created (live screen annotation)");
+    }
+    m_annotationOverlay->setStrokes(update);
+}
+
+void Host::handleAnnotationClear(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(clientId);
+    Q_UNUSED(payload);
+    if (m_annotationOverlay) {
+        m_annotationOverlay->hide();
+        m_annotationOverlay->deleteLater();
+        m_annotationOverlay = nullptr;
+        LOG_INFO("Host: annotation overlay cleared");
+    }
 }
 
 void Host::setEncoderType(EncoderType type) {

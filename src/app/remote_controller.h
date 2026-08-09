@@ -97,6 +97,8 @@ public:
     void setAudioEnabled(bool enabled);
     void sendPowerAction(PowerAction action);
     void sendPrivacyScreen(bool enabled);
+    void sendAnnotationUpdate(const AnnotationUpdate& update);
+    void sendAnnotationClear();
     void sendQualityLevel(QualityLevel level, bool gameMode = false);
     void sendSyncAdd(const QString& hostDir, const QString& localDir);
     void sendSyncRemove(const QString& hostDir);

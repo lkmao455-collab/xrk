@@ -1315,3 +1315,59 @@ TEST_F(ProtocolExtendedTest, ProcessMessageTypeValues) {
     EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_START_REQ), 176u);
     EXPECT_EQ(static_cast<uint32_t>(MessageType::PROCESS_START_RESP), 177u);
 }
+
+// ───────────── Real-time Screen Annotation (v1.6.0) ─────────────
+TEST_F(ProtocolExtendedTest, AnnotationUpdateRoundTrip) {
+    AnnotationUpdate update;
+    update.frameWidth = 1920;
+    update.frameHeight = 1080;
+
+    AnnotationStroke s1;
+    s1.color = Qt::red;
+    s1.width = 4;
+    s1.points.append(QPoint(10, 20));
+    s1.points.append(QPoint(100, 200));
+    s1.points.append(QPoint(300, 50));
+
+    AnnotationStroke s2;
+    s2.color = QColor(0, 128, 255);
+    s2.width = 2;
+    s2.points.append(QPoint(5, 5));
+    s2.points.append(QPoint(400, 400));
+
+    update.strokes.append(s1);
+    update.strokes.append(s2);
+
+    QByteArray encoded = ProtocolManager::encodeAnnotationUpdate(update);
+    EXPECT_FALSE(encoded.isEmpty());
+
+    AnnotationUpdate decoded = ProtocolManager::decodeAnnotationUpdate(encoded);
+    EXPECT_EQ(decoded.frameWidth, 1920);
+    EXPECT_EQ(decoded.frameHeight, 1080);
+    ASSERT_EQ(decoded.strokes.size(), 2);
+
+    EXPECT_EQ(decoded.strokes[0].color, QColor(Qt::red));
+    EXPECT_EQ(decoded.strokes[0].width, 4);
+    ASSERT_EQ(decoded.strokes[0].points.size(), 3);
+    EXPECT_EQ(decoded.strokes[0].points[0], QPoint(10, 20));
+    EXPECT_EQ(decoded.strokes[0].points[2], QPoint(300, 50));
+
+    EXPECT_EQ(decoded.strokes[1].color, QColor(0, 128, 255));
+    EXPECT_EQ(decoded.strokes[1].width, 2);
+    ASSERT_EQ(decoded.strokes[1].points.size(), 2);
+    EXPECT_EQ(decoded.strokes[1].points[1], QPoint(400, 400));
+}
+
+TEST_F(ProtocolExtendedTest, AnnotationEmptyUpdate) {
+    AnnotationUpdate update;
+    update.frameWidth = 0;
+    update.frameHeight = 0;
+    QByteArray encoded = ProtocolManager::encodeAnnotationUpdate(update);
+    AnnotationUpdate decoded = ProtocolManager::decodeAnnotationUpdate(encoded);
+    EXPECT_TRUE(decoded.strokes.isEmpty());
+}
+
+TEST_F(ProtocolExtendedTest, AnnotationMessageTypeValues) {
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_UPDATE), 183u);
+    EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_CLEAR), 184u);
+}

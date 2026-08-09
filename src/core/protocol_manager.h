@@ -173,6 +173,10 @@ static QByteArray encodeFileData(const FileData& data);
     static QByteArray encodePrivacyScreen(bool enabled);
     static bool decodePrivacyScreen(const QByteArray& data);
 
+    // Real-time Screen Annotation (v1.6.0)
+    static QByteArray encodeAnnotationUpdate(const AnnotationUpdate& update);
+    static AnnotationUpdate decodeAnnotationUpdate(const QByteArray& data);
+
     // Consent dialog payload: whether the host user allowed the session, plus
     // the controller's device name (shown on the host's confirmation prompt).
     static QByteArray encodeConsent(bool allowed, const QString& deviceName);

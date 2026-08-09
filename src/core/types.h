@@ -142,6 +142,8 @@ AUDIO_START = 140,
     PROCESS_START_RESP = 177,  // host -> controller: start result
 
     PRIVACY_SCREEN = 180,
+    ANNOTATION_UPDATE = 183,  // controller -> host: live annotation strokes (remote support)
+    ANNOTATION_CLEAR = 184,   // controller -> host: clear annotation overlay
     SET_QUALITY = 181,
     INPUT_BLOCK = 182,      // silent monitoring: controller locks the controlled machine's local KB/mouse
     CONSENT_REQUEST = 190,
@@ -811,6 +813,19 @@ struct ProcessStartResponse {
     bool success = false;
     qint64 pid = 0;
     QString errorMessage;
+};
+
+// ───────────── Real-time Screen Annotation (v1.6.0) ─────────────
+struct AnnotationStroke {
+    QColor color = Qt::red;
+    int width = 3;
+    QVector<QPoint> points;   // in remote/frame coordinates
+};
+
+struct AnnotationUpdate {
+    int frameWidth = 0;       // source frame width, for host-side scaling
+    int frameHeight = 0;
+    QList<AnnotationStroke> strokes;
 };
 
 } // namespace xrk

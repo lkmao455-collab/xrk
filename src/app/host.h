@@ -21,6 +21,7 @@
 #include "p2p_manager.h"
 #include "clipboard_manager.h"
 #include "file_sync_manager.h"
+#include "annotation_overlay.h"
 
 namespace xrk {
 
@@ -338,6 +339,8 @@ private:
     void handleProcessListRequest(const QString& clientId, const QByteArray& payload);
     void handleProcessKillRequest(const QString& clientId, const QByteArray& payload);
     void handleProcessStartRequest(const QString& clientId, const QByteArray& payload);
+    void handleAnnotationUpdate(const QString& clientId, const QByteArray& payload);
+    void handleAnnotationClear(const QString& clientId, const QByteArray& payload);
     void onQualityTimer();
     void sendQualityInfo();
     void handleScreenAck(const QString& clientId, const QByteArray& payload);
@@ -434,6 +437,12 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     PrivacyScreen* m_privacyScreen = nullptr;
     bool m_privacyScreenEnabled = false;
     PrivacyScreen* m_localLock = nullptr;
+
+    // Real-time Screen Annotation (v1.6.0): transparent, input-pass-through
+    // overlay shown on the controlled machine's physical screens so the
+    // controller's guidance strokes float on top. Created lazily on the first
+    // ANNOTATION_UPDATE and torn down on ANNOTATION_CLEAR or stop().
+    AnnotationOverlay* m_annotationOverlay = nullptr;
     QStringList m_trustedIps;
 
     // Unattended access

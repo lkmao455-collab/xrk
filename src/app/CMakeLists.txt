@@ -17,6 +17,7 @@ set(APP_SOURCES
     p2p_manager.cpp
     system_info_collector.cpp
     process_collector.cpp
+    annotation_overlay.cpp
     address_book.cpp
     device_registry.cpp
     ipmsg_manager.cpp
@@ -46,6 +47,7 @@ set(APP_HEADERS
     p2p_manager.h
     system_info_collector.h
     process_collector.h
+    annotation_overlay.h
     address_book.h
     device_registry.h
     ipmsg_manager.h

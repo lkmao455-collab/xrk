@@ -1,3 +1,12 @@
+✅ **实时屏幕标注 (v1.6.0)**:
+  - 控制端「标注」开关后，自由笔迹实时同步到被控端屏幕（overlay 显示）
+  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184) + `AnnotationStroke`/`AnnotationUpdate` 结构体
+  - 协议编解码：ProtocolManager::encodeAnnotationUpdate/decodeAnnotationUpdate（BigEndian 二进制）
+  - 后端 `AnnotationOverlay`：透明、穿透输入的顶层覆盖层，覆盖全部物理屏幕，按 frame 坐标缩放绘制
+  - Host：收到标注即惰性创建 overlay 并 `setStrokes()`；仅要求已鉴权（无需 consented）；会话断开 / stop() / CLEAR 时销毁
+  - 控制端 `RemoteDesktopWidget`：每笔带独立颜色/线宽，松手即把完整笔迹集发给被控端；「清空」同步清除两端
+  - 单测：AnnotationUpdate 往返 + 枚举值断言（test_protocol_extended.cpp）
+
 ✅ **多屏切换优化 (v1.2.0)**:
   - 线程安全：ScreenCapture添加QMutex保护并发访问
   - 编码器分辨率适配：切换后自动重新初始化编码器

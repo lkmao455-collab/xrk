@@ -148,8 +148,10 @@ private:
     bool m_annotationEnabled = false;
     QColor m_annotationColor = Qt::red;
     int m_annotationWidth = 3;
-    QVector<QVector<QPoint>> m_strokes;   // committed strokes (remote coords)
-    QVector<QPoint> m_currentStroke;       // in-progress stroke (remote coords)
+    // Committed strokes (remote/frame coords). Each stroke carries its own
+    // colour/width so the on-host overlay can reproduce it exactly.
+    QList<AnnotationStroke> m_strokes;
+    AnnotationStroke m_currentStroke;       // in-progress stroke (remote coords)
     bool m_watermarkEnabled = false;
     QRect m_frameTargetRect;               // where the frame is drawn (widget coords)
     QLabel* m_consentLabel = nullptr;      // "waiting for host approval" overlay

@@ -9,6 +9,15 @@
   - Host 高危操作（结束/启动）强制 `consented` 门禁 + 审计日志 `process_kill` / `process_start`
   - UI `RemoteProcessWidget`：进程表格（PID/名称/内存）+ 3 秒轮询刷新 + 结束/启动按钮，挂载为「进程」分页
 
+### v1.6.0 — 实时屏幕标注
+- **实时屏幕标注（控制端 → 被控端同步）**：远程协助时控制端可直接在被控端屏幕上画图引导
+  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184) + 结构体 `AnnotationStroke`（颜色/线宽/点序列）、`AnnotationUpdate`（frame 宽高 + 笔迹集）
+  - 协议编解码：`ProtocolManager::encodeAnnotationUpdate` / `decodeAnnotationUpdate`（BigEndian 二进制，与核心协议一致）
+  - 被控端 `AnnotationOverlay`：透明、`Qt::WindowTransparentForInput` 穿透输入的顶层覆盖层，覆盖全部物理屏幕（虚拟桌面几何），按 frame 坐标等比缩放绘制
+  - Host：收到首帧标注即惰性创建 overlay 并 `setStrokes()`；仅要求已鉴权会话（无需 consented，标注不可注入输入/读取数据）；会话断开、`stop()` 或收到 `ANNOTATION_CLEAR` 时销毁
+  - 控制端 `RemoteDesktopWidget`：每笔标注携带独立颜色/线宽，鼠标松开即把当前完整笔迹集发给被控端；「清空」同时清除两端 overlay
+  - 单测：`AnnotationUpdate` 往返（多笔、多色、多宽）+ 枚举值断言（183/184）
+
 ### v1.4.0 (2026-08-09) — 12项功能增强
 
 #### 新增功能
