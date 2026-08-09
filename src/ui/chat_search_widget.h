@@ -4,6 +4,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
+#include <QDateEdit>
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QPropertyAnimation>
 #include <QGraphicsOpacityEffect>
@@ -25,6 +27,10 @@ public:
     float animOpacity() const { return m_animOpacity; }
     void setAnimOpacity(float v);
 
+    QDateTime fromDate() const;
+    QDateTime toDate() const;
+    bool hasDateFilter() const;
+
 signals:
     void searchNext(const QString& keyword);
     void searchPrev(const QString& keyword);
@@ -42,6 +48,9 @@ private:
     QPushButton* m_nextBtn = nullptr;
     QPushButton* m_closeBtn = nullptr;
     QLabel* m_countLabel = nullptr;
+    QDateEdit* m_fromDate = nullptr;
+    QDateEdit* m_toDate = nullptr;
+    QCheckBox* m_dateFilterCheck = nullptr;
 
     bool m_active = false;
     float m_animOpacity = 0.0f;

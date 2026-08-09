@@ -141,7 +141,16 @@ void InputControl::shutdown() {
     if (!m_initialized) {
         return;
     }
-    
+
+#ifdef _WIN32
+    // Failsafe: never leave the local console locked if we are torn down while
+    // a silent session had blocked input (plan §2.2c risk: process crash/stop).
+    if (m_localInputBlocked) {
+        BlockInput(FALSE);
+        m_localInputBlocked = false;
+    }
+#endif
+
 #ifdef __linux__
     if (m_display) {
         XCloseDisplay(m_display);
@@ -151,6 +160,29 @@ void InputControl::shutdown() {
 
     m_initialized = false;
     LOG_INFO("InputControl shutdown");
+}
+
+void InputControl::setLocalInputBlocked(bool blocked) {
+#ifdef _WIN32
+    if (blocked == m_localInputBlocked) {
+        return; // idempotent
+    }
+    if (!BlockInput(blocked ? TRUE : FALSE)) {
+        // BlockInput can fail under UAC/secure desktop or without privileges.
+        // Treated as best-effort; not surfaced to the user as a fatal error.
+        LOG_WARNING("InputControl: BlockInput(" + QString(blocked ? "TRUE" : "FALSE") +
+                    ") failed (error " + QString::number(GetLastError()) + ")");
+        return;
+    }
+    m_localInputBlocked = blocked;
+#elif defined(__linux__)
+    // X11 has no global input lock equivalent; best-effort no-op for now.
+    m_localInputBlocked = blocked;
+#elif defined(__APPLE__)
+    m_localInputBlocked = blocked;
+#else
+    m_localInputBlocked = blocked;
+#endif
 }
 
 void InputControl::simulateMouseMove(int x, int y) {

@@ -56,6 +56,7 @@ XRK 是一款局域网环境下的远程控制软件，类似向日葵、TeamVie
 - **网络**: TCP/UDP (Qt Network)
 - **屏幕采集**: DXGI Desktop Duplication API (Windows)
 - **图像编码**: JPEG (Qt) / H.264 (FFmpeg可选)
+- **弱网分块传输**: 64×64 tile 差分 + RLE/JPEG 内容分类编码 + 精准 NACK（与 H264 互斥）
 - **协议**: 自定义二进制协议 + Protobuf可选
 
 ## 6. 线程模型
@@ -64,7 +65,7 @@ XRK 是一款局域网环境下的远程控制软件，类似向日葵、TeamVie
 |------|------|--------|
 | Main Thread | UI、事件循环 | Normal |
 | Capture Thread | 屏幕采集 | High |
-| Encode Thread | 图像编码 | Normal |
+| Encode Thread | 图像编码（含 Host 侧 EncodeWorker 分块切片/发送） | Normal |
 | Network Thread | 数据收发 | High |
-| Decode Thread | 图像解码 | Normal |
+| Decode Thread | 图像解码（客户端 tile 解码线程，应用 applyTile） | Normal |
 | Render Thread | 画面渲染 | Normal |

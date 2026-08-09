@@ -27,6 +27,7 @@ class ClipboardManager;
 class RelayServer;
 class NatTraversal;
 class SystemInfoWidget;
+class RemoteProcessWidget;
 class AuditLogger;
 class ClipboardHistory;
 class ClipboardHistoryWidget;
@@ -49,6 +50,9 @@ private slots:
     void onToggleHost();
     void onConnectToIp(const QString& ip, uint16_t port);
     void onConnectToCode(const QString& code);
+#ifdef XRK_ENABLE_SILENT
+    void onSilentMonitor();
+#endif
     void onHostClientConnected(const QString& clientId);
     void onTransportEstablished(TransportType transport);
     void onHostClientDisconnected(const QString& clientId);
@@ -80,6 +84,7 @@ private:
     void configureRelay();
     void switchToPage(int index);
     void updateNavButtons();
+    void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<NetworkManager> m_network;
     std::unique_ptr<DeviceManager> m_deviceManager;
@@ -105,12 +110,6 @@ private:
     bool m_hostMode = false;
     bool m_relayMode = false;
 
-    // Sidebar navigation
-    QWidget* m_navSidebar = nullptr;
-    QPushButton* m_navButtons[8] = {};
-    QStackedWidget* m_contentStack = nullptr;
-    int m_currentPage = 0;
-
     // Page indices in the stacked widget
     enum PageIndex {
         PAGE_HOME = 0,
@@ -120,8 +119,15 @@ private:
         PAGE_CHAT,
         PAGE_MONITOR,
         PAGE_CLIPBOARD,
+        PAGE_PROCESS,
         PAGE_COUNT
     };
+
+    // Sidebar navigation
+    QWidget* m_navSidebar = nullptr;
+    QPushButton* m_navButtons[PAGE_COUNT] = {};
+    QStackedWidget* m_contentStack = nullptr;
+    int m_currentPage = 0;
 
     DeviceListWidget* m_deviceListWidget = nullptr; // Legacy - no longer used
     RemoteDesktopWidget* m_remoteDesktopWidget = nullptr;
@@ -129,6 +135,7 @@ private:
     TerminalWidget* m_terminalWidget = nullptr;
     ChatWidget* m_chatWidget = nullptr;
     SystemInfoWidget* m_sysInfoWidget = nullptr;
+    RemoteProcessWidget* m_processWidget = nullptr;
 
     QAction* m_settingsAction = nullptr;
     QAction* m_aboutAction = nullptr;
@@ -138,6 +145,9 @@ private:
     QAction* m_recordAction = nullptr;
     QAction* m_cameraAction = nullptr;
     QAction* m_audioAction = nullptr;
+#ifdef XRK_ENABLE_SILENT
+    QAction* m_silentMonitorAction = nullptr;
+#endif
     QAction* m_lockScreenAction = nullptr;
     QAction* m_mediaTestAction = nullptr;
     QAction* m_ipmsgAction = nullptr;

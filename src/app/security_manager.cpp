@@ -174,4 +174,65 @@ QByteArray SecurityManager::getSessionId(const QString& deviceId) const {
     return m_e2eeSessions.value(deviceId).sessionId.toUtf8();
 }
 
+// --- IP Blacklist ---
+
+void SecurityManager::addBlacklistedIp(const QString& ip, const QString& reason) {
+    m_rateLimits[ip].blacklisted = true;
+    m_rateLimits[ip].blacklistReason = reason;
+}
+
+void SecurityManager::removeBlacklistedIp(const QString& ip) {
+    m_rateLimits[ip].blacklisted = false;
+    m_rateLimits[ip].blacklistReason.clear();
+}
+
+bool SecurityManager::isIpBlacklisted(const QString& ip) const {
+    return m_rateLimits.value(ip).blacklisted;
+}
+
+QList<QPair<QString, QString>> SecurityManager::blacklistedIps() const {
+    QList<QPair<QString, QString>> result;
+    for (auto it = m_rateLimits.constBegin(); it != m_rateLimits.constEnd(); ++it) {
+        if (it.value().blacklisted) {
+            result.append({it.key(), it.value().blacklistReason});
+        }
+    }
+    return result;
+}
+
+// --- Rate Limiting ---
+
+void SecurityManager::recordFailedAttempt(const QString& ip) {
+    m_rateLimits[ip].failedTimestamps.append(QDateTime::currentMSecsSinceEpoch());
+}
+
+void SecurityManager::clearFailedAttempts(const QString& ip) {
+    m_rateLimits[ip].failedTimestamps.clear();
+}
+
+int SecurityManager::failedAttemptCount(const QString& ip) const {
+    return m_rateLimits.value(ip).failedTimestamps.size();
+}
+
+bool SecurityManager::checkRateLimit(const QString& ip, int maxAttempts, int windowSeconds) {
+    if (isIpBlacklisted(ip)) return false;
+    RateLimitEntry& entry = m_rateLimits[ip];
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 windowStart = now - (windowSeconds * 1000LL);
+    // Remove old entries
+    while (!entry.failedTimestamps.isEmpty() && entry.failedTimestamps.first() < windowStart) {
+        entry.failedTimestamps.removeFirst();
+    }
+    return entry.failedTimestamps.size() < maxAttempts;
+}
+
+bool SecurityManager::isIpLockedOut(const QString& ip, int maxAttempts, int lockoutSeconds) const {
+    if (isIpBlacklisted(ip)) return true;
+    const RateLimitEntry& entry = m_rateLimits.value(ip);
+    if (entry.failedTimestamps.size() < maxAttempts) return false;
+    qint64 lastFailure = entry.failedTimestamps.last();
+    qint64 lockoutEnd = lastFailure + (lockoutSeconds * 1000LL);
+    return QDateTime::currentMSecsSinceEpoch() < lockoutEnd;
+}
+
 } // namespace xrk

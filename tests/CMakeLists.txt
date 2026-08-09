@@ -49,6 +49,15 @@ if(XRK_GTEST_AVAILABLE)
         test_web_socket_gateway.cpp
         test_voice_messages.cpp
         test_input_control.cpp
+        test_subnet_scanner.cpp
+        test_screen_capture.cpp
+        test_remote_controller_monitor.cpp
+        test_protocol_extended.cpp
+        test_connection_history.cpp
+        test_tcp_connection.cpp
+        test_tile_encoder.cpp
+        test_tiled_transport.cpp
+        test_settings_widget.cpp
     )
 
     if(XRK_BUILD_HOST_TEARDOWN_TEST)

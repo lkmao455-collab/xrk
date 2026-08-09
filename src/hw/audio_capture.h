@@ -21,6 +21,8 @@ public:
     bool initialize();
     void shutdown();
     bool isInitialized() const;
+    void setMuted(bool muted);
+    bool isMuted() const { return m_muted; }
     int sampleRate() const { return m_sampleRate; }
     int channels() const { return m_channels; }
 
@@ -32,6 +34,7 @@ private slots:
 
 private:
     bool m_initialized = false;
+    bool m_muted = false;
     CaptureMode m_mode = Loopback;
     int m_sampleRate = 48000;
     int m_channels = 2;

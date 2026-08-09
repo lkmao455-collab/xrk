@@ -1,12 +1,14 @@
 XRK Commercial License Agreement
 ================================
 
-Copyright (c) 2024 XRK Authors. All rights reserved.
+Copyright (c) 2024-2026 XRK Authors. All rights reserved.
 
 IMPORTANT: This is a commercial license agreement. If you have purchased
 a commercial license, you may use, modify, and distribute this software
 under the terms of this agreement. Otherwise, use is governed by the
 GNU General Public License v3 (GPL-3.0).
+
+========================================================================
 
 1. DEFINITIONS
 --------------
@@ -26,6 +28,8 @@ including but not limited to:
   - Open source projects licensed under a compatible open source license
   - Individual use with fewer than 10 users
 
+========================================================================
+
 2. COMMERCIAL LICENSE GRANT
 ---------------------------
 
@@ -37,16 +41,25 @@ you a non-exclusive, non-transferable, worldwide license to:
   c) Distribute the Software in source or binary form
   d) Sublicense the Software to your customers
 
+========================================================================
+
 3. LICENSE FEES
 ---------------
 
 Commercial licenses are available for purchase at:
-https://github.com/lkmao455-collab/xrk
+https://github.com/lkmao455-collab/caipiao
 
 License fees are based on:
   - Organization size
   - Number of developers
   - Distribution volume
+
+License Tiers:
+  - Starter:   Up to 5 developers, <100 end users
+  - Professional: Up to 20 developers, <1000 end users
+  - Enterprise: Unlimited developers and users
+
+========================================================================
 
 4. RESTRICTIONS
 ---------------
@@ -56,6 +69,9 @@ You may NOT:
   b) Use the Licensor's name, trademark, or logo without permission
   c) Sub-license the Software to third parties without a commercial license
   d) Distribute the Software as part of a competing product
+  e) Reverse engineer, decompile, or disassemble the Software
+
+========================================================================
 
 5. OPEN SOURCE ALTERNATIVE
 --------------------------
@@ -69,12 +85,16 @@ Under GPL-3.0:
   - You must license derivative works under GPL-3.0
   - You cannot use the Software in proprietary/closed-source products
 
+========================================================================
+
 6. TERM AND TERMINATION
 -----------------------
 
 This Agreement is effective until terminated. Your rights under this
 Agreement will terminate automatically if you fail to comply with any
 term. Upon termination, you must cease all use and destroy all copies.
+
+========================================================================
 
 7. DISCLAIMER OF WARRANTIES
 ---------------------------
@@ -83,6 +103,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
+========================================================================
+
 8. LIMITATION OF LIABILITY
 ---------------------------
 
@@ -90,9 +112,11 @@ IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR
 OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
 ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE.
 
+========================================================================
+
 9. CONTACT
 ----------
 
 For commercial license inquiries:
   Email: lkmao455-collab@users.noreply.github.com
-  GitHub: https://github.com/lkmao455-collab/xrk
+  GitHub: https://github.com/lkmao455-collab/caipiao

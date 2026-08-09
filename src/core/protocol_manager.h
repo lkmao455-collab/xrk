@@ -22,6 +22,15 @@ public:
     
     static QByteArray encodeScreenFrame(const ScreenFrame& frame);
     static ScreenFrame decodeScreenFrame(const QByteArray& data);
+
+    static QByteArray encodeScreenTile(const ScreenTile& tile);
+    static ScreenTile decodeScreenTile(const QByteArray& data);
+
+    static QByteArray encodeScreenTileRequest(const ScreenTileRequest& req);
+    static ScreenTileRequest decodeScreenTileRequest(const QByteArray& data);
+
+    static QByteArray encodeScreenAck(const ScreenAck& ack);
+    static ScreenAck decodeScreenAck(const QByteArray& data);
     
     static QByteArray encodeFileRequest(const FileRequest& request);
     static FileRequest decodeFileRequest(const QByteArray& data);
@@ -113,8 +122,8 @@ static QByteArray encodeFileData(const FileData& data);
     static QByteArray encodeMonitorInfo(const MonitorInfo& info);
     static MonitorInfo decodeMonitorInfo(const QByteArray& data);
     
-    static QByteArray encodeMonitorList(const QList<MonitorInfo>& monitors);
-    QList<MonitorInfo> static decodeMonitorList(const QByteArray& data);
+    static QByteArray encodeMonitorList(const QList<MonitorInfo>& monitors, int currentMonitorIndex = 0);
+    QList<MonitorInfo> static decodeMonitorList(const QByteArray& data, int& currentMonitorIndex);
     
     static QByteArray encodeChatMessage(const ChatMessage& msg);
     static ChatMessage decodeChatMessage(const QByteArray& data);
@@ -149,8 +158,24 @@ static QByteArray encodeFileData(const FileData& data);
     static QByteArray encodeSysInfo(const SysInfo& info);
     static SysInfo decodeSysInfo(const QByteArray& data);
 
+    // Remote Process Manager (v1.5.0)
+    static QByteArray encodeProcessListResponse(const ProcessListResponse& resp);
+    static ProcessListResponse decodeProcessListResponse(const QByteArray& data);
+    static QByteArray encodeProcessKillRequest(const ProcessKillRequest& req);
+    static ProcessKillRequest decodeProcessKillRequest(const QByteArray& data);
+    static QByteArray encodeProcessKillResponse(const ProcessKillResponse& resp);
+    static ProcessKillResponse decodeProcessKillResponse(const QByteArray& data);
+    static QByteArray encodeProcessStartRequest(const ProcessStartRequest& req);
+    static ProcessStartRequest decodeProcessStartRequest(const QByteArray& data);
+    static QByteArray encodeProcessStartResponse(const ProcessStartResponse& resp);
+    static ProcessStartResponse decodeProcessStartResponse(const QByteArray& data);
+
     static QByteArray encodePrivacyScreen(bool enabled);
     static bool decodePrivacyScreen(const QByteArray& data);
+
+    // Real-time Screen Annotation (v1.6.0)
+    static QByteArray encodeAnnotationUpdate(const AnnotationUpdate& update);
+    static AnnotationUpdate decodeAnnotationUpdate(const QByteArray& data);
 
     // Consent dialog payload: whether the host user allowed the session, plus
     // the controller's device name (shown on the host's confirmation prompt).

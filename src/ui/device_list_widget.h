@@ -11,12 +11,14 @@
 #include <QSettings>
 #include <QStringList>
 #include <QComboBox>
+#include <QProgressBar>
 #include "core/types.h"
 #include "app/address_book.h"
 
 namespace xrk {
 
 class DeviceManager;
+class SubnetScanner;
 
 class DeviceListWidget : public QWidget {
     Q_OBJECT
@@ -43,6 +45,10 @@ private slots:
     void onWakeClicked();
     void onCodeConnectClicked();
     void onArpLookupClicked();
+    void onScanClicked();
+    void onScanProgress(int current, int total);
+    void onScanDeviceFound(const DeviceInfo& info);
+    void onScanFinished(int foundCount);
     void onDeviceAdded(const DeviceInfo& info);
     void onDeviceRemoved(const QString& deviceId);
     void onDeviceUpdated(const DeviceInfo& info);
@@ -89,6 +95,12 @@ private:
     
     QLineEdit* m_codeEdit = nullptr;
     QPushButton* m_codeConnectButton = nullptr;
+
+    // Subnet scanner
+    QPushButton* m_scanButton = nullptr;
+    QProgressBar* m_scanProgressBar = nullptr;
+    QLabel* m_scanStatusLabel = nullptr;
+    SubnetScanner* m_scanner = nullptr;
 
     QLineEdit* m_abSearchEdit = nullptr;
     QComboBox* m_abGroupCombo = nullptr;

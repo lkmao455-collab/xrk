@@ -218,6 +218,14 @@ public:
     QByteArray decryptMessage(const QByteArray& ciphertext, const QString& senderId);
     bool hasEstablishedSession(const QString& deviceId) const;
 
+    // E2EE verification
+    QByteArray getLocalFingerprint(const QString& deviceId) const;
+    QByteArray getPeerFingerprint(const QString& deviceId) const;
+    QString getFingerprintDisplay(const QString& deviceId) const;
+    bool isSessionVerified(const QString& deviceId) const;
+    void verifySession(const QString& deviceId);
+    void unverifySession(const QString& deviceId);
+
     // VoIP signaling
     void initiateCall(const QString& targetIp, const QString& callType = "voice");
     void acceptCall(const QString& calleeIp);
@@ -238,6 +246,17 @@ public:
     QString accountHash() const;
     void syncWith(const QString& targetIp);
     QList<QString> sameAccountDevices() const;
+
+    // Block contacts
+    void blockUser(const QString& deviceId, const QString& reason = QString());
+    void unblockUser(const QString& deviceId);
+    bool isBlocked(const QString& deviceId) const;
+    QList<QString> getBlockedUsers() const;
+
+    // Message pinning
+    void pinMessage(const QString& messageId);
+    void unpinMessage(const QString& messageId);
+    bool isMessagePinned(const QString& messageId) const;
 
     QList<IPMsgDevice> getOnlineDevices() const;
     IPMsgDevice deviceInfo(const QString& deviceId) const;
@@ -279,6 +298,8 @@ signals:
     void offlineMessagesAvailable(const QList<DatabaseManager::OfflineMessage>& messages);
     void keyExchangeNeeded(const QString& deviceId);
     void encryptionReady(const QString& deviceId);
+    void sessionVerified(const QString& deviceId);
+    void sessionUnverified(const QString& deviceId);
     void voiceMessageReceived(const IPMsgMessage& message);
     void videoMessageReceived(const IPMsgMessage& message);
     void locationMessageReceived(const IPMsgMessage& message);
@@ -345,6 +366,7 @@ private:
     QMap<QString, IPMsgGroup> m_groups;
     QList<QString> m_friends;
     QList<QString> m_pendingFriendRequests;
+    QList<QString> m_blockedUsers;
     QString m_userName;
     QString m_userId;
     quint16 m_port;
@@ -363,6 +385,7 @@ private:
         QByteArray privateKey;
         QByteArray publicKey;
         qint64 establishedAt;
+        bool isVerified = false;
     };
     QMap<QString, E2EESession> m_e2eeSessions;
 
@@ -372,6 +395,10 @@ private:
     QByteArray deriveAesKey(const QByteArray& sharedSecret, const QByteArray& salt);
     QByteArray aesGcmEncrypt(const QByteArray& plaintext, const QByteArray& key, QByteArray* outNonce);
     QByteArray aesGcmDecrypt(const QByteArray& ciphertext, const QByteArray& key, const QByteArray& nonce, const QByteArray& tag);
+
+    // E2EE fingerprint & verification
+    QByteArray computeFingerprint(const QByteArray& sharedSecret) const;
+    QString fingerprintToDisplay(const QByteArray& fingerprint) const;
 
     // Multi-device sync helpers
     QByteArray serializeSnapshot(const DatabaseManager::SyncSnapshot& snap);

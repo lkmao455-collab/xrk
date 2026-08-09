@@ -196,6 +196,107 @@ ScreenFrame ProtocolManager::decodeScreenFrame(const QByteArray& data) {
     return frame;
 }
 
+QByteArray ProtocolManager::encodeScreenTile(const ScreenTile& tile) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << tile.x << tile.y << tile.w << tile.h << tile.seq;
+    stream << tile.frameWidth << tile.frameHeight;
+    stream << tile.isKeyFrame << tile.encoding << tile.format;
+    stream << tile.timestamp;
+
+    stream << static_cast<uint32_t>(tile.hash.size());
+    if (!tile.hash.isEmpty())
+        stream.writeRawData(tile.hash.constData(), tile.hash.size());
+
+    stream << static_cast<uint32_t>(tile.data.size());
+    if (!tile.data.isEmpty())
+        stream.writeRawData(tile.data.constData(), tile.data.size());
+
+    return data;
+}
+
+ScreenTile ProtocolManager::decodeScreenTile(const QByteArray& data) {
+    ScreenTile tile;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> tile.x >> tile.y >> tile.w >> tile.h >> tile.seq;
+    stream >> tile.frameWidth >> tile.frameHeight;
+
+    quint8 isKey, enc, fmt;
+    stream >> isKey >> enc >> fmt;
+    tile.isKeyFrame = isKey;
+    tile.encoding = enc;
+    tile.format = fmt;
+
+    stream >> tile.timestamp;
+
+    uint32_t hashSize;
+    stream >> hashSize;
+    if (hashSize > 0) tile.hash = data.mid(static_cast<int>(stream.device()->pos()), static_cast<int>(hashSize));
+    stream.device()->seek(stream.device()->pos() + hashSize);
+
+    uint32_t dataSize;
+    stream >> dataSize;
+    tile.data = data.mid(static_cast<int>(stream.device()->pos()), static_cast<int>(dataSize));
+
+    return tile;
+}
+
+QByteArray ProtocolManager::encodeScreenTileRequest(const ScreenTileRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.frameWidth << req.frameHeight;
+    stream << static_cast<uint32_t>(req.tiles.size());
+    for (const QPoint& p : req.tiles) {
+        stream << p.x() << p.y();
+    }
+    return data;
+}
+
+ScreenTileRequest ProtocolManager::decodeScreenTileRequest(const QByteArray& data) {
+    ScreenTileRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.frameWidth >> req.frameHeight;
+    uint32_t count = 0;
+    stream >> count;
+    req.tiles.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        qint32 x = 0, y = 0;
+        stream >> x >> y;
+        req.tiles.append(QPoint(x, y));
+    }
+    return req;
+}
+
+QByteArray ProtocolManager::encodeScreenAck(const ScreenAck& ack) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << ack.timestamp;
+    stream << ack.roundTripMs;
+    stream << ack.tilesReceived;
+    stream << ack.tilesLost;
+    stream << ack.bufferLevel;
+    return data;
+}
+
+ScreenAck ProtocolManager::decodeScreenAck(const QByteArray& data) {
+    ScreenAck ack;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> ack.timestamp;
+    stream >> ack.roundTripMs;
+    stream >> ack.tilesReceived;
+    stream >> ack.tilesLost;
+    stream >> ack.bufferLevel;
+    return ack;
+}
+
 bool ProtocolManager::validate(const QByteArray& data) {
     return MessageCodec::verifyChecksum(data);
 }
@@ -1407,11 +1508,12 @@ MonitorInfo ProtocolManager::decodeMonitorInfo(const QByteArray& data) {
     return info;
 }
 
-QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors) {
+QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors, int currentMonitorIndex) {
     QByteArray result;
     QDataStream stream(&result, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
     
+    stream << static_cast<int32_t>(currentMonitorIndex);
     stream << static_cast<uint32_t>(monitors.size());
     
     for (const MonitorInfo& info : monitors) {
@@ -1423,10 +1525,14 @@ QByteArray ProtocolManager::encodeMonitorList(const QList<MonitorInfo>& monitors
     return result;
 }
 
-QList<MonitorInfo> ProtocolManager::decodeMonitorList(const QByteArray& data) {
+QList<MonitorInfo> ProtocolManager::decodeMonitorList(const QByteArray& data, int& currentMonitorIndex) {
     QList<MonitorInfo> monitors;
     QDataStream stream(data);
     stream.setByteOrder(QDataStream::BigEndian);
+    
+    int32_t currentIdx = 0;
+    stream >> currentIdx;
+    currentMonitorIndex = static_cast<int>(currentIdx);
     
     uint32_t count;
     stream >> count;
@@ -1783,6 +1889,124 @@ SysInfo ProtocolManager::decodeSysInfo(const QByteArray& data) {
     return info;
 }
 
+// ───────────── Remote Process Manager (v1.5.0) ─────────────
+QByteArray ProtocolManager::encodeProcessListResponse(const ProcessListResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.errorMessage;
+    stream << static_cast<uint32_t>(resp.entries.size());
+    for (const auto& e : resp.entries) {
+        stream << e.pid;
+        stream << e.name;
+        stream << e.memoryBytes;
+    }
+    return data;
+}
+
+ProcessListResponse ProtocolManager::decodeProcessListResponse(const QByteArray& data) {
+    ProcessListResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.errorMessage;
+
+    uint32_t count = 0;
+    stream >> count;
+    resp.entries.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        ProcessEntry e;
+        stream >> e.pid;
+        stream >> e.name;
+        stream >> e.memoryBytes;
+        resp.entries.append(e);
+    }
+    return resp;
+}
+
+QByteArray ProtocolManager::encodeProcessKillRequest(const ProcessKillRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.pid;
+    return data;
+}
+
+ProcessKillRequest ProtocolManager::decodeProcessKillRequest(const QByteArray& data) {
+    ProcessKillRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.pid;
+    return req;
+}
+
+QByteArray ProtocolManager::encodeProcessKillResponse(const ProcessKillResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.pid;
+    stream << resp.errorMessage;
+    return data;
+}
+
+ProcessKillResponse ProtocolManager::decodeProcessKillResponse(const QByteArray& data) {
+    ProcessKillResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.pid;
+    stream >> resp.errorMessage;
+    return resp;
+}
+
+QByteArray ProtocolManager::encodeProcessStartRequest(const ProcessStartRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << req.command;
+    stream << req.workingDir;
+    return data;
+}
+
+ProcessStartRequest ProtocolManager::decodeProcessStartRequest(const QByteArray& data) {
+    ProcessStartRequest req;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> req.command;
+    stream >> req.workingDir;
+    return req;
+}
+
+QByteArray ProtocolManager::encodeProcessStartResponse(const ProcessStartResponse& resp) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint8_t>(resp.success ? 1 : 0);
+    stream << resp.pid;
+    stream << resp.errorMessage;
+    return data;
+}
+
+ProcessStartResponse ProtocolManager::decodeProcessStartResponse(const QByteArray& data) {
+    ProcessStartResponse resp;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint8_t ok = 0;
+    stream >> ok;
+    resp.success = (ok != 0);
+    stream >> resp.pid;
+    stream >> resp.errorMessage;
+    return resp;
+}
+
 QByteArray ProtocolManager::encodePrivacyScreen(bool enabled) {
     QByteArray data;
     QDataStream stream(&data, QIODevice::WriteOnly);
@@ -1798,6 +2022,58 @@ bool ProtocolManager::decodePrivacyScreen(const QByteArray& data) {
     uint8_t val;
     stream >> val;
     return val != 0;
+}
+
+QByteArray ProtocolManager::encodeAnnotationUpdate(const AnnotationUpdate& update) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream << update.frameWidth;
+    stream << update.frameHeight;
+    stream << static_cast<uint32_t>(update.strokes.size());
+    for (const AnnotationStroke& st : update.strokes) {
+        stream << static_cast<quint32>(st.color.rgba());
+        stream << static_cast<int32_t>(st.width);
+        stream << static_cast<uint32_t>(st.points.size());
+        for (const QPoint& p : st.points) {
+            stream << p.x();
+            stream << p.y();
+        }
+    }
+    return data;
+}
+
+AnnotationUpdate ProtocolManager::decodeAnnotationUpdate(const QByteArray& data) {
+    AnnotationUpdate update;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+
+    stream >> update.frameWidth;
+    stream >> update.frameHeight;
+    uint32_t count = 0;
+    stream >> count;
+    update.strokes.reserve(static_cast<int>(count));
+    for (uint32_t i = 0; i < count; ++i) {
+        AnnotationStroke st;
+        quint32 rgba = 0;
+        int32_t w = 3;
+        stream >> rgba;
+        stream >> w;
+        st.color = QColor::fromRgba(rgba);
+        st.width = w;
+        uint32_t pc = 0;
+        stream >> pc;
+        st.points.reserve(static_cast<int>(pc));
+        for (uint32_t j = 0; j < pc; ++j) {
+            int x = 0, y = 0;
+            stream >> x;
+            stream >> y;
+            st.points.append(QPoint(x, y));
+        }
+        update.strokes.append(st);
+    }
+    return update;
 }
 
 QByteArray ProtocolManager::encodeConsent(bool allowed, const QString& deviceName) {

@@ -38,6 +38,11 @@ bool NetworkManager::initialize(uint16_t port, bool startTcpServer) {
     setupUdpReceiver();
 
     m_running = true;
+
+    m_discoveryBroadcastTimer = new QTimer(this);
+    connect(m_discoveryBroadcastTimer, &QTimer::timeout, this, &NetworkManager::onDiscoveryBroadcastTimer);
+    m_discoveryBroadcastTimer->start(3000);
+
     LOG_INFO("NetworkManager initialized on port " + QString::number(port) +
              (startTcpServer ? " (tcp+udp)" : " (udp only)"));
     return true;
@@ -49,7 +54,13 @@ void NetworkManager::shutdown() {
     }
     
     m_running = false;
-    
+
+    if (m_discoveryBroadcastTimer) {
+        m_discoveryBroadcastTimer->stop();
+        m_discoveryBroadcastTimer->deleteLater();
+        m_discoveryBroadcastTimer = nullptr;
+    }
+
     disconnectAll();
     
     if (m_tcpServer) {
@@ -71,18 +82,19 @@ void NetworkManager::broadcastDiscovery() {
     if (!m_udpSocket) {
         return;
     }
-    
+
     DeviceInfo info;
-    info.deviceId = QString();
-    info.deviceName = QHostInfo::localHostName();
-    info.ipAddress = QHostAddress(QHostAddress::LocalHost).toString();
-    info.port = m_port;
+    info.deviceId = m_deviceId;
+    info.deviceName = m_discoName.isEmpty() ? QHostInfo::localHostName() : m_discoName;
+    info.ipAddress = localIpv4();
+    info.port = m_discoPort;
     info.version = "1.0.0";
+    info.accessCode = m_discoCode;
     info.timestamp = QDateTime::currentMSecsSinceEpoch();
-    
+
     QByteArray payload = ProtocolManager::encodeDeviceInfo(info);
-    QByteArray message = MessageCodec::encode(MessageType::DEVICE_DISCOVER_REQ, payload);
-    
+    QByteArray message = ProtocolManager::encode(MessageType::DEVICE_DISCOVER_REQ, payload);
+
     m_udpSocket->writeDatagram(message, QHostAddress::Broadcast, UDP_BROADCAST_PORT);
     LOG_DEBUG("Broadcast discovery sent");
 }
@@ -185,7 +197,7 @@ void NetworkManager::onUdpMessageReceived() {
         
         m_udpSocket->readDatagram(datagram.data(), datagram.size(), &sender, &senderPort);
         
-        processDiscoveryMessage(datagram);
+        processDiscoveryMessage(datagram, sender, senderPort);
     }
 }
 
@@ -205,19 +217,96 @@ void NetworkManager::setupUdpReceiver() {
     connect(m_udpSocket, &QUdpSocket::readyRead, this, &NetworkManager::onUdpMessageReceived);
 }
 
-void NetworkManager::processDiscoveryMessage(const QByteArray& data) {
+void NetworkManager::processDiscoveryMessage(const QByteArray& data, const QHostAddress& from, quint16 fromPort) {
     MessageType type;
     QByteArray payload;
     QString sessionId;
-    
+
     if (!ProtocolManager::decode(data, type, payload, sessionId)) {
         return;
     }
-    
-    if (type == MessageType::DEVICE_DISCOVER_REQ || type == MessageType::DEVICE_DISCOVER_RESP) {
-        DeviceInfo info = ProtocolManager::decodeDeviceInfo(payload);
-        emit discoveryReceived(info);
+
+    if (type != MessageType::DEVICE_DISCOVER_REQ && type != MessageType::DEVICE_DISCOVER_RESP) {
+        return;
     }
+
+    DeviceInfo info = ProtocolManager::decodeDeviceInfo(payload);
+    if (info.deviceId == m_deviceId) {
+        return; // ignore our own broadcast echoed back
+    }
+    emit discoveryReceived(info);
+
+    // Any peer that receives a search request answers with a response so that
+    // every device can be discovered by any other device (not just the Host).
+    if (type == MessageType::DEVICE_DISCOVER_REQ) {
+        sendDiscoveryResponse(from, fromPort);
+    }
+}
+
+void NetworkManager::setDiscoveryIdentity(const QString& name, quint16 controlPort, const QString& accessCode) {
+    m_discoName = name;
+    m_discoPort = controlPort;
+    m_discoCode = accessCode;
+}
+
+QString NetworkManager::localIpv4() {
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface& iface : interfaces) {
+        if (iface.flags() & QNetworkInterface::IsLoopBack) continue;
+        if (!(iface.flags() & QNetworkInterface::IsUp)) continue;
+        for (const QNetworkAddressEntry& entry : iface.addressEntries()) {
+            QHostAddress addr = entry.ip();
+            if (addr.protocol() == QAbstractSocket::IPv4Protocol) {
+                return addr.toString();
+            }
+        }
+    }
+    return QHostAddress(QHostAddress::LocalHost).toString();
+}
+
+void NetworkManager::broadcastPresence() {
+    if (!m_udpSocket) {
+        return;
+    }
+
+    DeviceInfo info;
+    info.deviceId = m_deviceId;
+    info.deviceName = m_discoName.isEmpty() ? QHostInfo::localHostName() : m_discoName;
+    info.ipAddress = localIpv4();
+    info.port = m_discoPort;
+    info.version = "1.0.0";
+    info.accessCode = m_discoCode;
+    info.timestamp = QDateTime::currentMSecsSinceEpoch();
+
+    QByteArray payload = ProtocolManager::encodeDeviceInfo(info);
+    QByteArray message = ProtocolManager::encode(MessageType::DEVICE_DISCOVER_RESP, payload);
+
+    m_udpSocket->writeDatagram(message, QHostAddress::Broadcast, UDP_BROADCAST_PORT);
+}
+
+void NetworkManager::sendDiscoveryResponse(const QHostAddress& to, quint16 port) {
+    if (!m_udpSocket) {
+        return;
+    }
+
+    DeviceInfo info;
+    info.deviceId = m_deviceId;
+    info.deviceName = m_discoName.isEmpty() ? QHostInfo::localHostName() : m_discoName;
+    info.ipAddress = localIpv4();
+    info.port = m_discoPort;
+    info.version = "1.0.0";
+    info.accessCode = m_discoCode;
+    info.timestamp = QDateTime::currentMSecsSinceEpoch();
+
+    QByteArray payload = ProtocolManager::encodeDeviceInfo(info);
+    QByteArray message = ProtocolManager::encode(MessageType::DEVICE_DISCOVER_RESP, payload);
+
+    // Reply unicast to the searching peer to avoid broadcast amplification.
+    m_udpSocket->writeDatagram(message, to, UDP_BROADCAST_PORT);
+}
+
+void NetworkManager::onDiscoveryBroadcastTimer() {
+    broadcastPresence();
 }
 
 } // namespace xrk

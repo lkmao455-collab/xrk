@@ -3,6 +3,7 @@ set(HW_SOURCES
     input_control.cpp
     video_encoder.cpp
     jpeg_encoder.cpp
+    tile_encoder.cpp
     camera_capture.cpp
     audio_capture.cpp
     audio_player.cpp
@@ -13,6 +14,7 @@ set(HW_HEADERS
     input_control.h
     video_encoder.h
     jpeg_encoder.h
+    tile_encoder.h
     camera_capture.h
     camera_control.h
     audio_capture.h

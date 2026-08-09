@@ -6,11 +6,14 @@
 #include "core/logger.h"
 #include "hw/audio_player.h"
 #include "hw/audio_capture.h"
+#include "hw/tile_encoder.h"
 #include "nat_traversal.h"
 #include "p2p_manager.h"
 #include "connection_history_manager.h"
 #include <QThread>
 #include <QDataStream>
+#include <QCryptographicHash>
+#include <QPainter>
 
 namespace xrk {
 
@@ -18,6 +21,15 @@ RemoteController::RemoteController(NetworkManager* network, SessionManager* sess
     : QObject(parent), m_network(network), m_session(session) {
     m_heartbeatTimer = new QTimer(this);
     connect(m_heartbeatTimer, &QTimer::timeout, this, &RemoteController::sendHeartbeat);
+
+    // Feeds the host's adaptive loop with RTT, tile loss and buffer fullness.
+    m_ackTimer = new QTimer(this);
+    connect(m_ackTimer, &QTimer::timeout, this, &RemoteController::sendScreenAck);
+
+    // Batches NACK tile-resend requests (see requestTileResend).
+    m_nackTimer = new QTimer(this);
+    m_nackTimer->setSingleShot(true);
+    connect(m_nackTimer, &QTimer::timeout, this, &RemoteController::sendPendingNack);
     
     // Initialize connection history manager
     m_historyManager = new ConnectionHistoryManager(this);
@@ -175,6 +187,7 @@ void RemoteController::stopRemote() {
     m_active = false;
     m_p2pInProgress = false;
     if (m_heartbeatTimer) m_heartbeatTimer->stop();
+    if (m_ackTimer) m_ackTimer->stop();
     if (m_relayFallbackTimer) m_relayFallbackTimer->stop();
     if (m_p2p) m_p2p->cancel();
 
@@ -224,7 +237,7 @@ bool RemoteController::isAutoReconnect() const {
 }
 
 void RemoteController::sendMouseEvent(const MouseEvent& event) {
-    if (!m_active || !m_connection) {
+    if (!m_active || !m_connection || !m_inputForwardEnabled) {
         return;
     }
 
@@ -234,12 +247,25 @@ void RemoteController::sendMouseEvent(const MouseEvent& event) {
 }
 
 void RemoteController::sendKeyEvent(const KeyEvent& event) {
-    if (!m_active || !m_connection) {
+    if (!m_active || !m_connection || !m_inputForwardEnabled) {
         return;
     }
 
     QByteArray payload = ProtocolManager::encodeKeyEvent(event);
     QByteArray message = ProtocolManager::encode(MessageType::KEY_EVENT, payload, m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::setInputForwardingEnabled(bool enabled) {
+    m_inputForwardEnabled = enabled;
+}
+
+void RemoteController::sendInputBlock(bool blocked) {
+    if (!m_active || !m_connection) {
+        return;
+    }
+    QByteArray payload = ProtocolManager::encodePrivacyScreen(blocked);
+    QByteArray message = ProtocolManager::encode(MessageType::INPUT_BLOCK, payload, m_currentSessionId);
     m_connection->send(message);
 }
 
@@ -250,6 +276,75 @@ void RemoteController::requestScreenFrame() {
 
     QByteArray message = ProtocolManager::encode(MessageType::SCREEN_FRAME_ACK, QByteArray(), m_currentSessionId);
     m_connection->send(message);
+}
+
+void RemoteController::requestKeyFrame() {
+    if (!m_active || !m_connection) {
+        return;
+    }
+    QByteArray message = ProtocolManager::encode(MessageType::SCREEN_KEYFRAME, QByteArray(), m_currentSessionId);
+    m_connection->send(message);
+}
+
+void RemoteController::sendScreenAck() {
+    if (!m_active || !m_connection) {
+        return;
+    }
+
+    ScreenAck ack;
+    ack.timestamp = m_lastTileTimestamp.load();
+    ack.roundTripMs = m_roundTripMs;
+    // Consume the window so the host sees per-interval rates, not totals.
+    ack.tilesReceived = m_tilesReceived.exchange(0);
+    ack.tilesLost = m_tilesLost.exchange(0);
+    if (m_tileQueue) {
+        const int capacity = qMax(1, m_tileQueue->capacity());
+        ack.bufferLevel = static_cast<uint32_t>(qMin(100, m_tileQueue->size() * 100 / capacity));
+    }
+
+    QByteArray payload = ProtocolManager::encodeScreenAck(ack);
+    QByteArray message = ProtocolManager::encode(MessageType::SCREEN_FRAME_ACK, payload, m_currentSessionId);
+    m_connection->send(message);
+
+    if (ack.tilesLost > 0) {
+        LOG_INFO("RemoteController: ack — received=" + QString::number(ack.tilesReceived) +
+                  " lost=" + QString::number(ack.tilesLost) +
+                  " rtt=" + QString::number(ack.roundTripMs) + "ms buffer=" +
+                  QString::number(ack.bufferLevel) + "%");
+    }
+}
+
+void RemoteController::requestTileResend(const QList<QPoint>& tiles) {
+    if (!m_active || !m_connection || tiles.isEmpty()) {
+        return;
+    }
+
+    ScreenTileRequest req;
+    req.frameWidth = m_lastFrameWidth.load();
+    req.frameHeight = m_lastFrameHeight.load();
+    req.tiles = tiles;
+
+    QByteArray payload = ProtocolManager::encodeScreenTileRequest(req);
+    QByteArray message = ProtocolManager::encode(MessageType::SCREEN_TILE_REQUEST, payload, m_currentSessionId);
+    m_connection->send(message);
+
+    ++m_nackCount;
+    LOG_INFO("RemoteController: NACK — requested resend of " + QString::number(tiles.size()) +
+             " tile(s) (frame " + QString::number(req.frameWidth) + "x" +
+             QString::number(req.frameHeight) + ")");
+}
+
+void RemoteController::sendPendingNack() {
+    QList<QPoint> batch;
+    {
+        QMutexLocker lock(&m_nackMutex);
+        if (m_pendingNack.isEmpty()) {
+            return;
+        }
+        batch = m_pendingNack;
+        m_pendingNack.clear();
+    }
+    requestTileResend(batch);
 }
 
 void RemoteController::sendAuthRequest(const QString& password) {
@@ -569,6 +664,19 @@ void RemoteController::sendPrivacyScreen(bool enabled) {
     m_connection->send(msg);
 }
 
+void RemoteController::sendAnnotationUpdate(const AnnotationUpdate& update) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload = ProtocolManager::encodeAnnotationUpdate(update);
+    QByteArray msg = ProtocolManager::encode(MessageType::ANNOTATION_UPDATE, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::sendAnnotationClear() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::ANNOTATION_CLEAR, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendQualityLevel(QualityLevel level, bool gameMode) {
     if (!m_active || !m_connection) return;
 
@@ -620,6 +728,59 @@ void RemoteController::switchMonitor(int index) {
     m_connection->send(msg);
 }
 
+void RemoteController::requestMonitorRefresh() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_REFRESH, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::startAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_START, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::stopAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_STOP, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::pauseAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_PAUSE, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::resumeAutoSwitch() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_RESUME, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::setAutoSwitchInterval(int intervalMs) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<int32_t>(intervalMs);
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_AUTO_SWITCH_CONFIG, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestThumbnailFrame(int excludeIndex, int targetIndex, int width, int height) {
+    if (!m_active || !m_connection) return;
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<int32_t>(excludeIndex);
+    stream << static_cast<int32_t>(targetIndex);
+    stream << static_cast<int32_t>(width);
+    stream << static_cast<int32_t>(height);
+    QByteArray msg = ProtocolManager::encode(MessageType::MONITOR_THUMBNAIL_REQUEST, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
 void RemoteController::sendHeartbeat() {
     if (!m_active || !m_connection) return;
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -644,6 +805,31 @@ void RemoteController::requestFileBrowser(const QString& path) {
 void RemoteController::requestSystemInfo() {
     if (!m_active || !m_connection) return;
     QByteArray msg = ProtocolManager::encode(MessageType::SYSINFO_REQ, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestProcessList() {
+    if (!m_active || !m_connection) return;
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_LIST_REQ, QByteArray(), m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestKillProcess(qint64 pid) {
+    if (!m_active || !m_connection) return;
+    ProcessKillRequest req;
+    req.pid = pid;
+    QByteArray payload = ProtocolManager::encodeProcessKillRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_KILL_REQ, payload, m_currentSessionId);
+    m_connection->send(msg);
+}
+
+void RemoteController::requestStartProcess(const QString& command, const QString& workingDir) {
+    if (!m_active || !m_connection) return;
+    ProcessStartRequest req;
+    req.command = command;
+    req.workingDir = workingDir;
+    QByteArray payload = ProtocolManager::encodeProcessStartRequest(req);
+    QByteArray msg = ProtocolManager::encode(MessageType::PROCESS_START_REQ, payload, m_currentSessionId);
     m_connection->send(msg);
 }
 
@@ -699,6 +885,9 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
         case MessageType::SCREEN_FRAME:
             handleScreenFrame(payload);
             break;
+        case MessageType::SCREEN_TILE:
+            handleScreenTile(payload);
+            break;
         case MessageType::AUTH_RESP:
             handleAuthResponse(payload);
             break;
@@ -748,6 +937,21 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
         case MessageType::SYSINFO_RESP: {
             SysInfo info = ProtocolManager::decodeSysInfo(payload);
             emit sysInfoReceived(info);
+            break;
+        }
+        case MessageType::PROCESS_LIST_RESP: {
+            ProcessListResponse resp = ProtocolManager::decodeProcessListResponse(payload);
+            emit processListReceived(resp);
+            break;
+        }
+        case MessageType::PROCESS_KILL_RESP: {
+            ProcessKillResponse resp = ProtocolManager::decodeProcessKillResponse(payload);
+            emit processKillReceived(resp);
+            break;
+        }
+        case MessageType::PROCESS_START_RESP: {
+            ProcessStartResponse resp = ProtocolManager::decodeProcessStartResponse(payload);
+            emit processStartReceived(resp);
             break;
         }
         case MessageType::QUALITY_INFO: {
@@ -912,8 +1116,56 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
             break;
         }
         case MessageType::MONITOR_LIST: {
-            QList<MonitorInfo> monitors = ProtocolManager::decodeMonitorList(payload);
-            emit monitorListReceived(monitors);
+            int currentMonitorIndex = 0;
+            QList<MonitorInfo> monitors = ProtocolManager::decodeMonitorList(payload, currentMonitorIndex);
+            emit monitorListReceived(monitors, currentMonitorIndex);
+            break;
+        }
+        case MessageType::MONITOR_SWITCH_ACK: {
+            if (payload.size() >= 5) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                uint8_t success;
+                uint32_t newIndex;
+                stream >> success >> newIndex;
+                emit monitorSwitchCompleted(success == 1, static_cast<int>(newIndex));
+                LOG_INFO("Monitor switch " + QString(success ? "succeeded" : "failed") + 
+                         " to index " + QString::number(newIndex));
+            }
+            break;
+        }
+        case MessageType::MONITOR_AUTO_SWITCH_STATUS: {
+            if (payload.size() >= 20) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                uint8_t state;  // 0=stopped, 1=active, 2=paused
+                int32_t intervalMs, currentIndex, monitorCount, nextIndex;
+                stream >> state >> intervalMs >> currentIndex >> monitorCount >> nextIndex;
+                emit autoSwitchStatusReceived(
+                    state > 0, state == 2,
+                    intervalMs, currentIndex, monitorCount, nextIndex);
+                LOG_INFO("Auto-switch status: state=" + QString::number(state) +
+                         " interval=" + QString::number(intervalMs) +
+                         " current=" + QString::number(currentIndex));
+            }
+            break;
+        }
+        case MessageType::MONITOR_THUMBNAIL_FRAME: {
+            if (payload.size() >= 16) {
+                QDataStream stream(payload);
+                stream.setByteOrder(QDataStream::BigEndian);
+                int32_t monitorIndex, thumbWidth, thumbHeight, dataSize;
+                stream >> monitorIndex >> thumbWidth >> thumbHeight >> dataSize;
+
+                if (payload.size() >= 16 + dataSize) {
+                    QByteArray thumbData = payload.mid(16, dataSize);
+                    QImage thumbnail;
+                    thumbnail.loadFromData(thumbData, "JPEG");
+                    if (!thumbnail.isNull()) {
+                        emit thumbnailFrameReceived(monitorIndex, thumbnail);
+                    }
+                }
+            }
             break;
         }
         case MessageType::CONSENT_REQUEST: {
@@ -997,9 +1249,102 @@ void RemoteController::handleScreenFrame(const QByteArray& data) {
     emit screenFrameReceived(frame);
 }
 
+void RemoteController::handleScreenTile(const QByteArray& data) {
+    if (m_tileQueue && m_decodeRunning) {
+        if (!m_tileQueue->enqueueNonBlocking(data)) {
+            // A dropped tile leaves a stale patch on screen, so count it as a
+            // loss and ask for a full refresh.
+            m_tilesLost.fetch_add(1);
+            static int s_warn = 0;
+            if (s_warn++ % 100 == 0) {
+                LOG_WARNING("RemoteController: tile queue full — dropped tile, requesting keyframe");
+            }
+            requestKeyFrame();
+        }
+        return;
+    }
+    applyTile(data);
+}
+
+void RemoteController::applyTile(const QByteArray& data) {
+    QByteArray plain = data;
+    if (m_encryption && m_encryption->isInitialized()) {
+        plain = m_encryption->decrypt(data);
+        if (plain.isEmpty()) {
+            m_tilesLost.fetch_add(1);
+            return;
+        }
+    }
+
+    ScreenTile tile = ProtocolManager::decodeScreenTile(plain);
+    if (tile.w == 0 || tile.h == 0 || tile.data.isEmpty() ||
+        tile.frameWidth == 0 || tile.frameHeight == 0) {
+        m_tilesLost.fetch_add(1);
+        return;
+    }
+
+    // Record the frame dimensions up front so a corrupt tile (dropped below)
+    // still updates the size used to size the NACK request.
+    m_lastFrameWidth.store(tile.frameWidth);
+    m_lastFrameHeight.store(tile.frameHeight);
+
+    if (!tile.hash.isEmpty() &&
+        QCryptographicHash::hash(tile.data, QCryptographicHash::Md5) != tile.hash) {
+        // Corrupted on the wire: drop it and ask the host to resend just this
+        // tile (targeted NACK) instead of waiting for a full keyframe.
+        m_tilesLost.fetch_add(1);
+        {
+            QMutexLocker lock(&m_nackMutex);
+            m_pendingNack.append(QPoint(static_cast<int>(tile.x), static_cast<int>(tile.y)));
+        }
+        // applyTile runs on the decode thread; the NACK timer lives on the
+        // controller's (main) thread, so start it via a queued call.
+        QMetaObject::invokeMethod(m_nackTimer, "start", Qt::QueuedConnection,
+                                  Q_ARG(int, 100));
+        static int s_warn = 0;
+        if (s_warn++ % 100 == 0) {
+            LOG_WARNING("RemoteController: tile MD5 mismatch (corrupt on wire) — requesting tile resend");
+        }
+        return;
+    }
+
+    const QImage patch = TileEncoder::decodeTilePixels(
+        tile.data, static_cast<TileEncoding>(tile.encoding),
+        static_cast<int>(tile.w), static_cast<int>(tile.h));
+    if (patch.isNull()) {
+        m_tilesLost.fetch_add(1);
+        return;
+    }
+
+    const QSize frameSize(static_cast<int>(tile.frameWidth), static_cast<int>(tile.frameHeight));
+    if (m_tileCanvas.size() != frameSize) {
+        m_tileCanvas = QImage(frameSize, QImage::Format_RGB32);
+        m_tileCanvas.fill(Qt::black);
+    }
+
+    QPainter painter(&m_tileCanvas);
+    painter.drawImage(QPoint(static_cast<int>(tile.x), static_cast<int>(tile.y)), patch);
+    painter.end();
+
+    m_tilesReceived.fetch_add(1);
+    m_lastTileTimestamp.store(tile.timestamp);
+
+    // Coalesce: publish the canvas once a batch has drained or every ~16ms,
+    // so a 200-tile keyframe does not trigger 200 full-frame repaints.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool batchDone = !m_tileQueue || m_tileQueue->isEmpty();
+    if (batchDone || now - m_lastCanvasEmitMs >= 16) {
+        m_lastCanvasEmitMs = now;
+        emit screenImageReceived(m_tileCanvas.copy());
+    }
+}
+
 void RemoteController::startDecodeWorker() {
     stopDecodeWorker();
     m_decodeQueue = new FrameQueue<QByteArray>(4);
+    // Tiles are far smaller than whole frames and arrive in bursts (a keyframe
+    // is the entire grid at once), so this queue needs a lot more headroom.
+    m_tileQueue = new FrameQueue<QByteArray>(256);
     m_decodeRunning = true;
     m_decodeThread = new QThread(this);
 
@@ -1010,7 +1355,15 @@ void RemoteController::startDecodeWorker() {
 
     QObject::connect(m_decodeThread, &QThread::started, m_decodeWorkerCtx, [this]() {
         while (m_decodeRunning) {
-            QByteArray data = m_decodeQueue->dequeue(16);
+            // Tiled updates take priority: they are small and latency-sensitive,
+            // and the host never sends both kinds at once.
+            QByteArray tileData = m_tileQueue->dequeue(1);
+            if (!tileData.isEmpty()) {
+                applyTile(tileData);
+                continue;
+            }
+
+            QByteArray data = m_decodeQueue->dequeue(15);
             if (data.isEmpty()) continue;
 
             static int frameCount = 0;
@@ -1078,6 +1431,14 @@ void RemoteController::stopDecodeWorker() {
         delete m_decodeQueue;
         m_decodeQueue = nullptr;
     }
+    if (m_tileQueue) {
+        m_tileQueue->clear();
+        delete m_tileQueue;
+        m_tileQueue = nullptr;
+    }
+    m_tileCanvas = QImage();
+    m_tilesReceived = 0;
+    m_tilesLost = 0;
     LOG_INFO("RemoteController: decode worker stopped");
 }
 
@@ -1157,6 +1518,11 @@ void RemoteController::handleAuthResponse(const QByteArray& data) {
         emit authSuccess();
         requestMonitorList();
         m_heartbeatTimer->start(2000);
+        // Advertises tile support and asks for the initial full screen. A host
+        // that does not know SCREEN_KEYFRAME simply ignores it and keeps
+        // sending whole frames.
+        requestKeyFrame();
+        m_ackTimer->start(1000);
         // New session: clear any prior H264 decode-fallback state.
         m_h264FailStreak = 0;
         m_h264FallbackRequested = false;

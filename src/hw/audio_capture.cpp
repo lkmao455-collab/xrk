@@ -171,6 +171,10 @@ bool AudioCapture::isInitialized() const {
     return m_initialized;
 }
 
+void AudioCapture::setMuted(bool muted) {
+    m_muted = muted;
+}
+
 void AudioCapture::onCaptureTimer() {
     if (!m_initialized) return;
 
@@ -188,6 +192,10 @@ void AudioCapture::onCaptureTimer() {
             QByteArray pcmData(reinterpret_cast<const char*>(data), dataSize);
             capture->ReleaseBuffer(framesAvailable);
 
+            if (m_muted) {
+                // Keep the stream alive but silent so the remote side does not detect a drop.
+                pcmData.fill(char(0));
+            }
             if (!pcmData.isEmpty()) {
                 emit audioDataCaptured(pcmData);
             }
@@ -225,6 +233,10 @@ void AudioCapture::shutdown() {
 
 bool AudioCapture::isInitialized() const {
     return m_initialized;
+}
+
+void AudioCapture::setMuted(bool muted) {
+    m_muted = muted;
 }
 
 void AudioCapture::onCaptureTimer() {

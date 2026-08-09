@@ -111,6 +111,40 @@ TEST(InputControlTest, Initialize) {
 }
 ```
 
+### 2.4 弱网分块传输测试（Tiled Transport）
+
+#### TileEncoderTest（编码器与协议，`tests/test_tile_encoder.cpp`）
+```cpp
+TEST(TileEncoderTest, FlatColorRoundTripIsLosslessRLE);   // 纯色无损 RLE 往返
+TEST(TileEncoderTest, FewColorRoundTripIsLosslessRLE);
+TEST(TileEncoderTest, PhotographicTileEncodesJpeg);       // 照片→JPEG
+TEST(TileEncoderTest, KeyFrameEmitsAllTiles);             // 显式关键帧全网格
+TEST(TileEncoderTest, UnchangedFrameSkipsAllTiles);       // 无变化跳过
+TEST(TileEncoderTest, DirtyRectLimitsToIntersectingTiles);
+TEST(TileEncoderTest, BudgetCarryOver);
+TEST(TileEncoderTest, ScreenTileProtocolRoundTrip);       // 协议编解码往返
+TEST(TileEncoderTest, TamperedTileFailsIntegrity);        // MD5 篡改检测
+```
+
+#### TiledTransportTest（真实 socket 回环 + 模拟丢包，`tests/test_tiled_transport.cpp`）
+使用**协议正确的桩 Host**（真实 `TileEncoder` + `Encryption` + `ProtocolManager`）在 127.0.0.1
+上用**真实 `RemoteController`** 客户端跑完整网络路径：
+```cpp
+TEST(TiledTransportTest, CapabilityHandshakeEnablesTiling); // 能力握手启用分块
+TEST(TiledTransportTest, OnlyChangedTileIsStreamed);        // 差分：只发变化的 tile
+TEST(TiledTransportTest, LostTilesRepairedByKeyframe);      // 丢块→关键帧修复 + ack 反馈
+TEST(TiledTransportTest, NackRepairsSpecificTile);          // 单 tile 损坏→精准 NACK 修复
+TEST(TiledTransportTest, CursorTileSentFirst);              // 光标所在 tile 优先发送并先到达
+```
+- 运行（Qt 6.10 于 `D:\Qt\6.10.0\msvc2022_64`）：
+```bash
+export PATH="/d/Qt/6.10.0/msvc2022_64/bin:$PATH"
+export QT_QPA_PLATFORM=offscreen
+./build/tests/Release/xrk_tests.exe --gtest_filter='TileEncoder.*:TiledTransportTest.*'
+```
+- 预期：14 个测试全部 PASSED（9 编码器/协议 + 5 回环传输）。
+- 手动验证清单见 `tests/TILED_TRANSPORT_CHECKLIST.md`。
+
 ## 3. 集成测试
 
 ### 3.1 网络通信测试

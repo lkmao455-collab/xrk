@@ -5,6 +5,7 @@
 #include <QUdpSocket>
 #include <memory>
 #include <QHash>
+#include <QTimer>
 #include "types.h"
 
 namespace xrk {
@@ -21,6 +22,10 @@ public:
     void shutdown();
     
     void broadcastDiscovery();
+    void setDiscoveryIdentity(const QString& name, quint16 controlPort, const QString& accessCode = QString());
+    void broadcastPresence();
+    void sendDiscoveryResponse(const QHostAddress& to, quint16 port);
+    static QString localIpv4();
     std::shared_ptr<TcpConnection> connectTo(const QString& ip, uint16_t port);
     void disconnectAll();
     
@@ -40,14 +45,19 @@ private slots:
     void onTcpMessageReceived(const QByteArray& data);
     void onUdpMessageReceived();
     void onConnectionDisconnected(const QString& deviceId);
+    void onDiscoveryBroadcastTimer();
 
 private:
     void setupUdpReceiver();
-    void processDiscoveryMessage(const QByteArray& data);
+    void processDiscoveryMessage(const QByteArray& data, const QHostAddress& from, quint16 fromPort);
 
     bool m_running = false;
     uint16_t m_port = 0;
     QString m_deviceId;
+    QString m_discoName;
+    QString m_discoCode;
+    quint16 m_discoPort = 0;
+    QTimer* m_discoveryBroadcastTimer = nullptr;
     class QTcpServer* m_tcpServer = nullptr;
     class QUdpSocket* m_udpSocket = nullptr;
     QHash<QString, std::shared_ptr<TcpConnection>> m_connections;

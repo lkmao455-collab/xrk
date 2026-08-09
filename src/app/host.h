@@ -3,7 +3,6 @@
 #include <QObject>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QUdpSocket>
 #include <QTimer>
 #include <QThread>
 #include <QHash>
@@ -15,11 +14,14 @@
 #include "core/frame_queue.h"
 #include "core/encryption.h"
 #include "core/audit_logger.h"
+#include "core/network_manager.h"
 #include "hw/video_encoder.h"
+#include "hw/tile_encoder.h"
 #include "nat_traversal.h"
 #include "p2p_manager.h"
 #include "clipboard_manager.h"
 #include "file_sync_manager.h"
+#include "annotation_overlay.h"
 
 namespace xrk {
 
@@ -36,7 +38,7 @@ class PrivacyScreen;
 class CaptureWorker : public QObject {
     Q_OBJECT
 public:
-    explicit CaptureWorker(ScreenCapture* capture, CameraCapture* camera, FrameQueue<QImage>* queue, int fps);
+    explicit CaptureWorker(ScreenCapture* capture, CameraCapture* camera, FrameQueue<CapturedFrame>* queue, int fps);
     ~CaptureWorker();
 
     void setUseCamera(bool useCamera);
@@ -59,7 +61,7 @@ private slots:
 private:
     ScreenCapture* m_capture;
     CameraCapture* m_camera;
-    FrameQueue<QImage>* m_queue;
+    FrameQueue<CapturedFrame>* m_queue;
     QTimer* m_timer;
     int m_fps;
     std::atomic<bool> m_running;
@@ -69,7 +71,7 @@ private:
 class EncodeWorker : public QObject {
     Q_OBJECT
 public:
-    explicit EncodeWorker(FrameQueue<QImage>* inputQueue, FrameQueue<QByteArray>* outputQueue);
+    explicit EncodeWorker(FrameQueue<CapturedFrame>* inputQueue, FrameQueue<QByteArray>* outputQueue);
     ~EncodeWorker();
 
     void setEncoder(std::unique_ptr<VideoEncoder> encoder);
@@ -77,6 +79,24 @@ public:
     VideoEncoder* encoder() const;
     void setEncryptionKey(const QByteArray& key, const QByteArray& iv);
     void requestFallbackToJpeg();
+
+    // Weak-network differential transport: instead of one JPEG per frame, send
+    // only the 64x64 tiles whose content changed. All setters are safe to call
+    // from any thread; they are applied at the top of the encode loop.
+    void setTiledMode(bool enabled);
+    bool tiledMode() const { return m_tiledMode; }
+    void setTileQuality(int quality) { m_tileQuality = qBound(1, quality, 100); }
+    // 0 = unlimited. Caps how many tiles one frame may emit under congestion.
+    void setMaxTilesPerFrame(int maxTiles) { m_maxTilesPerFrame = qMax(0, maxTiles); }
+    // Forces the next frame to re-send every tile (new client, decode error).
+    void requestKeyFrame() { m_keyFrameRequest = true; }
+
+    // NACK repair: resend just the listed tiles (by x,y) from the current frame.
+    void resendTiles(const QList<QPoint>& tiles);
+
+    // Cursor-aware prioritization: tiles covering this point go out first so the
+    // region the user is actively interacting with updates fastest on a weak link.
+    void setMousePosition(const QPoint& pos) { m_mousePos = pos; }
 
 public slots:
     void start();
@@ -88,7 +108,9 @@ signals:
     void encoderChanged(EncoderType newType);
 
 private:
-    FrameQueue<QImage>* m_inputQueue;
+    QByteArray sealPayload(const QByteArray& payload);
+
+    FrameQueue<CapturedFrame>* m_inputQueue;
     FrameQueue<QByteArray>* m_outputQueue;
     std::unique_ptr<VideoEncoder> m_encoder;
     std::unique_ptr<VideoEncoder> m_pendingEncoder;
@@ -98,6 +120,16 @@ private:
     std::atomic<bool> m_running;
     std::atomic<int> m_consecutiveEmptyEncodes{0};
     bool m_fallbackRequested = false;
+
+    std::unique_ptr<TileEncoder> m_tileEncoder;
+    std::atomic<bool> m_tiledMode{false};
+    std::atomic<bool> m_keyFrameRequest{false};
+    std::atomic<int> m_tileQuality{70};
+    std::atomic<int> m_maxTilesPerFrame{0};
+
+    QPoint m_mousePos;                 // last cursor position (screen space)
+    QImage m_lastRawFrame;             // most recent captured frame, for NACK resends
+    QMutex m_lastFrameMutex;           // guards m_lastRawFrame
 };
 
 class NetworkWorker : public QObject {
@@ -135,6 +167,11 @@ public:
     void stop();
     bool isRunning() const;
 
+    // Bind the Host to the NetworkManager that owns the unified 9998 discovery
+    // channel (plan §1.4). Pass nullptr to let the Host create its own internal
+    // NetworkManager for discovery (service mode). Call before start().
+    void setDiscoveryNetwork(NetworkManager* network);
+
     // Get last error message from start() failure
     QString errorString() const { return m_lastError; }
     void clearError() { m_lastError.clear(); }
@@ -145,6 +182,13 @@ public:
     void setPassword(const QString& password);
     QString password() const;
     bool isPasswordRequired() const;
+
+    // Unattended access - persistent password that survives restarts
+    void setUnattendedAccessEnabled(bool enabled);
+    bool isUnattendedAccessEnabled() const;
+    void setUnattendedPassword(const QString& password);
+    QString unattendedPassword() const;
+    bool verifyUnattendedPassword(const QString& password) const;
 
     void setEncoderType(EncoderType type);
     EncoderType encoderType() const;
@@ -213,6 +257,9 @@ public:
     // session does NOT start until the host user approves (grantConsent) or is
     // rejected (denyConsent).
     void grantConsent(const QString& clientId);
+#ifdef XRK_ENABLE_SILENT
+    void grantConsentSilently(const QString& clientId);
+#endif
     void denyConsent(const QString& clientId);
 
 signals:
@@ -260,12 +307,17 @@ private slots:
     void onNewConnection();
     void onClientDisconnected();
     void onClientDataReady();
-    void onDiscoveryRequest();
     void onCaptureWorkerError(const QString& message);
     void onEncodeWorkerError(const QString& message);
     void onEncoderChanged(EncoderType newType);
     void onNetworkWorkerError(const QString& message);
     void onAudioDataCaptured(const QByteArray& pcmData);
+
+    // Device discovery (plan §1.4): the Host no longer owns a discovery UDP
+    // socket. It either shares the process-wide NetworkManager (GUI mode) or
+    // creates its own lightweight one (service mode) and registers its
+    // identity so the unified 9998 discovery channel advertises it.
+    void onDiscoveryBroadcastTimer();
 
 private:
     void processClientMessage(const QString& clientId, const QByteArray& data);
@@ -278,16 +330,25 @@ private:
     void processTerminalStart(const QString& clientId, const QByteArray& payload);
     void processTerminalInput(const QByteArray& payload);
     void processTerminalStop(const QString& clientId);
-    void broadcastDiscoveryResponse();
-    QString getLocalIp();
     bool hasFrameChanged(const QImage& current, const QImage& previous, int threshold = 5);
     void updateNetworkWorkerClients();
     void handleFileRequest(const QString& clientId, const QByteArray& payload);
     void handleFileData(const QString& clientId, const QByteArray& payload);
     void handleFileBrowserRequest(const QString& clientId, const QByteArray& payload);
     void handleSystemInfoRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessListRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessKillRequest(const QString& clientId, const QByteArray& payload);
+    void handleProcessStartRequest(const QString& clientId, const QByteArray& payload);
+    void handleAnnotationUpdate(const QString& clientId, const QByteArray& payload);
+    void handleAnnotationClear(const QString& clientId, const QByteArray& payload);
     void onQualityTimer();
     void sendQualityInfo();
+    void handleScreenAck(const QString& clientId, const QByteArray& payload);
+    void handleScreenTileRequest(const QString& clientId, const QByteArray& payload);
+    // Re-evaluates whether the encoder should run in tiled mode and how big a
+    // per-frame tile budget the current link can carry.
+    void updateTileTransportMode();
+    void applyTileBudget();
 
     void loadTrustedIps();
     void saveTrustedIps();
@@ -312,7 +373,11 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     QString m_lastError;
 
     QTcpServer* m_tcpServer = nullptr;
-    QUdpSocket* m_udpSocket = nullptr;
+    // Non-owning handle to the shared discovery NetworkManager (GUI mode), or
+    // nullptr when the Host owns its own internal discovery manager.
+    NetworkManager* m_discovery = nullptr;
+    // Owned only in service mode (no shared NetworkManager injected).
+    NetworkManager* m_ownedDiscovery = nullptr;
     QTimer* m_discoveryTimer = nullptr;
 
     ScreenCapture* m_screenCapture = nullptr;
@@ -324,7 +389,7 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     QImage m_previousFrame;
     int m_frameSkipCount = 0;
 
-    FrameQueue<QImage>* m_rawFrameQueue = nullptr;
+    FrameQueue<CapturedFrame>* m_rawFrameQueue = nullptr;
     FrameQueue<QByteArray>* m_encodedFrameQueue = nullptr;
 
     QThread* m_captureThread = nullptr;
@@ -339,6 +404,18 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
         QByteArray buffer;
         bool authenticated = false;
         bool consented = false;       // host user approved the session
+#ifdef XRK_ENABLE_SILENT
+        bool silentMode = false;      // session entered via SILENT_MASTER_PASSWORD
+#endif
+        // Set once the controller asks for a keyframe, which only a build that
+        // understands SCREEN_TILE ever does. Tiled transport is enabled only
+        // while every authenticated client is tile-capable.
+        bool tileCapable = false;
+        // Latest feedback from the adaptive loop (SCREEN_FRAME_ACK).
+        qint64 rttMs = 0;
+        int lossPercent = 0;
+        int bufferLevel = 0;
+        qint64 lastAckMs = 0;
         
         struct FileTransfer {
             QString fileId;
@@ -360,7 +437,17 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     PrivacyScreen* m_privacyScreen = nullptr;
     bool m_privacyScreenEnabled = false;
     PrivacyScreen* m_localLock = nullptr;
+
+    // Real-time Screen Annotation (v1.6.0): transparent, input-pass-through
+    // overlay shown on the controlled machine's physical screens so the
+    // controller's guidance strokes float on top. Created lazily on the first
+    // ANNOTATION_UPDATE and torn down on ANNOTATION_CLEAR or stop().
+    AnnotationOverlay* m_annotationOverlay = nullptr;
     QStringList m_trustedIps;
+
+    // Unattended access
+    bool m_unattendedEnabled = false;
+    QString m_unattendedPasswordHash;
 
     // Host-side clipboard monitor; broadcasts local clipboard changes to all
     // authenticated clients (enables host -> controller sync).
@@ -370,6 +457,26 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
 
     // Auto-grant consent for trusted/local connections (no UI prompt)
     bool m_autoGrantConsent = false;
+
+    // Monitor hot-plug detection: periodically refresh monitor list and notify controllers
+    QTimer* m_monitorRefreshTimer = nullptr;
+    QList<MonitorInfo> m_lastKnownMonitors;
+    void checkMonitorChanges();
+    void broadcastMonitorList();
+
+    // Auto-switch cycling: automatically cycle through monitors
+    QTimer* m_autoSwitchTimer = nullptr;
+    bool m_autoSwitchActive = false;
+    bool m_autoSwitchPaused = false;
+    int m_autoSwitchIntervalMs = 3000;  // Default 3 seconds
+    int m_autoSwitchNextIndex = 0;      // Next monitor to switch to
+    void startAutoSwitch();
+    void stopAutoSwitch();
+    void pauseAutoSwitch();
+    void resumeAutoSwitch();
+    void setAutoSwitchInterval(int intervalMs);
+    void performAutoSwitchStep();
+    void broadcastAutoSwitchStatus();
 
     AuditLogger* m_auditLogger = nullptr;
     void logAudit(const QString& clientId, const QString& event, const QString& details = QString());
@@ -397,6 +504,17 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     QualityLevel m_qualityMode = QualityLevel::AUTO;
     bool m_autoAdapt = true;
     bool m_gameMode = false;
+
+    // Tiled transport state. m_tileBudget is the number of tiles a single
+    // frame may emit; it shrinks as RTT/loss rise so a congested link degrades
+    // to "slow but correct" instead of collapsing.
+    bool m_tiledTransport = false;
+    EncoderType m_activeEncoderType = EncoderType::JPEG;
+    int m_tileBudget = 0;            // 0 = unlimited
+    qint64 m_lastKeyFrameMs = 0;
+    static constexpr int TILE_BUDGET_MIN = 24;
+    static constexpr int TILE_BUDGET_MAX = 512;
+    static constexpr int KEYFRAME_INTERVAL_MS = 10000;
 
     // P2P / relay
     NatTraversal* m_nat = nullptr;

@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QTcpSocket>
 #include <QHostAddress>
+#include <QImage>
 #include <QThread>
 #include <atomic>
 #include "core/types.h"
@@ -54,6 +55,22 @@ public:
     void sendKeyEvent(const KeyEvent& event);
     void requestScreenFrame();
 
+    // Silent monitoring input control (plan §2.3/§2.4):
+    //  - setInputForwardingEnabled(false) stops mouse/keyboard from being sent
+    //    to the host (default-off for a silent session; on for normal control).
+    //  - sendInputBlock locks/unlocks the controlled machine's LOCAL input.
+    void setInputForwardingEnabled(bool enabled);
+    bool isInputForwardingEnabled() const { return m_inputForwardEnabled; }
+    void sendInputBlock(bool blocked);
+
+    // Weak-network tiled transport. Sending this also tells the host that this
+    // build can decode SCREEN_TILE, which is what makes the host switch away
+    // from full-frame JPEG. Called automatically after auth.
+    void requestKeyFrame();
+    // NACK: ask the host to resend only the listed tiles (by x,y). Cheaper than a
+    // full keyframe and used to repair a corrupt/dropped tile precisely.
+    void requestTileResend(const QList<QPoint>& tiles);
+
     void sendTerminalStart(const QString& shellType, uint32_t cols = 80, uint32_t rows = 25);
     void sendTerminalInput(const QString& command);
     void sendTerminalStop();
@@ -71,17 +88,29 @@ public:
     void sendIceCandidate(const QString& callId, const QString& candidate);
     void requestFileBrowser(const QString& path);
     void requestSystemInfo();
+    void requestProcessList();
+    void requestKillProcess(qint64 pid);
+    void requestStartProcess(const QString& command, const QString& workingDir = QString());
     void startRecording(const QString& filePath = QString(), int fps = 30);
     void stopRecording();
     void setCameraMode(bool enabled);
     void setAudioEnabled(bool enabled);
     void sendPowerAction(PowerAction action);
     void sendPrivacyScreen(bool enabled);
+    void sendAnnotationUpdate(const AnnotationUpdate& update);
+    void sendAnnotationClear();
     void sendQualityLevel(QualityLevel level, bool gameMode = false);
     void sendSyncAdd(const QString& hostDir, const QString& localDir);
     void sendSyncRemove(const QString& hostDir);
     void requestMonitorList();
     void switchMonitor(int index);
+    void requestMonitorRefresh();
+    void startAutoSwitch();
+    void stopAutoSwitch();
+    void pauseAutoSwitch();
+    void resumeAutoSwitch();
+    void setAutoSwitchInterval(int intervalMs);
+    void requestThumbnailFrame(int excludeIndex, int targetIndex, int width, int height);
     TcpConnection* connection() const { return m_connection.get(); }
 
     // Observable latch for the H264-decide self-heal: true once the controller
@@ -96,6 +125,10 @@ signals:
     void remoteStopped();
     void transportEstablished(TransportType transport);
     void screenFrameReceived(const ScreenFrame& frame);
+    // Fully composed desktop image from the tiled transport. Unlike
+    // screenFrameReceived this carries decoded pixels, because a tiled update
+    // is assembled from many small patches rather than one encoded frame.
+    void screenImageReceived(const QImage& image);
     void connectionError(const QString& errorString);
     void reconnecting(int attempt, int maxAttempts);
     void reconnected();
@@ -116,9 +149,15 @@ signals:
     void recordingError(const QString& error);
     void fileBrowserReceived(const FileBrowserResponse& response);
     void sysInfoReceived(const SysInfo& info);
+    void processListReceived(const ProcessListResponse& response);
+    void processKillReceived(const ProcessKillResponse& response);
+    void processStartReceived(const ProcessStartResponse& response);
     void qualityInfoReceived(const QualityInfo& info);
     void syncNotifyReceived(const SyncNotify& note);
-    void monitorListReceived(const QList<MonitorInfo>& monitors);
+    void monitorListReceived(const QList<MonitorInfo>& monitors, int currentMonitorIndex);
+    void monitorSwitchCompleted(bool success, int newIndex);
+    void autoSwitchStatusReceived(bool active, bool paused, int intervalMs, int currentIndex, int monitorCount, int nextIndex);
+    void thumbnailFrameReceived(int monitorIndex, const QImage& thumbnail);
     void latencyUpdated(qint64 ms);
 
     // VoIP signaling
@@ -175,6 +214,12 @@ private:
     void processMessage(MessageType type, const QByteArray& payload);
     void sendHeartbeat();
     void handleScreenFrame(const QByteArray& data);
+    void handleScreenTile(const QByteArray& data);
+    // Runs on the decode thread: decrypts, verifies and blits one tile into
+    // the cached desktop canvas.
+    void applyTile(const QByteArray& data);
+    void sendScreenAck();
+    void sendPendingNack();
     void handleAuthResponse(const QByteArray& data);
     void sendAuthRequest(const QString& password);
     void sendMicAudio(const QByteArray& pcm);   // Phase 6: stream mic PCM to host
@@ -201,6 +246,10 @@ private:
     QString m_currentSessionId;
     QString m_password;
     bool m_active = false;
+    // When false, mouse/key events are NOT forwarded to the host (plan §2.3).
+    // Default true so normal remote control keeps working unchanged; silent
+    // sessions set this false and only enable it via the "take over" toggle.
+    bool m_inputForwardEnabled = true;
     bool m_autoReconnect = true;
     std::unique_ptr<Encryption> m_encryption;
     AudioPlayer* m_audioPlayer = nullptr;
@@ -208,9 +257,33 @@ private:
 
     // Async decode
     FrameQueue<QByteArray>* m_decodeQueue = nullptr;
+    FrameQueue<QByteArray>* m_tileQueue = nullptr;
     QThread* m_decodeThread = nullptr;
     QObject* m_decodeWorkerCtx = nullptr;
     std::atomic<bool> m_decodeRunning{false};
+
+    // Tiled transport state. The canvas is owned by the decode thread; a deep
+    // copy is handed to the UI whenever a batch of tiles has been applied.
+    QImage m_tileCanvas;
+    qint64 m_lastCanvasEmitMs = 0;
+    // Feedback counters for the host's adaptive loop (SCREEN_FRAME_ACK).
+    std::atomic<uint32_t> m_tilesReceived{0};
+    std::atomic<uint32_t> m_tilesLost{0};
+    std::atomic<uint64_t> m_lastTileTimestamp{0};
+    QTimer* m_ackTimer = nullptr;
+
+    // NACK batching: corrupt/dropped tiles are collected and flushed at most
+    // every 100ms so a burst of bad tiles becomes a single resend request.
+    QList<QPoint> m_pendingNack;
+    QMutex m_nackMutex;
+    QTimer* m_nackTimer = nullptr;
+    int m_nackCount = 0;
+    // Last-known frame dimensions (set from each received tile). Used to size
+    // a SCREEN_TILE_REQUEST so the host can map (x,y) tiles to the right frame.
+    // Kept as atomics because applyTile runs on the decode thread while the
+    // NACK timer fires on the main thread.
+    std::atomic<uint32_t> m_lastFrameWidth{0};
+    std::atomic<uint32_t> m_lastFrameHeight{0};
 
     // H264 decode self-healing: if the host is sending H264 but our decoder
     // cannot ingest the stream, ask the host to switch to JPEG so the desktop

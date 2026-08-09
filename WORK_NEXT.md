@@ -1,3 +1,20 @@
+✅ **实时屏幕标注 (v1.6.0)**:
+  - 控制端「标注」开关后，自由笔迹实时同步到被控端屏幕（overlay 显示）
+  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184) + `AnnotationStroke`/`AnnotationUpdate` 结构体
+  - 协议编解码：ProtocolManager::encodeAnnotationUpdate/decodeAnnotationUpdate（BigEndian 二进制）
+  - 后端 `AnnotationOverlay`：透明、穿透输入的顶层覆盖层，覆盖全部物理屏幕，按 frame 坐标缩放绘制
+  - Host：收到标注即惰性创建 overlay 并 `setStrokes()`；仅要求已鉴权（无需 consented）；会话断开 / stop() / CLEAR 时销毁
+  - 控制端 `RemoteDesktopWidget`：每笔带独立颜色/线宽，松手即把完整笔迹集发给被控端；「清空」同步清除两端
+  - 单测：AnnotationUpdate 往返 + 枚举值断言（test_protocol_extended.cpp）
+
+✅ **多屏切换优化 (v1.2.0)**:
+  - 线程安全：ScreenCapture添加QMutex保护并发访问
+  - 编码器分辨率适配：切换后自动重新初始化编码器
+  - 切换结果反馈：MONITOR_SWITCH_ACK消息
+  - 快捷键：Ctrl+1-9切换指定显示器，Ctrl+Tab循环切换
+  - 过渡效果：保持最后一帧+淡入动画
+  - UI增强：显示器下拉框显示分辨率信息
+
 ✅ **Phase E2 Milestone 1**: WebSocket↔TCP网关 + 打包网页客户端页面
   - 新增文件: web_socket_gateway.h/.cpp, resources/web/client.html, qrc注册
   - 新增测试: test_web_socket_gateway.cpp (5用例, 全绿)
@@ -300,3 +317,38 @@
 
 **当前运行实例**: 网关 PID 24004（`--ws 8080`）+ 无头 Host PID 16128（`--host 9999`）已启动，
 SPA 已含解密修复；仅因环境无法抓屏而无画面流。
+
+---
+
+✅ **v1.4.0 功能增强 (2026-08-09)**: 12项新功能 + 构建修复
+
+1. **黑名单联系人** — `blockUser()`/`unblockUser()` API + 数据库 `blocked_users` 表 + 消息过滤
+2. **消息置顶** — `pinMessage()`/`unpinMessage()` API + `is_pinned` 字段 + `loadPinnedMessages()` 查询
+3. **语音消息播放控件** — `VoicePlaybackWidget`（播放/暂停/进度条/速度选择/时间显示）
+4. **审计日志查看器** — `AuditLogViewer`（表格/过滤/导出/清除）
+5. **IP 黑名单 + 频率限制** — `SecurityManager` 新增 `checkRateLimit()`/`recordFailedAttempt()`/`isIpLockedOut()` + `blacklisted_ips` 表
+6. **连接质量仪表板** — `RemoteDesktopWidget` 可切换统计覆盖层（FPS/带宽/延迟/编码/分辨率）
+7. **会话录像回放** — `RecordingPlayer`（AVI 解析/播放控制/进度条/速度切换）
+8. **聊天备份/恢复** — `exportDatabase()`/`importDatabase()` API
+9. **快捷键管理器** — `ShortcutManager` + `ShortcutManagerWidget`（注册/自定义/恢复默认/持久化）
+10. **自动更新** — `Updater`（GitHub Releases API/版本对比/自动检查/更新信息）
+11. **双因素认证 (2FA/TOTP)** — `Tot pManager`（密钥生成/验证码/备用码/QR URI）
+12. **无人值守访问** — `Host` 持久密码存储（SHA-256 + QSettings）
+
+**数据库**: 新增 `blocked_users`、`blacklisted_ips` 表，`messages.is_pinned` 列，迁移版本 4
+**构建**: `xrk_app` +4 文件，`xrk_ui` +4 文件，UI 链接 `Qt6::Multimedia`
+**编译**: 全量编译通过，633 测试框架就绪
+
+---
+
+✅ **v1.5.0 功能增强 (2026-08-09)**: 远程进程管理器
+
+1. **远程进程列表** — `PROCESS_LIST_REQ/RESP`(172/173) + `ProcessCollector::collectProcessList()`（跨平台枚举）
+2. **结束进程** — `PROCESS_KILL_REQ/RESP`(174/175) + `ProcessCollector::killProcess()`，需 `consented` + 审计
+3. **启动进程** — `PROCESS_START_REQ/RESP`(176/177) + `ProcessCollector::startProcess()`，需 `consented` + 审计
+4. **进程管理器 UI** — `RemoteProcessWidget`（进程表格 PID/名称/内存 + 3s 轮询 + 结束/启动按钮），挂载「进程」分页
+5. **单元测试** — `test_protocol_extended.cpp` 增加进程协议 round-trip 与枚举值断言
+
+**后端**: 新增 `src/app/process_collector.{h,cpp}`（注册 `src/app/CMakeLists.txt`，WIN32 链接 `psapi.lib`）
+**UI**: 新增 `src/ui/remote_process_widget.{h,cpp}`（注册 `src/ui/CMakeLists.txt`），`MainWindow` 新增 `PAGE_PROCESS` 分页
+**安全**: 列进程仅需 `authenticated`；结束/启动强制 `consented` 门禁 + `logAuditOp`，全程不触碰 `XRK_ENABLE_SILENT` 后门

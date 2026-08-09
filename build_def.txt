@@ -1,0 +1,14 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.14.51+25f168cee
+
+  Automatic MOC and UIC for target xrk_core
+  xrk_core.vcxproj -> E:\xrk\build\src\core\Release\xrk_core.lib
+  Automatic MOC and UIC for target xrk_hw
+  xrk_hw.vcxproj -> E:\xrk\build\src\hw\Release\xrk_hw.lib
+  Automatic MOC and UIC for target xrk_app
+  host.cpp
+  xrk_app.vcxproj -> E:\xrk\build\src\app\Release\xrk_app.lib
+  Automatic MOC and UIC for target xrk_ui
+  xrk_ui.vcxproj -> E:\xrk\build\src\ui\Release\xrk_ui.lib
+  Automatic MOC and UIC for target xrk
+  xrk.vcxproj -> E:\xrk\build\src\Release\xrk.exe
+  Copying translation: xrk_en_US.qm	Copying translation: xrk_zh_CN.qm
