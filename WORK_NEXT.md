@@ -352,3 +352,16 @@ SPA 已含解密修复；仅因环境无法抓屏而无画面流。
 **后端**: 新增 `src/app/process_collector.{h,cpp}`（注册 `src/app/CMakeLists.txt`，WIN32 链接 `psapi.lib`）
 **UI**: 新增 `src/ui/remote_process_widget.{h,cpp}`（注册 `src/ui/CMakeLists.txt`），`MainWindow` 新增 `PAGE_PROCESS` 分页
 **安全**: 列进程仅需 `authenticated`；结束/启动强制 `consented` 门禁 + `logAuditOp`，全程不触碰 `XRK_ENABLE_SILENT` 后门
+
+---
+
+✅ **v1.6.0 功能增强 (2026-08-09)**: 实时屏幕标注（端到端）
+
+1. **标注同步协议** — `ANNOTATION_UPDATE`(183)/`ANNOTATION_CLEAR`(184) + `AnnotationStroke`/`AnnotationUpdate` 结构体（纯二进制 QDataStream）
+2. **被控端透明 overlay** — `AnnotationOverlay`（穿透点击、跨屏、按帧坐标等比映射绘制）
+3. **Host 接收** — `handleAnnotationUpdate`/`handleAnnotationClear`（仅 `authenticated` + 审计 `annotation`/`annotation_clear`）+ 会话断开自动清理
+4. **控制端发送** — `RemoteController::sendAnnotationUpdate`/`sendAnnotationClear`，复用 `remote_desktop_widget` 既有本地标注层（每笔独立颜色/宽度）
+5. **单元测试** — `test_protocol_extended.cpp` 增加标注协议 round-trip 与枚举值断言
+
+**后端**: 新增 `src/app/annotation_overlay.{h,cpp}`（注册 `src/app/CMakeLists.txt`）
+**安全**: 全程不触碰 `XRK_ENABLE_SILENT` 后门、未引入 tiled-transport；在 `OFF` 下编译，干净二进制

@@ -1371,3 +1371,29 @@ TEST_F(ProtocolExtendedTest, AnnotationMessageTypeValues) {
     EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_UPDATE), 183u);
     EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_CLEAR), 184u);
 }
+
+TEST_F(ProtocolExtendedTest, AnnotationUpdateRoundTrip) {
+    AnnotationUpdate update;
+    update.frameWidth = 1920;
+    update.frameHeight = 1080;
+    AnnotationStroke s;
+    s.color = Qt::red;
+    s.width = 4;
+    s.points.append(QPoint(10, 20));
+    s.points.append(QPoint(30, 40));
+    s.points.append(QPoint(50, 60));
+    update.strokes.append(s);
+
+    QByteArray encoded = ProtocolManager::encodeAnnotationUpdate(update);
+    EXPECT_FALSE(encoded.isEmpty());
+
+    AnnotationUpdate decoded = ProtocolManager::decodeAnnotationUpdate(encoded);
+    EXPECT_EQ(decoded.frameWidth, 1920);
+    EXPECT_EQ(decoded.frameHeight, 1080);
+    ASSERT_EQ(decoded.strokes.size(), 1);
+    EXPECT_EQ(decoded.strokes[0].color, QColor(Qt::red));
+    EXPECT_EQ(decoded.strokes[0].width, 4);
+    ASSERT_EQ(decoded.strokes[0].points.size(), 3);
+    EXPECT_EQ(decoded.strokes[0].points[0], QPoint(10, 20));
+    EXPECT_EQ(decoded.strokes[0].points[2], QPoint(50, 60));
+}

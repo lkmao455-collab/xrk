@@ -2,6 +2,14 @@
 
 ## 版本历史
 
+### v1.6.0 — 实时屏幕标注（端到端）
+- **实时屏幕标注同步**：控制端画完自由笔标注即同步给被控端，在被控端物理屏以穿透式透明 overlay 显示，引导远端用户
+  - 协议：`ANNOTATION_UPDATE`(183) / `ANNOTATION_CLEAR`(184)（纯二进制 QDataStream）
+  - 新增 `AnnotationOverlay`：穿透点击的透明置顶窗口，跨所有屏幕，按帧坐标等比映射绘制
+  - Host 仅 `authenticated` 即可接收，并写审计日志 `annotation` / `annotation_clear`
+  - 控制端每笔携带独立颜色/宽度；「清空」两端同步
+  - 复用 `remote_desktop_widget` 既有本地标注层（Phase 4）
+
 ### v1.5.0 — 远程进程管理器
 - **远程进程管理器**：控制端连接后可查看/结束/启动被控端进程
   - 协议：`PROCESS_LIST_REQ/RESP`(172/173)、`PROCESS_KILL_REQ/RESP`(174/175)、`PROCESS_START_REQ/RESP`(176/177)
