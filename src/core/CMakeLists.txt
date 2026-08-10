@@ -41,7 +41,7 @@ if(EXISTS "${FFMPEG_ROOT}/include")
     target_include_directories(xrk_core PUBLIC "${FFMPEG_ROOT}/include")
 endif()
 
-target_link_libraries(xrk_core PUBLIC Qt6::Core Qt6::Network Qt6::Gui)
+target_link_libraries(xrk_core PUBLIC Qt6::Core Qt6::Network Qt6::Gui Qt6::Concurrent)
 
 if(WIN32)
     # ArpResolver uses SendARP() (iphlpapi) and InetPtonA() (ws2_32).

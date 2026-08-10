@@ -2,6 +2,7 @@
 #include "network_manager.h"
 #include "protocol_manager.h"
 #include "logger.h"
+#include <QtConcurrent>
 #include <QNetworkInterface>
 #include <QThreadPool>
 #include <QRunnable>
@@ -17,6 +18,14 @@ SubnetScanner::SubnetScanner(NetworkManager* network, QObject* parent)
 
 SubnetScanner::~SubnetScanner() {
     stopScan();
+    // Join the background scan worker. The worker lambda captures `this` and keeps
+    // touching this object's members until it returns, so we must not free `this`
+    // (or let the test delete us) while it is still running. Blocking here guarantees
+    // the worker has fully exited before destruction completes, eliminating the
+    // use-after-free that previously corrupted the heap and crashed later tests.
+    if (m_future.isRunning()) {
+        m_future.waitForFinished();
+    }
 }
 
 void SubnetScanner::startScan() {
@@ -44,8 +53,9 @@ void SubnetScanner::startScan(const QHostAddress& startIp, int count) {
     m_totalHosts = count;
     LOG_INFO("SubnetScanner: scanning " + QString::number(count) + " hosts from " + startIp.toString());
 
-    // Run scan in a separate thread
-    QThreadPool::globalInstance()->start([this, startIp, count]() {
+    // Run scan in a separate thread. We track the returned QFuture so the destructor
+    // can join the worker and guarantee it never outlives this object.
+    m_future = QtConcurrent::run([this, startIp, count]() {
         scanWorker(startIp, 0, count);
     });
 }

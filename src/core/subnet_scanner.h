@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QHostAddress>
 #include <QList>
+#include <QFuture>
 #include <atomic>
 #include "types.h"
 
@@ -46,6 +47,11 @@ private:
     int m_totalHosts = 0;
     int m_foundCount = 0;
     int m_connectTimeoutMs = 5000;  // 5 seconds default
+
+    // Tracks the background scan worker so the destructor can join it. Without this,
+    // deleting the SubnetScanner mid-scan left the worker thread running and
+    // dereferencing freed `this` members (use-after-free → heap corruption).
+    QFuture<void> m_future;
 };
 
 } // namespace xrk
