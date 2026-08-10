@@ -82,10 +82,24 @@ TEST(HostAuth, SendsKeyOnAutoAuth) {
                 buf.left(64).toHex(' ').toStdString().c_str());
     }
     if (gotAuth) {
-        // AUTH_RESP must be "OK" (2) + 32-byte key + 16-byte IV = 50 bytes.
-        EXPECT_EQ(authPayload.size(), 2 + 32 + 16)
-            << "AUTH_RESP is missing the session key";
+        // v1.8.0: AUTH_RESP is "OK"(2) + 32-byte key + 16-byte IV +
+        // [u8 grantedLevel][u32 grantedCaps BE] = 55 bytes.
+        EXPECT_EQ(authPayload.size(), 2 + 32 + 16 + 1 + 4)
+            << "AUTH_RESP is missing the session key or the permission tail";
         EXPECT_TRUE(authPayload.startsWith("OK"));
+
+        AuthResponse resp = ProtocolManager::decodeAuthResponse(authPayload);
+        EXPECT_TRUE(resp.ok);
+        EXPECT_EQ(resp.sessionKey.size(), 32);
+        EXPECT_EQ(resp.iv.size(), 16);
+        // A no-password session is auto-granted at the host's default preset
+        // level (Operator), which must at least be able to see the screen.
+        EXPECT_EQ(resp.grantedLevel, static_cast<uint8_t>(PermLevel::Operator));
+        EXPECT_TRUE(PermissionModel::hasCapability(resp.grantedCaps, Capability::ViewScreen));
+        EXPECT_TRUE(PermissionModel::hasCapability(resp.grantedCaps, Capability::ControlInput));
+        // Operator is not an admin: no user management, no terminal.
+        EXPECT_FALSE(PermissionModel::hasCapability(resp.grantedCaps, Capability::UserManage));
+        EXPECT_FALSE(PermissionModel::hasCapability(resp.grantedCaps, Capability::Terminal));
     }
 
     sock.disconnectFromHost();

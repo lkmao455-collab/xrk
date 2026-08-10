@@ -5,6 +5,8 @@
 #include <QDateTime>
 #include "database_manager.h"
 #include "ipmsg_manager.h"
+#include "core/permission_model.h"
+#include "core/types.h"
 
 using namespace xrk;
 
@@ -374,9 +376,21 @@ TEST_F(DatabaseManagerTest, BuildSyncSnapshotRoundTripsAllTypes) {
     EXPECT_EQ(snap.groups[0].groupId, "grp-sync");
     EXPECT_EQ(snap.groups[0].memberIds, QList<QString>({"dev-a", "dev-sync"}));
 
-    ASSERT_EQ(snap.settings.size(), 1);
-    EXPECT_EQ(snap.settings[0].key, "sync_test_key");
-    EXPECT_EQ(snap.settings[0].value, "sync_test_value");
+    // Expect two settings: the one this test set plus the host-wide capability-toggle
+    // setting seeded by the v5 migration. Verify the test's own setting by key rather
+    // than by index, since the seeded toggle is always present.
+    ASSERT_EQ(snap.settings.size(), 2);
+    const DatabaseManager::SyncSettingRow* testSetting = nullptr;
+    for (const auto& s : snap.settings) {
+        if (s.key == "sync_test_key") { testSetting = &s; break; }
+    }
+    ASSERT_NE(testSetting, nullptr);
+    EXPECT_EQ(testSetting->value, "sync_test_value");
+    bool hasCapabilityToggle = false;
+    for (const auto& s : snap.settings) {
+        if (s.key == "perm/capability_toggles") { hasCapabilityToggle = true; break; }
+    }
+    EXPECT_TRUE(hasCapabilityToggle);
 
     ASSERT_EQ(snap.messages.size(), 1);
     EXPECT_EQ(snap.messages[0].content, "sync msg");
@@ -501,4 +515,273 @@ TEST_F(DatabaseManagerTest, ApplySyncSnapshotGroupMerge) {
         }
     }
     EXPECT_TRUE(found);
+}
+
+// --- Permission management (schema v5) ---
+
+namespace {
+
+// Reads a raw column straight from the users table, bypassing the public API,
+// so tests can assert on storage details such as salt rotation.
+QString rawUserField(const QString& username, const QString& column) {
+    QSqlQuery q(QSqlDatabase::database("ipmsg_connection"));
+    q.prepare("SELECT " + column + " FROM users WHERE username = ?");
+    q.addBindValue(username);
+    if (q.exec() && q.next()) return q.value(0).toString();
+    return QString();
+}
+
+} // namespace
+
+TEST_F(DatabaseManagerTest, MigrationCreatesPermissionSchema) {
+    for (const QString& t : {QStringLiteral("users"), QStringLiteral("device_permissions")}) {
+        QSqlQuery q(QSqlDatabase::database("ipmsg_connection"));
+        ASSERT_TRUE(q.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='" + t + "'"));
+        EXPECT_TRUE(q.next()) << "missing table: " << t.toStdString();
+    }
+
+    QSqlQuery ver(QSqlDatabase::database("ipmsg_connection"));
+    ASSERT_TRUE(ver.exec("SELECT version FROM schema_version"));
+    ASSERT_TRUE(ver.next());
+    EXPECT_GE(ver.value(0).toInt(), 5);
+}
+
+TEST_F(DatabaseManagerTest, MigrationSeedsAdminAndDefaultToggles) {
+    UserRecord admin;
+    ASSERT_TRUE(db->getUser("admin", admin));
+    EXPECT_EQ(static_cast<int>(admin.level), static_cast<int>(PermLevel::Admin));
+    EXPECT_TRUE(admin.enabled);
+
+    // Every capability starts enabled so an upgraded host behaves as it did pre-v5.
+    EXPECT_EQ(db->getCapabilityToggles(), kAllCapabilities);
+}
+
+TEST_F(DatabaseManagerTest, AddAndVerifyUser) {
+    ASSERT_TRUE(db->addUser("bob", "s3cret", PermLevel::Operator));
+
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "s3cret")),
+              static_cast<int>(PermLevel::Operator));
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "wrong")),
+              static_cast<int>(PermLevel::None));
+    EXPECT_EQ(static_cast<int>(db->verifyUser("nobody", "s3cret")),
+              static_cast<int>(PermLevel::None));
+}
+
+TEST_F(DatabaseManagerTest, AddUserRejectsDuplicateUsername) {
+    ASSERT_TRUE(db->addUser("bob", "pw1", PermLevel::Viewer));
+    EXPECT_FALSE(db->addUser("bob", "pw2", PermLevel::Admin));
+
+    // The original record must survive the rejected insert.
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "pw1")),
+              static_cast<int>(PermLevel::Viewer));
+}
+
+TEST_F(DatabaseManagerTest, PasswordIsNotStoredInPlaintext) {
+    ASSERT_TRUE(db->addUser("bob", "s3cret", PermLevel::Viewer));
+
+    const QString hash = rawUserField("bob", "password_hash");
+    EXPECT_FALSE(hash.contains("s3cret"));
+    EXPECT_EQ(hash.size(), 64);                          // sha256 hex
+    EXPECT_EQ(rawUserField("bob", "salt").size(), 32);   // 16 random bytes, hex
+}
+
+TEST_F(DatabaseManagerTest, DistinctUsersWithSamePasswordGetDistinctHashes) {
+    ASSERT_TRUE(db->addUser("bob", "same", PermLevel::Viewer));
+    ASSERT_TRUE(db->addUser("carol", "same", PermLevel::Viewer));
+
+    EXPECT_NE(rawUserField("bob", "salt"), rawUserField("carol", "salt"));
+    EXPECT_NE(rawUserField("bob", "password_hash"), rawUserField("carol", "password_hash"));
+}
+
+TEST_F(DatabaseManagerTest, DisabledUserCannotAuthenticate) {
+    ASSERT_TRUE(db->addUser("bob", "s3cret", PermLevel::Operator));
+    ASSERT_TRUE(db->setUserEnabled("bob", false));
+
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "s3cret")),
+              static_cast<int>(PermLevel::None));
+
+    ASSERT_TRUE(db->setUserEnabled("bob", true));
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "s3cret")),
+              static_cast<int>(PermLevel::Operator));
+}
+
+TEST_F(DatabaseManagerTest, SetUserPasswordRotatesSaltAndInvalidatesOldPassword) {
+    ASSERT_TRUE(db->addUser("bob", "old", PermLevel::Viewer));
+    const QString saltBefore = rawUserField("bob", "salt");
+
+    ASSERT_TRUE(db->setUserPassword("bob", "new"));
+
+    EXPECT_NE(rawUserField("bob", "salt"), saltBefore);
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "old")),
+              static_cast<int>(PermLevel::None));
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "new")),
+              static_cast<int>(PermLevel::Viewer));
+}
+
+TEST_F(DatabaseManagerTest, SetUserLevelChangesGrantedLevel) {
+    ASSERT_TRUE(db->addUser("bob", "pw", PermLevel::Viewer));
+    ASSERT_TRUE(db->setUserLevel("bob", PermLevel::Operator));
+
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "pw")),
+              static_cast<int>(PermLevel::Operator));
+}
+
+TEST_F(DatabaseManagerTest, MutatingUnknownUserFails) {
+    EXPECT_FALSE(db->setUserPassword("ghost", "pw"));
+    EXPECT_FALSE(db->setUserLevel("ghost", PermLevel::Admin));
+    EXPECT_FALSE(db->setUserEnabled("ghost", false));
+    EXPECT_FALSE(db->removeUser("ghost"));
+}
+
+TEST_F(DatabaseManagerTest, VerifyUserRecordsLastLogin) {
+    ASSERT_TRUE(db->addUser("bob", "pw", PermLevel::Viewer));
+
+    UserRecord before;
+    ASSERT_TRUE(db->getUser("bob", before));
+    EXPECT_EQ(before.lastLogin, 0);
+
+    ASSERT_EQ(static_cast<int>(db->verifyUser("bob", "pw")),
+              static_cast<int>(PermLevel::Viewer));
+
+    UserRecord after;
+    ASSERT_TRUE(db->getUser("bob", after));
+    EXPECT_GT(after.lastLogin, 0);
+
+    // A failed attempt must not refresh the timestamp.
+    EXPECT_EQ(static_cast<int>(db->verifyUser("bob", "wrong")),
+              static_cast<int>(PermLevel::None));
+    UserRecord afterFailure;
+    ASSERT_TRUE(db->getUser("bob", afterFailure));
+    EXPECT_EQ(afterFailure.lastLogin, after.lastLogin);
+}
+
+TEST_F(DatabaseManagerTest, LastAdminCannotBeRemovedDemotedOrDisabled) {
+    // The seeded `admin` is the only Admin, so every lockout path must refuse.
+    EXPECT_FALSE(db->removeUser("admin"));
+    EXPECT_FALSE(db->setUserLevel("admin", PermLevel::Viewer));
+    EXPECT_FALSE(db->setUserEnabled("admin", false));
+
+    UserRecord still;
+    ASSERT_TRUE(db->getUser("admin", still));
+    EXPECT_EQ(static_cast<int>(still.level), static_cast<int>(PermLevel::Admin));
+    EXPECT_TRUE(still.enabled);
+}
+
+TEST_F(DatabaseManagerTest, AdminCanBeRemovedOnceAnotherAdminExists) {
+    ASSERT_TRUE(db->addUser("root", "pw", PermLevel::Admin));
+
+    EXPECT_TRUE(db->removeUser("admin"));
+
+    UserRecord gone;
+    EXPECT_FALSE(db->getUser("admin", gone));
+    // ...but now `root` is the last one and inherits the protection.
+    EXPECT_FALSE(db->removeUser("root"));
+}
+
+TEST_F(DatabaseManagerTest, DisabledAdminDoesNotCountAsAdminCover) {
+    ASSERT_TRUE(db->addUser("root", "pw", PermLevel::Admin));
+    ASSERT_TRUE(db->setUserEnabled("root", false));
+
+    // `root` is disabled, so `admin` is still the only usable admin.
+    EXPECT_FALSE(db->setUserEnabled("admin", false));
+}
+
+TEST_F(DatabaseManagerTest, NonAdminUsersAreNotProtected) {
+    ASSERT_TRUE(db->addUser("bob", "pw", PermLevel::Viewer));
+
+    EXPECT_TRUE(db->setUserEnabled("bob", false));
+    EXPECT_TRUE(db->setUserLevel("bob", PermLevel::Operator));
+    EXPECT_TRUE(db->removeUser("bob"));
+}
+
+TEST_F(DatabaseManagerTest, ListUsersReturnsAllAccountsSorted) {
+    ASSERT_TRUE(db->addUser("zoe", "pw", PermLevel::Viewer));
+    ASSERT_TRUE(db->addUser("bob", "pw", PermLevel::Operator));
+
+    const QList<UserRecord> users = db->listUsers();
+    ASSERT_EQ(users.size(), 3);  // admin + bob + zoe
+    EXPECT_EQ(users[0].username, "admin");
+    EXPECT_EQ(users[1].username, "bob");
+    EXPECT_EQ(users[2].username, "zoe");
+    EXPECT_EQ(static_cast<int>(users[1].level), static_cast<int>(PermLevel::Operator));
+}
+
+TEST_F(DatabaseManagerTest, CapabilityToggleClearsAndRestoresSingleBit) {
+    const quint32 terminalBit = static_cast<quint32>(Capability::Terminal);
+
+    ASSERT_TRUE(db->setCapabilityToggle(Capability::Terminal, false));
+    const quint32 masked = db->getCapabilityToggles();
+    EXPECT_EQ(masked & terminalBit, 0u);
+    // Only the requested bit may change.
+    EXPECT_EQ(masked, kAllCapabilities & ~terminalBit);
+
+    ASSERT_TRUE(db->setCapabilityToggle(Capability::Terminal, true));
+    EXPECT_EQ(db->getCapabilityToggles(), kAllCapabilities);
+}
+
+TEST_F(DatabaseManagerTest, CapabilityTogglesAccumulateAndPersist) {
+    ASSERT_TRUE(db->setCapabilityToggle(Capability::Terminal, false));
+    ASSERT_TRUE(db->setCapabilityToggle(Capability::PowerControl, false));
+
+    const quint32 expected = kAllCapabilities
+                           & ~static_cast<quint32>(Capability::Terminal)
+                           & ~static_cast<quint32>(Capability::PowerControl);
+    EXPECT_EQ(db->getCapabilityToggles(), expected);
+
+    // Survives a close/reopen of the same database file.
+    const QString path = dir->filePath("test.db");
+    db->shutdown();
+    ASSERT_TRUE(db->initialize(path));
+    EXPECT_EQ(db->getCapabilityToggles(), expected);
+}
+
+TEST_F(DatabaseManagerTest, DevicePermissionCrud) {
+    DevicePermission perm;
+    perm.deviceId = "dev-1";
+    perm.level = static_cast<int>(PermLevel::Operator);
+    perm.capMask = 0x0F;
+    perm.note = "front desk";
+    ASSERT_TRUE(db->setDevicePermission(perm));
+
+    DevicePermission loaded;
+    ASSERT_TRUE(db->getDevicePermission("dev-1", loaded));
+    EXPECT_EQ(loaded.deviceId, "dev-1");
+    EXPECT_EQ(loaded.level, static_cast<int>(PermLevel::Operator));
+    EXPECT_EQ(loaded.capMask, 0x0F);
+    EXPECT_EQ(loaded.note, "front desk");
+
+    // Upsert on the same device id.
+    perm.level = static_cast<int>(PermLevel::Viewer);
+    perm.capMask = -1;
+    ASSERT_TRUE(db->setDevicePermission(perm));
+    ASSERT_TRUE(db->getDevicePermission("dev-1", loaded));
+    EXPECT_EQ(loaded.level, static_cast<int>(PermLevel::Viewer));
+    EXPECT_EQ(loaded.capMask, -1);
+    EXPECT_EQ(db->listDevicePermissions().size(), 1);
+
+    EXPECT_TRUE(db->clearDevicePermission("dev-1"));
+    EXPECT_FALSE(db->getDevicePermission("dev-1", loaded));
+    EXPECT_FALSE(db->clearDevicePermission("dev-1"));
+}
+
+TEST_F(DatabaseManagerTest, DevicePermissionRejectsEmptyDeviceId) {
+    DevicePermission perm;
+    perm.level = static_cast<int>(PermLevel::Admin);
+    EXPECT_FALSE(db->setDevicePermission(perm));
+    EXPECT_TRUE(db->listDevicePermissions().isEmpty());
+}
+
+TEST_F(DatabaseManagerTest, ListDevicePermissionsSortedById) {
+    for (const QString& id : {QStringLiteral("dev-c"), QStringLiteral("dev-a"), QStringLiteral("dev-b")}) {
+        DevicePermission perm;
+        perm.deviceId = id;
+        perm.level = static_cast<int>(PermLevel::Viewer);
+        ASSERT_TRUE(db->setDevicePermission(perm));
+    }
+
+    const QList<DevicePermission> all = db->listDevicePermissions();
+    ASSERT_EQ(all.size(), 3);
+    EXPECT_EQ(all[0].deviceId, "dev-a");
+    EXPECT_EQ(all[1].deviceId, "dev-b");
+    EXPECT_EQ(all[2].deviceId, "dev-c");
 }

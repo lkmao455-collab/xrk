@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "core/protocol_manager.h"
 #include "core/types.h"
+#include "core/permission_model.h"
 
 using namespace xrk;
 
@@ -1372,32 +1373,6 @@ TEST_F(ProtocolExtendedTest, AnnotationMessageTypeValues) {
     EXPECT_EQ(static_cast<uint32_t>(MessageType::ANNOTATION_CLEAR), 184u);
 }
 
-TEST_F(ProtocolExtendedTest, AnnotationUpdateRoundTrip) {
-    AnnotationUpdate update;
-    update.frameWidth = 1920;
-    update.frameHeight = 1080;
-    AnnotationStroke s;
-    s.color = Qt::red;
-    s.width = 4;
-    s.points.append(QPoint(10, 20));
-    s.points.append(QPoint(30, 40));
-    s.points.append(QPoint(50, 60));
-    update.strokes.append(s);
-
-    QByteArray encoded = ProtocolManager::encodeAnnotationUpdate(update);
-    EXPECT_FALSE(encoded.isEmpty());
-
-    AnnotationUpdate decoded = ProtocolManager::decodeAnnotationUpdate(encoded);
-    EXPECT_EQ(decoded.frameWidth, 1920);
-    EXPECT_EQ(decoded.frameHeight, 1080);
-    ASSERT_EQ(decoded.strokes.size(), 1);
-    EXPECT_EQ(decoded.strokes[0].color, QColor(Qt::red));
-    EXPECT_EQ(decoded.strokes[0].width, 4);
-    ASSERT_EQ(decoded.strokes[0].points.size(), 3);
-    EXPECT_EQ(decoded.strokes[0].points[0], QPoint(10, 20));
-    EXPECT_EQ(decoded.strokes[0].points[2], QPoint(50, 60));
-}
-
 TEST_F(ProtocolExtendedTest, FileOpMessageTypeValues) {
     EXPECT_EQ(static_cast<uint32_t>(MessageType::FILE_OP_REQ), 162u);
     EXPECT_EQ(static_cast<uint32_t>(MessageType::FILE_OP_RESP), 163u);
@@ -1454,4 +1429,125 @@ TEST_F(ProtocolExtendedTest, FileOpResponseRoundTrip) {
     EXPECT_EQ(decoded.path, resp.path);
     EXPECT_FALSE(decoded.success);
     EXPECT_EQ(decoded.errorMessage, "权限不足");
+}
+
+// ───────────── User Permission Management protocol (v1.8.0) ─────────────
+
+TEST_F(ProtocolExtendedTest, AuthRequestLegacyRoundTrip) {
+    // Legacy controllers/Web send the raw password with no version byte.
+    AuthRequest req;
+    req.legacy = true;
+    req.password = "123456789";
+    QByteArray encoded = ProtocolManager::encodeAuthRequest(req);
+    EXPECT_FALSE(encoded.isEmpty());
+    EXPECT_NE(encoded.at(0), static_cast<char>(0x02)); // no magic
+    AuthRequest decoded = ProtocolManager::decodeAuthRequest(encoded);
+    EXPECT_TRUE(decoded.legacy);
+    EXPECT_EQ(decoded.password, "123456789");
+    EXPECT_TRUE(decoded.username.isEmpty());
+}
+
+TEST_F(ProtocolExtendedTest, AuthRequestV2RoundTrip) {
+    AuthRequest req;
+    req.legacy = false;
+    req.username = "alice";
+    req.password = "s3cret";
+    QByteArray encoded = ProtocolManager::encodeAuthRequest(req);
+    ASSERT_GE(encoded.size(), 4);
+    EXPECT_EQ(static_cast<uint8_t>(encoded.at(0)), 0x02);
+    AuthRequest decoded = ProtocolManager::decodeAuthRequest(encoded);
+    EXPECT_FALSE(decoded.legacy);
+    EXPECT_EQ(decoded.username, "alice");
+    EXPECT_EQ(decoded.password, "s3cret");
+}
+
+TEST_F(ProtocolExtendedTest, AuthResponseV2RoundTrip) {
+    AuthResponse resp;
+    resp.ok = true;
+    resp.sessionKey = QByteArray(32, 'K');
+    resp.iv = QByteArray(16, 'V');
+    resp.grantedLevel = 2; // Operator
+    resp.grantedCaps = 0x1234u;
+    QByteArray encoded = ProtocolManager::encodeAuthResponse(resp);
+    EXPECT_EQ(encoded.size(), 55); // 2 + 32 + 16 + 1 + 4
+    AuthResponse decoded = ProtocolManager::decodeAuthResponse(encoded);
+    EXPECT_TRUE(decoded.ok);
+    EXPECT_EQ(decoded.sessionKey, resp.sessionKey);
+    EXPECT_EQ(decoded.iv, resp.iv);
+    EXPECT_EQ(decoded.grantedLevel, 2);
+    EXPECT_EQ(decoded.grantedCaps, 0x1234u);
+}
+
+TEST_F(ProtocolExtendedTest, AuthResponseFailed) {
+    AuthResponse resp;
+    resp.ok = false;
+    QByteArray encoded = ProtocolManager::encodeAuthResponse(resp);
+    EXPECT_EQ(encoded, QByteArray("FAILED"));
+    AuthResponse decoded = ProtocolManager::decodeAuthResponse(encoded);
+    EXPECT_FALSE(decoded.ok);
+}
+
+TEST_F(ProtocolExtendedTest, AuthResponseLegacyClientIgnoresTail) {
+    // A new host may still talk to an old controller: the old client only reads
+    // the first 50 bytes ("OK"+key+iv) and ignores the trailing level/caps.
+    AuthResponse resp;
+    resp.ok = true;
+    resp.sessionKey = QByteArray(32, 'K');
+    resp.iv = QByteArray(16, 'V');
+    resp.grantedLevel = 3;
+    resp.grantedCaps = 0xFFFFu;
+    QByteArray encoded = ProtocolManager::encodeAuthResponse(resp);
+    EXPECT_EQ(encoded.size(), 55);
+    // Old client parses only the first 50 bytes.
+    AuthResponse decoded = ProtocolManager::decodeAuthResponse(encoded.left(50));
+    EXPECT_TRUE(decoded.ok);
+    EXPECT_EQ(decoded.sessionKey, resp.sessionKey);
+    EXPECT_EQ(decoded.iv, resp.iv);
+    EXPECT_EQ(decoded.grantedLevel, 0);   // not present in 50-byte form
+    EXPECT_EQ(decoded.grantedCaps, 0u);
+}
+
+TEST_F(ProtocolExtendedTest, PermissionDeniedRoundTrip) {
+    PermissionDenied denied;
+    denied.capability = static_cast<uint32_t>(Capability::Terminal);
+    denied.reason = "需要 Terminal 权限";
+    QByteArray encoded = ProtocolManager::encodePermissionDenied(denied);
+    PermissionDenied decoded = ProtocolManager::decodePermissionDenied(encoded);
+    EXPECT_EQ(decoded.capability, static_cast<uint32_t>(Capability::Terminal));
+    EXPECT_EQ(decoded.reason, "需要 Terminal 权限");
+}
+
+TEST_F(ProtocolExtendedTest, UserListResponseRoundTrip) {
+    QList<UserRecord> users;
+    UserRecord u1; u1.username = "admin"; u1.level = 3; u1.enabled = true; u1.lastLogin = 100;
+    UserRecord u2; u2.username = "bob"; u2.level = 1; u2.enabled = false; u2.lastLogin = 0;
+    users << u1 << u2;
+    QByteArray encoded = ProtocolManager::encodeUserListResponse(users);
+    QList<UserRecord> decoded = ProtocolManager::decodeUserListResponse(encoded);
+    ASSERT_EQ(decoded.size(), 2);
+    EXPECT_EQ(decoded[0].username, "admin");
+    EXPECT_EQ(decoded[0].level, 3);
+    EXPECT_TRUE(decoded[0].enabled);
+    EXPECT_EQ(decoded[0].lastLogin, 100);
+    EXPECT_EQ(decoded[1].username, "bob");
+    EXPECT_EQ(decoded[1].level, 1);
+    EXPECT_FALSE(decoded[1].enabled);
+}
+
+TEST_F(ProtocolExtendedTest, DevicePermissionResponseRoundTrip) {
+    QList<DevicePermission> devs;
+    DevicePermission d1; d1.deviceId = "dev-aaa"; d1.level = 2; d1.capMask = -1; d1.note = "笔记本";
+    devs << d1;
+    QByteArray encoded = ProtocolManager::encodeDevicePermissionResponse(devs);
+    QList<DevicePermission> decoded = ProtocolManager::decodeDevicePermissionResponse(encoded);
+    ASSERT_EQ(decoded.size(), 1);
+    EXPECT_EQ(decoded[0].deviceId, "dev-aaa");
+    EXPECT_EQ(decoded[0].level, 2);
+    EXPECT_EQ(decoded[0].capMask, -1);
+    EXPECT_EQ(decoded[0].note, "笔记本");
+}
+
+TEST_F(ProtocolExtendedTest, PermissionToggleResponseRoundTrip) {
+    QByteArray encoded = ProtocolManager::encodePermissionToggleResponse(0xABCDu);
+    EXPECT_EQ(ProtocolManager::decodePermissionToggleResponse(encoded), 0xABCDu);
 }

@@ -132,6 +132,20 @@ AUDIO_START = 140,
     FILE_BROWSER_RESP = 161,
     FILE_OP_REQ = 162,        // controller -> host: rename/delete/mkdir (consented)
     FILE_OP_RESP = 163,       // host -> controller: result of FILE_OP_REQ
+
+    // ───────────── User Permission Management (v1.8.0) ─────────────
+    // 210-219 occupy the free 206-249 gap. NOTE: do NOT reuse 70/71
+    // (MONITOR_THUMBNAIL / ENCRYPTION_KEY already collide there).
+    USER_LIST_REQ = 210,        // admin -> host: list configured users
+    USER_LIST_RESP = 211,       // host -> admin: user records
+    PERMISSION_TOGGLE_REQ = 212,   // admin -> host: change a host capability toggle
+    PERMISSION_TOGGLE_RESP = 213,  // host -> admin: new full toggle bitmask
+    DEVICE_PERM_SET_REQ = 214,    // admin -> host: set/overwrite a device permission
+    DEVICE_PERM_RESP = 215,       // host -> admin: result + current device perms
+    USER_ADD = 216,               // admin -> host: create/disable/level a user
+    USER_REMOVE = 217,            // admin -> host: remove a user
+    USER_UPDATE = 218,            // admin -> host: update a user (password/level/enabled)
+    PERMISSION_DENIED = 219,      // host -> controller: op rejected (cap + reason)
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
 
@@ -544,6 +558,55 @@ struct FileOpResponse {
     QString path;
     bool success = false;
     QString errorMessage;
+};
+
+// ───────────── User Permission Management (v1.8.0) ─────────────
+struct AuthRequest {
+    bool legacy = true;     // true: old single-password format (username empty)
+    QString username;
+    QString password;
+};
+
+struct AuthResponse {
+    bool ok = false;
+    QByteArray sessionKey;  // 32 bytes (AES-256)
+    QByteArray iv;          // 16 bytes
+    uint8_t grantedLevel = 0;   // PermLevel granted to this session
+    uint32_t grantedCaps = 0;   // effective capability bitmask
+};
+
+struct PermissionDenied {
+    uint32_t capability = 0; // Capability bit that was missing
+    QString reason;
+};
+
+struct UserRecord {
+    QString username;
+    uint8_t level = 1;       // PermLevel (None/Viewer/Operator/Admin)
+    bool enabled = true;
+    qint64 lastLogin = 0;
+};
+
+struct DevicePermission {
+    QString deviceId;
+    int level = 1;           // PermLevel; -1 means "no override / inherit"
+    int capMask = -1;        // explicit capability AND-mask, -1 = use role default
+    QString note;
+};
+
+// USER_ADD (216) / USER_UPDATE (218) payload. `fields` selects which members
+// are meaningful, so an admin can change a level without re-sending a password.
+struct UserMutation {
+    enum Field : uint8_t {
+        FieldPassword = 1u << 0,
+        FieldLevel    = 1u << 1,
+        FieldEnabled  = 1u << 2,
+    };
+    QString username;
+    QString password;
+    uint8_t level = 1;       // PermLevel
+    bool enabled = true;
+    uint8_t fields = 0;      // bitwise-OR of Field values (ignored by USER_ADD)
 };
 
 struct SysInfo {

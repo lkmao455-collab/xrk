@@ -22,6 +22,7 @@
 #include "app/nat_traversal.h"
 #include "core/audit_logger.h"
 #include "core/translation_manager.h"
+#include "core/permission_model.h"
 #include "core/logger.h"
 #include "clipboard_history_widget.h"
 #include "media_test_dialog.h"
@@ -143,6 +144,55 @@ void MainWindow::updateNavButtons() {
         if (m_navButtons[i]) {
             m_navButtons[i]->setChecked(i == m_currentPage);
         }
+    }
+}
+
+void MainWindow::applyCapabilities(quint32 caps) {
+    auto have = [caps](Capability cap) {
+        return PermissionModel::hasCapability(caps, cap);
+    };
+
+    // Sidebar pages map to the capability needed to use that feature. Pages whose
+    // capability is absent are disabled so the operator cannot navigate into a
+    // feature the host will reject.
+    auto gatePage = [&](PageIndex page, Capability cap) {
+        if (m_navButtons[page]) {
+            m_navButtons[page]->setEnabled(have(cap));
+        }
+    };
+
+    // Desktop (screen) is the baseline — every authenticated session can view it.
+    gatePage(PAGE_DESKTOP,  Capability::ViewScreen);
+    gatePage(PAGE_FILES,    Capability::FileRead);   // file transfer (read) gates the page
+    gatePage(PAGE_TERMINAL, Capability::Terminal);
+    gatePage(PAGE_CHAT,     Capability::Chat);
+    gatePage(PAGE_MONITOR,  Capability::SysInfo);
+    gatePage(PAGE_CLIPBOARD,Capability::Clipboard);
+    gatePage(PAGE_PROCESS,  Capability::ProcessView);
+    // Home / settings are always available.
+
+    // Menu/toolbar actions that depend on a capability.
+    if (m_recordAction) m_recordAction->setEnabled(have(Capability::Record));
+    if (m_screenshotAction) m_screenshotAction->setEnabled(have(Capability::ViewScreen));
+    if (m_cameraAction) m_cameraAction->setEnabled(have(Capability::ViewScreen));
+
+    // Remote-desktop toolbar buttons (annotation / control / voice / chat ...).
+    m_remoteDesktopWidget->applyCapabilities(caps);
+
+    // If the operator is currently on a now-disabled page, bounce them back to
+    // the desktop view so they aren't stranded on an unusable feature page.
+    if (m_currentPage == PAGE_TERMINAL && !have(Capability::Terminal)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_FILES && !have(Capability::FileRead)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_CHAT && !have(Capability::Chat)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_MONITOR && !have(Capability::SysInfo)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_PROCESS && !have(Capability::ProcessView)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_CLIPBOARD && !have(Capability::Clipboard)) {
+        switchToPage(PAGE_DESKTOP);
     }
 }
 
@@ -585,9 +635,20 @@ void MainWindow::onConnectToIp(const QString& ip, uint16_t port) {
 
     QString password;
     if (m_host->isPasswordRequired()) {
+        // v1.8.0 RBAC: optionally identify with a named account. Leaving the
+        // username blank sends a legacy (shared-password) AUTH_REQ so old hosts
+        // keep working; a non-empty username triggers the v2 named-account flow
+        // and the host grants that account's role/capabilities.
         bool ok;
-        password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
-            "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+        QString username = QInputDialog::getText(this, tr("连接认证"),
+            tr("用户名(留空使用共享密码):"), QLineEdit::Normal, QString(), &ok);
+        if (!ok) {
+            return;
+        }
+        m_remoteController->setAuthUsername(username.trimmed());
+
+        password = QInputDialog::getText(this, tr("连接认证"),
+            tr("请输入访问密码:"), QLineEdit::Password, QString(), &ok);
         if (!ok) {
             return;
         }
@@ -652,8 +713,13 @@ void MainWindow::onConnectToCode(const QString& code) {
         QString password;
         if (m_host->isPasswordRequired()) {
             bool ok;
-            password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
-                "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+            QString username = QInputDialog::getText(this, tr("连接认证"),
+                tr("用户名(留空使用共享密码):"), QLineEdit::Normal, QString(), &ok);
+            if (!ok) return;
+            m_remoteController->setAuthUsername(username.trimmed());
+
+            password = QInputDialog::getText(this, tr("连接认证"),
+                tr("请输入访问密码:"), QLineEdit::Password, QString(), &ok);
             if (!ok) return;
         }
         m_remoteController->startRemoteByDevice(code, password);
@@ -971,6 +1037,30 @@ void MainWindow::setupConnections() {
     connect(m_remoteController.get(), &RemoteController::authRequired,
             this, [this]() {
         // Auth dialog is handled by RemoteDesktopWidget
+    });
+
+    // v1.8.0 RBAC: once the host grants a permission level + capability mask,
+    // enable only the features the session is allowed to use.
+    connect(m_remoteController.get(), &RemoteController::capabilitiesChanged,
+            this, [this](int level, quint32 caps) {
+        applyCapabilities(caps);
+        static const char* kLevelNames[] = {"无", "只读", "操作员", "管理员"};
+        const char* levelName = (level >= 0 && level <= 3) ? kLevelNames[level] : "未知";
+        statusBar()->showMessage(tr("已授权: %1 (能力 0x%2)")
+                                     .arg(QString::fromUtf8(levelName))
+                                     .arg(caps, 0, 16));
+    });
+
+    // Host refused a capability the controller tried to use (message 219).
+    connect(m_remoteController.get(), &RemoteController::permissionDenied,
+            this, [this](int capability, const QString& reason) {
+        Capability cap = static_cast<Capability>(static_cast<uint32_t>(capability));
+        QString capName = QString::fromUtf8(PermissionModel::capabilityName(cap));
+        QString msg = reason.isEmpty()
+            ? tr("操作被拒绝: 缺少 %1 权限").arg(capName)
+            : tr("操作被拒绝 (%1): %2").arg(capName, reason);
+        statusBar()->showMessage(msg, 5000);
+        QMessageBox::warning(this, tr("权限不足"), msg);
     });
 
     connect(m_remoteController.get(), &RemoteController::transportEstablished,

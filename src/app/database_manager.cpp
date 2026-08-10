@@ -1,13 +1,56 @@
 #include "database_manager.h"
 #include "ipmsg_manager.h"
 #include "core/logger.h"
+#include "core/permission_model.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QSqlRecord>
 #include <QDebug>
 #include <QCryptographicHash>
+#include <QRandomGenerator>
+#include <QSettings>
 
 namespace xrk {
+
+namespace {
+
+// Settings key holding the host-wide capability toggle bitmask.
+constexpr const char* kCapabilityTogglesKey = "perm/capability_toggles";
+
+QString makePasswordSalt() {
+    QByteArray raw(16, Qt::Uninitialized);
+    for (int i = 0; i < raw.size(); ++i) {
+        raw[i] = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    }
+    return QString::fromLatin1(raw.toHex());
+}
+
+QString hashPassword(const QString& password, const QString& salt) {
+    return QString::fromLatin1(
+        QCryptographicHash::hash((salt + password).toUtf8(),
+                                 QCryptographicHash::Sha256).toHex());
+}
+
+// True when removing/demoting/disabling `username` would leave zero enabled
+// Admin accounts, i.e. nobody able to manage users ever again. Mirrors the
+// self-lock protection PermissionModel applies to the UserManage capability.
+bool wouldOrphanAdmins(QSqlDatabase& db, const QString& username) {
+    QSqlQuery current(db);
+    current.prepare("SELECT level, enabled FROM users WHERE username = ?");
+    current.addBindValue(username);
+    if (!current.exec() || !current.next()) return false;  // unknown user: nothing to protect
+    const bool targetIsActiveAdmin =
+        current.value(0).toInt() == static_cast<int>(PermLevel::Admin) && current.value(1).toBool();
+    if (!targetIsActiveAdmin) return false;
+
+    QSqlQuery others(db);
+    others.prepare("SELECT COUNT(*) FROM users WHERE enabled = 1 AND level = ? AND username <> ?");
+    others.addBindValue(static_cast<int>(PermLevel::Admin));
+    others.addBindValue(username);
+    return others.exec() && others.next() && others.value(0).toInt() == 0;
+}
+
+} // namespace
 
 DatabaseManager::DatabaseManager(QObject* parent)
     : QObject(parent) {
@@ -20,15 +63,33 @@ DatabaseManager::~DatabaseManager() {
 bool DatabaseManager::initialize(const QString& dbPath) {
     QMutexLocker locker(&m_mutex);
 
-    if (m_initialized) return true;
-
+    // Resolve the target path first so we can detect a path change while already
+    // initialized. This guarantees a reset-to-a-new-database actually re-binds the
+    // singleton instead of silently keeping the previous connection.
+    QString targetPath;
     if (dbPath.isEmpty()) {
         QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         QDir().mkpath(dataDir);
-        m_dbPath = dataDir + "/ipmsg.db";
+        targetPath = dataDir + "/ipmsg.db";
     } else {
-        m_dbPath = dbPath;
+        targetPath = dbPath;
     }
+
+    if (m_initialized) {
+        if (m_db.isOpen() && m_db.databaseName() == targetPath) {
+            return true;  // Already bound to the exact same database — nothing to do.
+        }
+        // Re-initializing against a different path: fully release the old connection
+        // so the new addDatabase() creates a fresh handle rather than reusing a stale one.
+        if (m_db.isOpen()) {
+            m_db.close();
+        }
+        m_db = QSqlDatabase();
+        QSqlDatabase::removeDatabase("ipmsg_connection");
+        m_initialized = false;
+    }
+
+    m_dbPath = targetPath;
 
     m_db = QSqlDatabase::addDatabase("QSQLITE", "ipmsg_connection");
     m_db.setDatabaseName(m_dbPath);
@@ -64,7 +125,15 @@ void DatabaseManager::shutdown() {
     if (m_db.isOpen()) {
         m_db.close();
     }
+    // Drop our own handle BEFORE removeDatabase(). QSqlDatabase::removeDatabase()
+    // is a no-op (and emits "connection is still in use") while any QSqlDatabase
+    // instance still references the connection — and the member m_db does. Without
+    // releasing it here, the connection leaks across initialize()/shutdown() cycles,
+    // so the next initialize()'s addDatabase() returns the stale handle pointing at
+    // the previous database file instead of the newly requested one.
+    m_db = QSqlDatabase();
     QSqlDatabase::removeDatabase("ipmsg_connection");
+    m_dbPath.clear();
     m_initialized = false;
 }
 
@@ -543,6 +612,36 @@ bool DatabaseManager::createTables() {
         return false;
     }
 
+    // Users table (permission management)
+    if (!query.exec(R"(
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            level INTEGER DEFAULT 1,
+            enabled INTEGER DEFAULT 1,
+            last_login INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    )")) {
+        emit databaseError(tr("创建users表失败: %1").arg(query.lastError().text()));
+        return false;
+    }
+
+    // Per-device permission overrides. cap_mask = -1 means "no mask, use level".
+    if (!query.exec(R"(
+        CREATE TABLE IF NOT EXISTS device_permissions (
+            device_id TEXT PRIMARY KEY,
+            level INTEGER DEFAULT 1,
+            cap_mask INTEGER DEFAULT -1,
+            note TEXT,
+            updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    )")) {
+        emit databaseError(tr("创建device_permissions表失败: %1").arg(query.lastError().text()));
+        return false;
+    }
+
     return true;
 }
 
@@ -552,14 +651,18 @@ void DatabaseManager::runMigrations() {
     query.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);");
     
     int currentVersion = 0;
-    if (query.exec("SELECT version FROM schema_version") && query.next()) {
+    if (query.exec("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1") && query.next()) {
         currentVersion = query.value(0).toInt();
     }
 
-    const int LATEST_VERSION = 4;
+    const int LATEST_VERSION = 5;
     if (currentVersion < 1) {
-        // Version 1: Initial schema (already created above)
-        query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (1);");
+        // Version 1: Initial schema (already created above).
+        // NOTE: migrations intentionally do NOT write a per-step version row. Writing
+        // a distinct row per step (with `version` as the PRIMARY KEY) used to create
+        // multiple schema_version rows (1..5), which made `SELECT version` ambiguous.
+        // The single authoritative version row is written once at the end of this
+        // function instead.
     }
     if (currentVersion < 2) {
         // Version 2: Add E2EE sessions table
@@ -581,7 +684,6 @@ void DatabaseManager::runMigrations() {
         )");
         e2eeQuery.exec("CREATE INDEX IF NOT EXISTS idx_e2ee_sessions_device ON e2ee_sessions(device_id);");
         e2eeQuery.exec("CREATE INDEX IF NOT EXISTS idx_e2ee_sessions_active ON e2ee_sessions(is_active);");
-        query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (2);");
     }
     if (currentVersion < 3) {
         // Version 3: Add resumable transfer support (checksum, resume_offset, session_id)
@@ -590,7 +692,6 @@ void DatabaseManager::runMigrations() {
         transferQuery.exec("ALTER TABLE file_transfers ADD COLUMN resume_offset INTEGER DEFAULT 0");
         transferQuery.exec("ALTER TABLE file_transfers ADD COLUMN session_id TEXT");
         transferQuery.exec("CREATE INDEX IF NOT EXISTS idx_file_transfers_status ON file_transfers(status, target_id)");
-        query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (3);");
     }
     if (currentVersion < 4) {
         // Version 4: Add pinned column to messages, blocked_users, blacklisted_ips tables
@@ -598,8 +699,49 @@ void DatabaseManager::runMigrations() {
         migQuery.exec("ALTER TABLE messages ADD COLUMN is_pinned INTEGER DEFAULT 0");
         migQuery.exec("CREATE TABLE IF NOT EXISTS blocked_users (device_id TEXT PRIMARY KEY, reason TEXT, blocked_at INTEGER DEFAULT (strftime('%s','now')))");
         migQuery.exec("CREATE TABLE IF NOT EXISTS blacklisted_ips (ip TEXT PRIMARY KEY, reason TEXT, blocked_at INTEGER DEFAULT (strftime('%s','now')))");
-        query.exec("INSERT OR REPLACE INTO schema_version (version) VALUES (4);");
     }
+    if (currentVersion < 5) {
+        // Version 5: permission management - named users, per-device ACL overrides
+        // and a host-wide capability toggle bitmask.
+        QSqlQuery permQuery(m_db);
+        permQuery.exec("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, salt TEXT NOT NULL, level INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1, last_login INTEGER DEFAULT 0, created_at INTEGER DEFAULT (strftime('%s','now')))");
+        permQuery.exec("CREATE TABLE IF NOT EXISTS device_permissions (device_id TEXT PRIMARY KEY, level INTEGER DEFAULT 1, cap_mask INTEGER DEFAULT -1, note TEXT, updated_at INTEGER DEFAULT (strftime('%s','now')))");
+        permQuery.exec("CREATE INDEX IF NOT EXISTS idx_users_enabled ON users(enabled)");
+
+        // Seed the built-in admin from the legacy single-password setting so an
+        // upgraded host keeps accepting the credentials its operator already knows.
+        // An empty legacy password stays empty here; the host keeps treating that
+        // as "no auth required", exactly as it did before v5.
+        QSqlQuery countQuery(m_db);
+        if (countQuery.exec("SELECT COUNT(*) FROM users") && countQuery.next()
+            && countQuery.value(0).toInt() == 0) {
+            const QString legacyPassword =
+                QSettings("XRK", "XRK").value("security/password", "").toString();
+            const QString salt = makePasswordSalt();
+            QSqlQuery seedQuery(m_db);
+            seedQuery.prepare("INSERT INTO users (username, password_hash, salt, level, enabled) VALUES (?, ?, ?, ?, 1)");
+            seedQuery.addBindValue(QStringLiteral("admin"));
+            seedQuery.addBindValue(hashPassword(legacyPassword, salt));
+            seedQuery.addBindValue(salt);
+            seedQuery.addBindValue(static_cast<int>(PermLevel::Admin));
+            seedQuery.exec();
+        }
+
+        // Default every capability to enabled so an upgraded host behaves as it
+        // did before the toggles existed. INSERT OR IGNORE keeps a re-run safe.
+        QSqlQuery toggleQuery(m_db);
+        toggleQuery.prepare("INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, strftime('%s','now'))");
+        toggleQuery.addBindValue(QString::fromLatin1(kCapabilityTogglesKey));
+        toggleQuery.addBindValue(QString::number(kAllCapabilities));
+        toggleQuery.exec();
+    }
+
+    // Persist a single authoritative schema version row. We deliberately keep only
+    // one row (writing the latest version) so a `SELECT version FROM schema_version`
+    // is unambiguous — previously each step inserted a distinct primary key, leaving
+    // multiple rows (1..5) and any single-row read returned the lowest one.
+    query.exec("DELETE FROM schema_version;");
+    query.exec(QString("INSERT INTO schema_version (version) VALUES (%1);").arg(LATEST_VERSION));
 }
 
 // --- Messages ---
@@ -980,6 +1122,228 @@ QVariant DatabaseManager::getSetting(const QString& key, const QVariant& default
         return query.value(0);
     }
     return defaultValue;
+}
+
+// --- Permission management (schema v5) ---
+
+bool DatabaseManager::addUser(const QString& username, const QString& password, PermLevel level) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen() || username.isEmpty()) return false;
+
+    const QString salt = makePasswordSalt();
+    QSqlQuery query(m_db);
+    query.prepare("INSERT INTO users (username, password_hash, salt, level, enabled) VALUES (?, ?, ?, ?, 1)");
+    query.addBindValue(username);
+    query.addBindValue(hashPassword(password, salt));
+    query.addBindValue(salt);
+    query.addBindValue(static_cast<int>(level));
+    if (!query.exec()) {
+        emit databaseError(tr("添加用户失败: %1").arg(query.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::removeUser(const QString& username) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    if (wouldOrphanAdmins(m_db, username)) {
+        emit databaseError(tr("无法删除最后一个管理员账户: %1").arg(username));
+        return false;
+    }
+    QSqlQuery query(m_db);
+    query.prepare("DELETE FROM users WHERE username = ?");
+    query.addBindValue(username);
+    return query.exec() && query.numRowsAffected() > 0;
+}
+
+QList<UserRecord> DatabaseManager::listUsers() const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    QList<UserRecord> result;
+    if (!m_db.isOpen()) return result;
+
+    QSqlQuery query(m_db);
+    if (query.exec("SELECT username, level, enabled, last_login FROM users ORDER BY username")) {
+        while (query.next()) {
+            UserRecord rec;
+            rec.username = query.value(0).toString();
+            rec.level = static_cast<uint8_t>(query.value(1).toInt());
+            rec.enabled = query.value(2).toBool();
+            rec.lastLogin = query.value(3).toLongLong();
+            result.append(rec);
+        }
+    }
+    return result;
+}
+
+bool DatabaseManager::getUser(const QString& username, UserRecord& out) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return false;
+
+    QSqlQuery query(m_db);
+    query.prepare("SELECT username, level, enabled, last_login FROM users WHERE username = ?");
+    query.addBindValue(username);
+    if (!query.exec() || !query.next()) return false;
+
+    out.username = query.value(0).toString();
+    out.level = static_cast<uint8_t>(query.value(1).toInt());
+    out.enabled = query.value(2).toBool();
+    out.lastLogin = query.value(3).toLongLong();
+    return true;
+}
+
+bool DatabaseManager::setUserPassword(const QString& username, const QString& password) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    // Rotate the salt alongside the password so a reused password never yields
+    // the same stored hash twice.
+    const QString salt = makePasswordSalt();
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE username = ?");
+    query.addBindValue(hashPassword(password, salt));
+    query.addBindValue(salt);
+    query.addBindValue(username);
+    return query.exec() && query.numRowsAffected() > 0;
+}
+
+bool DatabaseManager::setUserLevel(const QString& username, PermLevel level) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    if (level != PermLevel::Admin && wouldOrphanAdmins(m_db, username)) {
+        emit databaseError(tr("无法降级最后一个管理员账户: %1").arg(username));
+        return false;
+    }
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE users SET level = ? WHERE username = ?");
+    query.addBindValue(static_cast<int>(level));
+    query.addBindValue(username);
+    return query.exec() && query.numRowsAffected() > 0;
+}
+
+bool DatabaseManager::setUserEnabled(const QString& username, bool enabled) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    if (!enabled && wouldOrphanAdmins(m_db, username)) {
+        emit databaseError(tr("无法禁用最后一个管理员账户: %1").arg(username));
+        return false;
+    }
+    QSqlQuery query(m_db);
+    query.prepare("UPDATE users SET enabled = ? WHERE username = ?");
+    query.addBindValue(enabled ? 1 : 0);
+    query.addBindValue(username);
+    return query.exec() && query.numRowsAffected() > 0;
+}
+
+PermLevel DatabaseManager::verifyUser(const QString& username, const QString& password) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return PermLevel::None;
+
+    QSqlQuery query(m_db);
+    query.prepare("SELECT password_hash, salt, level, enabled FROM users WHERE username = ?");
+    query.addBindValue(username);
+    if (!query.exec() || !query.next()) return PermLevel::None;
+    if (!query.value(3).toBool()) return PermLevel::None;  // disabled account
+
+    const QByteArray expected = query.value(0).toString().toUtf8();
+    const QByteArray actual = hashPassword(password, query.value(1).toString()).toUtf8();
+    if (expected.size() != actual.size()) return PermLevel::None;
+    // Compare in constant time: this runs on the network-facing auth path.
+    int diff = 0;
+    for (int i = 0; i < expected.size(); ++i) diff |= (expected[i] ^ actual[i]);
+    if (diff != 0) return PermLevel::None;
+
+    // Reject levels a hand-edited database could smuggle in.
+    const int level = query.value(2).toInt();
+    if (level < 0 || level > static_cast<int>(PermLevel::Admin)) return PermLevel::None;
+
+    QSqlQuery touch(m_db);
+    touch.prepare("UPDATE users SET last_login = ? WHERE username = ?");
+    touch.addBindValue(QDateTime::currentSecsSinceEpoch());
+    touch.addBindValue(username);
+    touch.exec();
+
+    return static_cast<PermLevel>(level);
+}
+
+quint32 DatabaseManager::getCapabilityToggles() const {
+    const QVariant raw = getSetting(QString::fromLatin1(kCapabilityTogglesKey));
+    if (!raw.isValid()) return kAllCapabilities;
+    bool ok = false;
+    const quint32 mask = raw.toString().toUInt(&ok);
+    return ok ? (mask & kAllCapabilities) : kAllCapabilities;
+}
+
+bool DatabaseManager::setCapabilityToggle(Capability cap, bool enabled) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    const quint32 bit = static_cast<quint32>(cap);
+    const quint32 mask = enabled ? (getCapabilityToggles() | bit)
+                                 : (getCapabilityToggles() & ~bit);
+    return setSetting(QString::fromLatin1(kCapabilityTogglesKey), QString::number(mask));
+}
+
+bool DatabaseManager::getDevicePermission(const QString& deviceId, DevicePermission& out) const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    if (!m_db.isOpen()) return false;
+
+    QSqlQuery query(m_db);
+    query.prepare("SELECT device_id, level, cap_mask, note FROM device_permissions WHERE device_id = ?");
+    query.addBindValue(deviceId);
+    if (!query.exec() || !query.next()) return false;
+
+    out.deviceId = query.value(0).toString();
+    out.level = query.value(1).toInt();
+    out.capMask = query.value(2).toInt();
+    out.note = query.value(3).toString();
+    return true;
+}
+
+bool DatabaseManager::setDevicePermission(const DevicePermission& perm) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen() || perm.deviceId.isEmpty()) return false;
+
+    QSqlQuery query(m_db);
+    query.prepare("INSERT OR REPLACE INTO device_permissions (device_id, level, cap_mask, note, updated_at) "
+                  "VALUES (?, ?, ?, ?, strftime('%s','now'))");
+    query.addBindValue(perm.deviceId);
+    query.addBindValue(perm.level);
+    query.addBindValue(perm.capMask);
+    query.addBindValue(perm.note);
+    return query.exec();
+}
+
+bool DatabaseManager::clearDevicePermission(const QString& deviceId) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_db.isOpen()) return false;
+
+    QSqlQuery query(m_db);
+    query.prepare("DELETE FROM device_permissions WHERE device_id = ?");
+    query.addBindValue(deviceId);
+    return query.exec() && query.numRowsAffected() > 0;
+}
+
+QList<DevicePermission> DatabaseManager::listDevicePermissions() const {
+    QMutexLocker locker(const_cast<QRecursiveMutex*>(&m_mutex));
+    QList<DevicePermission> result;
+    if (!m_db.isOpen()) return result;
+
+    QSqlQuery query(m_db);
+    if (query.exec("SELECT device_id, level, cap_mask, note FROM device_permissions ORDER BY device_id")) {
+        while (query.next()) {
+            DevicePermission perm;
+            perm.deviceId = query.value(0).toString();
+            perm.level = query.value(1).toInt();
+            perm.capMask = query.value(2).toInt();
+            perm.note = query.value(3).toString();
+            result.append(perm);
+        }
+    }
+    return result;
 }
 
 // --- Recent Chats ---

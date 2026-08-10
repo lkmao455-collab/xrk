@@ -2185,6 +2185,285 @@ void ProtocolManager::decodeConsent(const QByteArray& data, bool& allowed, QStri
     deviceName = QString::fromUtf8(data.mid(stream.device()->pos(), len));
 }
 
+// ───────────── User Permission Management (v1.8.0) ─────────────
+
+QByteArray ProtocolManager::encodeAuthRequest(const AuthRequest& req) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    if (req.legacy) {
+        // Old format: the entire payload IS the password (no version byte), so
+        // legacy controllers/Web clients that only send a single code still work.
+        QByteArray pwd = req.password.toUtf8();
+        stream.writeRawData(pwd.constData(), pwd.size());
+        return data;
+    }
+    // v2: [0x02][u8 userLen][user][u16 pwdLen BE][pwd]
+    stream << static_cast<uint8_t>(0x02);
+    QByteArray user = req.username.toUtf8();
+    stream << static_cast<uint8_t>(user.size() > 255 ? 255 : user.size());
+    stream.writeRawData(user.constData(), user.size());
+    QByteArray pwd = req.password.toUtf8();
+    stream << static_cast<uint16_t>(pwd.size());
+    stream.writeRawData(pwd.constData(), pwd.size()); // size()==pwd.size()
+    return data;
+}
+
+AuthRequest ProtocolManager::decodeAuthRequest(const QByteArray& data) {
+    AuthRequest req;
+    if (data.size() >= 4 && data.at(0) == static_cast<char>(0x02)) {
+        QDataStream stream(data);
+        stream.setByteOrder(QDataStream::BigEndian);
+        uint8_t magic;
+        stream >> magic; // 0x02
+        uint8_t userLen;
+        stream >> userLen;
+        req.username = QString::fromUtf8(data.mid(stream.device()->pos(), userLen));
+        stream.skipRawData(userLen);
+        uint16_t pwdLen;
+        stream >> pwdLen;
+        req.password = QString::fromUtf8(data.mid(stream.device()->pos(), pwdLen));
+        req.legacy = false;
+    } else {
+        req.legacy = true;
+        req.password = QString::fromUtf8(data);
+    }
+    return req;
+}
+
+QByteArray ProtocolManager::encodeAuthResponse(const AuthResponse& resp) {
+    if (!resp.ok) {
+        return QByteArray("FAILED");
+    }
+    // "OK"(2) + key(32) + iv(16) + [u8 level][u32 caps BE] = 55 bytes.
+    // Trailing bytes are ignored by legacy clients (length is >= check).
+    QByteArray body = QByteArray("OK");
+    body.append(resp.sessionKey.left(32));
+    while (body.size() < 34) body.append(static_cast<char>(0));
+    body.append(resp.iv.left(16));
+    while (body.size() < 50) body.append(static_cast<char>(0));
+    QByteArray tail;
+    QDataStream ts(&tail, QIODevice::WriteOnly);
+    ts.setByteOrder(QDataStream::BigEndian);
+    ts << static_cast<uint8_t>(resp.grantedLevel);
+    ts << static_cast<uint32_t>(resp.grantedCaps);
+    body.append(tail);
+    return body;
+}
+
+AuthResponse ProtocolManager::decodeAuthResponse(const QByteArray& data) {
+    AuthResponse resp;
+    if (data.size() >= 2 && data.left(2) == QByteArray("OK")) {
+        resp.ok = true;
+        resp.sessionKey = data.mid(2, 32);
+        resp.iv = data.mid(34, 16);
+        if (data.size() >= 55) {
+            QDataStream tail(data.mid(50));
+            tail.setByteOrder(QDataStream::BigEndian);
+            uint8_t lvl;
+            tail >> lvl;
+            resp.grantedLevel = lvl;
+            uint32_t caps;
+            tail >> caps;
+            resp.grantedCaps = caps;
+        }
+        // else: legacy 50-byte response -> level/caps default to 0.
+    } else {
+        resp.ok = false;
+    }
+    return resp;
+}
+
+QByteArray ProtocolManager::encodePermissionDenied(const PermissionDenied& denied) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint32_t>(denied.capability);
+    QByteArray reason = denied.reason.toUtf8();
+    stream << static_cast<uint32_t>(reason.size());
+    stream.writeRawData(reason.constData(), reason.size());
+    return data;
+}
+
+PermissionDenied ProtocolManager::decodePermissionDenied(const QByteArray& data) {
+    PermissionDenied denied;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t cap;
+    stream >> cap;
+    denied.capability = cap;
+    uint32_t len;
+    stream >> len;
+    denied.reason = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+    return denied;
+}
+
+QByteArray ProtocolManager::encodeUserListResponse(const QList<UserRecord>& users) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint32_t>(users.size());
+    for (const auto& u : users) {
+        QByteArray un = u.username.toUtf8();
+        stream << static_cast<uint32_t>(un.size());
+        stream.writeRawData(un.constData(), un.size());
+        stream << static_cast<uint8_t>(u.level);
+        stream << static_cast<uint8_t>(u.enabled ? 1 : 0);
+        stream << static_cast<qint64>(u.lastLogin);
+    }
+    return data;
+}
+
+QList<UserRecord> ProtocolManager::decodeUserListResponse(const QByteArray& data) {
+    QList<UserRecord> out;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        UserRecord u;
+        uint32_t len;
+        stream >> len;
+        u.username = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+        stream.skipRawData(len);
+        uint8_t lvl;
+        stream >> lvl;
+        u.level = lvl;
+        uint8_t en;
+        stream >> en;
+        u.enabled = (en != 0);
+        qint64 ll;
+        stream >> ll;
+        u.lastLogin = ll;
+        out.append(u);
+    }
+    return out;
+}
+
+QByteArray ProtocolManager::encodeDevicePermissionResponse(
+    const QList<DevicePermission>& devices) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint32_t>(devices.size());
+    for (const auto& d : devices) {
+        QByteArray id = d.deviceId.toUtf8();
+        stream << static_cast<uint32_t>(id.size());
+        stream.writeRawData(id.constData(), id.size());
+        stream << static_cast<int32_t>(d.level);
+        stream << static_cast<int32_t>(d.capMask);
+        QByteArray note = d.note.toUtf8();
+        stream << static_cast<uint32_t>(note.size());
+        stream.writeRawData(note.constData(), note.size());
+    }
+    return data;
+}
+
+QList<DevicePermission> ProtocolManager::decodeDevicePermissionResponse(
+    const QByteArray& data) {
+    QList<DevicePermission> out;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t count;
+    stream >> count;
+    for (uint32_t i = 0; i < count; ++i) {
+        DevicePermission d;
+        uint32_t len;
+        stream >> len;
+        d.deviceId = QString::fromUtf8(data.mid(stream.device()->pos(), len));
+        stream.skipRawData(len);
+        qint32 lvl;
+        stream >> lvl;
+        d.level = lvl;
+        qint32 cm;
+        stream >> cm;
+        d.capMask = cm;
+        uint32_t nlen;
+        stream >> nlen;
+        d.note = QString::fromUtf8(data.mid(stream.device()->pos(), nlen));
+        out.append(d);
+    }
+    return out;
+}
+
+QByteArray ProtocolManager::encodePermissionToggleResponse(uint32_t toggles) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << toggles;
+    return data;
+}
+
+uint32_t ProtocolManager::decodePermissionToggleResponse(const QByteArray& data) {
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t t;
+    stream >> t;
+    return t;
+}
+
+QByteArray ProtocolManager::encodePermissionToggleRequest(uint32_t capability, bool enabled) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << capability;
+    stream << static_cast<uint8_t>(enabled ? 1 : 0);
+    return data;
+}
+
+bool ProtocolManager::decodePermissionToggleRequest(const QByteArray& data,
+                                                    uint32_t& capability, bool& enabled) {
+    if (data.size() < 5) return false;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream >> capability;
+    uint8_t en;
+    stream >> en;
+    enabled = (en != 0);
+    return true;
+}
+
+QByteArray ProtocolManager::encodeUserMutation(const UserMutation& mutation) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    QByteArray un = mutation.username.toUtf8();
+    stream << static_cast<uint32_t>(un.size());
+    stream.writeRawData(un.constData(), un.size());
+    QByteArray pw = mutation.password.toUtf8();
+    stream << static_cast<uint32_t>(pw.size());
+    stream.writeRawData(pw.constData(), pw.size());
+    stream << static_cast<uint8_t>(mutation.level);
+    stream << static_cast<uint8_t>(mutation.enabled ? 1 : 0);
+    stream << static_cast<uint8_t>(mutation.fields);
+    return data;
+}
+
+UserMutation ProtocolManager::decodeUserMutation(const QByteArray& data) {
+    UserMutation m;
+    if (data.size() < 4) return m;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t ulen;
+    stream >> ulen;
+    if (ulen > static_cast<uint32_t>(data.size())) return m;
+    m.username = QString::fromUtf8(data.mid(stream.device()->pos(), ulen));
+    stream.skipRawData(static_cast<int>(ulen));
+    uint32_t plen;
+    stream >> plen;
+    if (plen > static_cast<uint32_t>(data.size())) return m;
+    m.password = QString::fromUtf8(data.mid(stream.device()->pos(), plen));
+    stream.skipRawData(static_cast<int>(plen));
+    uint8_t lvl = 1, en = 1, fields = 0;
+    stream >> lvl;
+    stream >> en;
+    stream >> fields;
+    m.level = lvl;
+    m.enabled = (en != 0);
+    m.fields = fields;
+    return m;
+}
+
 QByteArray ProtocolManager::encodeQualityInfo(const QualityInfo& info) {
     QByteArray data;
     QDataStream stream(&data, QIODevice::WriteOnly);

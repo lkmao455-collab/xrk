@@ -10,6 +10,7 @@
 #include <atomic>
 #include "core/types.h"
 #include "core/encryption.h"
+#include "core/permission_model.h"
 #include "core/frame_queue.h"
 #include "core/tcp_connection.h"
 #include "connection_history_manager.h"
@@ -47,6 +48,14 @@ public:
     bool isRemoteActive() const;
     QString currentIp() const;
     uint16_t currentPort() const;
+
+    // v1.8.0 RBAC: identity + effective capabilities granted by the host after
+    // authentication. The controller sends these up so the UI can hide/disable
+    // controls the session is not allowed to use.
+    void setAuthUsername(const QString& username) { m_username = username; }
+    bool hasCapability(Capability cap) const;
+    PermLevel grantedLevel() const { return m_grantedLevel; }
+    uint32_t grantedCapabilities() const { return m_grantedCaps; }
 
     void setAutoReconnect(bool enabled);
     bool isAutoReconnect() const;
@@ -137,6 +146,11 @@ signals:
     void authRequired();
     void authSuccess();
     void authFailed(const QString& reason);
+    // v1.8.0 RBAC: capabilities granted by the host after a successful AUTH_RESP.
+    // `level` is the PermLevel ordinal, `caps` is the effective capability bitmask.
+    void capabilitiesChanged(int level, quint32 caps);
+    // Host denied a capability the controller tried to use (message 219).
+    void permissionDenied(int capability, const QString& reason);
     // Phase 5: host-side connection consent.
     void consentRequested();    // host is deciding; show "waiting for approval"
     void consentGranted();      // host approved; session will start
@@ -223,7 +237,7 @@ private:
     void sendScreenAck();
     void sendPendingNack();
     void handleAuthResponse(const QByteArray& data);
-    void sendAuthRequest(const QString& password);
+    void sendAuthRequest(const QString& username, const QString& password);
     void sendMicAudio(const QByteArray& pcm);   // Phase 6: stream mic PCM to host
 
     // Async decode worker
@@ -247,6 +261,9 @@ private:
     uint16_t m_currentPort = 0;
     QString m_currentSessionId;
     QString m_password;
+    QString m_username;                       // v1.8.0 RBAC: v2 named-account login
+    PermLevel m_grantedLevel = PermLevel::None;
+    uint32_t m_grantedCaps = 0;               // effective capability mask from AUTH_RESP
     bool m_active = false;
     // When false, mouse/key events are NOT forwarded to the host (plan §2.3).
     // Default true so normal remote control keeps working unchanged; silent

@@ -155,7 +155,7 @@ bool RemoteController::setupConnection(std::shared_ptr<TcpConnection> conn, cons
     startDecodeWorker();
 
     if (!m_password.isEmpty()) {
-        sendAuthRequest(m_password);
+        sendAuthRequest(m_username, m_password);
     }
 
     emit transportEstablished(transport);
@@ -347,15 +347,28 @@ void RemoteController::sendPendingNack() {
     requestTileResend(batch);
 }
 
-void RemoteController::sendAuthRequest(const QString& password) {
+void RemoteController::sendAuthRequest(const QString& username, const QString& password) {
     if (!m_connection) {
         return;
     }
 
-    QByteArray payload = password.toUtf8();
+    // v1.8.0 RBAC: send a v2 AUTH_REQ when a username is supplied, otherwise fall
+    // back to the legacy raw-password format so old hosts / shared-password
+    // deployments keep working.
+    AuthRequest req;
+    req.legacy = username.isEmpty();
+    req.username = username;
+    req.password = password;
+    QByteArray payload = ProtocolManager::encodeAuthRequest(req);
     QByteArray message = ProtocolManager::encode(MessageType::AUTH_REQ, payload, m_currentSessionId);
     m_connection->send(message);
-    LOG_DEBUG("Auth request sent");
+    LOG_DEBUG("Auth request sent (v2=" + QString::number(!req.legacy) + ")");
+}
+
+bool RemoteController::hasCapability(Capability cap) const {
+    // Effective capabilities are whatever the host granted in AUTH_RESP. Before a
+    // successful auth m_grantedCaps is 0, so every capability reads as denied.
+    return PermissionModel::hasCapability(m_grantedCaps, cap);
 }
 
 void RemoteController::sendTerminalStart(const QString& shellType, uint32_t cols, uint32_t rows) {
@@ -874,7 +887,7 @@ void RemoteController::onReconnecting(int attempt, int maxAttempts) {
 void RemoteController::onReconnected() {
     m_active = true;
     if (!m_password.isEmpty()) {
-        sendAuthRequest(m_password);
+        sendAuthRequest(m_username, m_password);
     }
     emit reconnected();
     LOG_INFO("Reconnected to " + m_currentIp);
@@ -1200,6 +1213,16 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
             }
             break;
         }
+        case MessageType::PERMISSION_DENIED: {
+            // v1.8.0 RBAC: host refused a capability the controller tried to use
+            // (e.g. terminal without the Terminal bit). Surface it so the UI can
+            // notify the operator instead of silently doing nothing.
+            PermissionDenied denied = ProtocolManager::decodePermissionDenied(payload);
+            LOG_WARNING("[Auth] Host denied capability " + QString::number(denied.capability) +
+                        " reason=" + denied.reason);
+            emit permissionDenied(static_cast<int>(denied.capability), denied.reason);
+            break;
+        }
         default:
             break;
     }
@@ -1479,69 +1502,14 @@ void RemoteController::reportFrameDecodeResult(FrameFormat format, bool ok) {
 void RemoteController::handleAuthResponse(const QByteArray& data) {
     LOG_INFO("[Auth] Response received, size=" + QString::number(data.size()) +
              " first8=0x" + data.left(8).toHex());
-    QString responseStr = QString::fromUtf8(data.left(2));
 
-    if (responseStr == "OK") {
-        // Host always sends the session AES key+IV appended to "OK" (2 + 32 + 16
-        // = 50 bytes). Note the >= : a strictly-greater check previously excluded
-        // the exact-size response, so m_encryption was never initialized and the
-        // controller never decrypted the (always-encrypted) screen frames, which
-        // is what made the remote desktop render black.
-        if (data.size() >= 2 + 32 + 16) {
-            QByteArray encKey = data.mid(2, 32);
-            QByteArray encIv = data.mid(2 + 32, 16);
-            
-            LOG_INFO("[Auth] Key=" + QString::number(encKey.size()) + "B IV=" + QString::number(encIv.size()) +
-                     " keyHex=" + encKey.left(8).toHex() + " ivHex=" + encIv.left(8).toHex());
+    // v1.8.0 RBAC: the host sends a structured AuthResponse carrying the session
+    // key/iv AND the granted permission level + effective capability mask.
+    AuthResponse resp = ProtocolManager::decodeAuthResponse(data);
 
-            if (encKey.size() == 32 && encIv.size() == 16) {
-                m_encryption = std::make_unique<Encryption>();
-                if (m_encryption->setKey(encKey, encIv)) {
-                    LOG_INFO("[Auth] Encryption initialized");
-
-                    // Roundtrip verification: encrypt then decrypt test data
-                    QByteArray testData("XRK-VERIFY-1234567890");
-                    QByteArray encrypted = m_encryption->encrypt(testData);
-                    QByteArray decrypted = m_encryption->decrypt(encrypted);
-                    if (decrypted == testData) {
-                        LOG_INFO("[Auth] Encryption roundtrip OK (" + QString::number(testData.size()) +
-                                 "B -> " + QString::number(encrypted.size()) + "B -> " +
-                                 QString::number(decrypted.size()) + "B)");
-                    } else {
-                        LOG_ERROR("[Auth] Encryption roundtrip FAILED! enc=" +
-                                  QString::number(encrypted.size()) + "B dec=" +
-                                  QString::number(decrypted.size()) + "B expected=" +
-                                  QString::number(testData.size()) + "B");
-                        LOG_ERROR("[Auth] testData=" + testData.toHex());
-                        LOG_ERROR("[Auth] encrypted=" + encrypted.left(32).toHex() + "...");
-                        LOG_ERROR("[Auth] decrypted=" + decrypted.toHex());
-                    }
-                } else {
-                    LOG_ERROR("[Auth] Failed to set encryption key");
-                }
-            } else {
-                LOG_ERROR("[Auth] Invalid key/iv sizes: key=" + QString::number(encKey.size()) +
-                          " iv=" + QString::number(encIv.size()));
-            }
-        } else {
-            LOG_ERROR("[Auth] Response too short for key+IV: " + QString::number(data.size()) + "B (need >= 50)");
-        }
-        
-        emit authSuccess();
-        requestMonitorList();
-        m_heartbeatTimer->start(2000);
-        // Advertises tile support and asks for the initial full screen. A host
-        // that does not know SCREEN_KEYFRAME simply ignores it and keeps
-        // sending whole frames.
-        requestKeyFrame();
-        m_ackTimer->start(1000);
-        // New session: clear any prior H264 decode-fallback state.
-        m_h264FailStreak = 0;
-        m_h264FallbackRequested = false;
-        LOG_INFO("Authentication successful");
-    } else if (responseStr == "NO") {
-        // "NOT_AUTHORIZED" check
-        if (data.size() > 14 && QString::fromUtf8(data.left(14)) == "NOT_AUTHORIZED") {
+    if (!resp.ok) {
+        // Legacy failure strings ("NO" / "NOT_AUTHORIZED" / "FAILED").
+        if (data.size() >= 14 && QString::fromUtf8(data.left(14)) == "NOT_AUTHORIZED") {
             emit authRequired();
             LOG_WARNING("Authentication required");
         } else {
@@ -1549,11 +1517,62 @@ void RemoteController::handleAuthResponse(const QByteArray& data) {
             emit authFailed(full);
             LOG_WARNING("Authentication failed: " + full);
         }
-    } else {
-        QString full = QString::fromUtf8(data);
-        emit authFailed(full);
-        LOG_WARNING("Authentication failed: " + full);
+        return;
     }
+
+    QByteArray encKey = resp.sessionKey;
+    QByteArray encIv = resp.iv;
+    LOG_INFO("[Auth] Key=" + QString::number(encKey.size()) + "B IV=" + QString::number(encIv.size()) +
+             " keyHex=" + encKey.left(8).toHex() + " ivHex=" + encIv.left(8).toHex());
+
+    if (encKey.size() == 32 && encIv.size() == 16) {
+        m_encryption = std::make_unique<Encryption>();
+        if (m_encryption->setKey(encKey, encIv)) {
+            LOG_INFO("[Auth] Encryption initialized");
+
+            // Roundtrip verification: encrypt then decrypt test data
+            QByteArray testData("XRK-VERIFY-1234567890");
+            QByteArray encrypted = m_encryption->encrypt(testData);
+            QByteArray decrypted = m_encryption->decrypt(encrypted);
+            if (decrypted == testData) {
+                LOG_INFO("[Auth] Encryption roundtrip OK (" + QString::number(testData.size()) +
+                         "B -> " + QString::number(encrypted.size()) + "B -> " +
+                         QString::number(decrypted.size()) + "B)");
+            } else {
+                LOG_ERROR("[Auth] Encryption roundtrip FAILED! enc=" +
+                          QString::number(encrypted.size()) + "B dec=" +
+                          QString::number(decrypted.size()) + "B expected=" +
+                          QString::number(testData.size()) + "B");
+                LOG_ERROR("[Auth] testData=" + testData.toHex());
+                LOG_ERROR("[Auth] encrypted=" + encrypted.left(32).toHex() + "...");
+                LOG_ERROR("[Auth] decrypted=" + decrypted.toHex());
+            }
+        } else {
+            LOG_ERROR("[Auth] Failed to set encryption key");
+        }
+    } else {
+        LOG_ERROR("[Auth] Invalid key/iv sizes: key=" + QString::number(encKey.size()) +
+                  " iv=" + QString::number(encIv.size()));
+    }
+
+    m_grantedLevel = static_cast<PermLevel>(resp.grantedLevel);
+    m_grantedCaps = resp.grantedCaps;
+    LOG_INFO("[Auth] Granted level=" + QString::number(resp.grantedLevel) +
+             " caps=0x" + QString::number(resp.grantedCaps, 16));
+
+    emit authSuccess();
+    emit capabilitiesChanged(static_cast<int>(m_grantedLevel), m_grantedCaps);
+    requestMonitorList();
+    m_heartbeatTimer->start(2000);
+    // Advertises tile support and asks for the initial full screen. A host
+    // that does not know SCREEN_KEYFRAME simply ignores it and keeps
+    // sending whole frames.
+    requestKeyFrame();
+    m_ackTimer->start(1000);
+    // New session: clear any prior H264 decode-fallback state.
+    m_h264FailStreak = 0;
+    m_h264FallbackRequested = false;
+    LOG_INFO("Authentication successful");
 }
 
 // ---------------- P2P / relay connection path ----------------

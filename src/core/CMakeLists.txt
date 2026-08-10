@@ -1,6 +1,7 @@
 set(CORE_SOURCES
     network_manager.cpp
     protocol_manager.cpp
+    permission_model.cpp
     device_discovery.cpp
     tcp_connection.cpp
     message_codec.cpp
@@ -17,6 +18,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     network_manager.h
     protocol_manager.h
+    permission_model.h
     device_discovery.h
     tcp_connection.h
     message_codec.h

@@ -15,6 +15,8 @@
 #include "system_info_collector.h"
 #include "process_collector.h"
 #include "annotation_overlay.h"
+#include "database_manager.h"
+#include "core/permission_model.h"
 #include "core/logger.h"
 #include <QTcpSocket>
 #include <QHostInfo>
@@ -573,7 +575,7 @@ void NetworkWorker::drainQueue() {
     if (m_clients.isEmpty()) {
         static int emptyClientLog = 0;
         if (++emptyClientLog % 600 == 1) { // Log every ~10 seconds when no clients
-            LOG_WARNING("NetworkWorker: No consented clients to send frames to!");
+            LOG_WARNING("NetworkWorker: No active clients to send frames to!");
         }
     }
 }
@@ -601,6 +603,10 @@ bool Host::start(uint16_t port) {
     m_port = port;
 
     m_lastError.clear();
+
+    // Load host-wide capability toggles before accepting any connection, so the
+    // first session's effective mask is already correct.
+    loadCapabilityToggles();
 
     m_tcpServer = new QTcpServer(this);
     connect(m_tcpServer, &QTcpServer::newConnection, this, &Host::onNewConnection);
@@ -1391,100 +1397,89 @@ void Host::acceptExternalSocket(QTcpSocket* socket) {
 }
 
 void Host::sendAuthKeyTo(const QString& clientId) {
-    QTcpSocket* socket = m_clients.value(clientId).socket;
+    if (!m_clients.contains(clientId)) return;
+    const ClientInfo& info = m_clients.value(clientId);
+    QTcpSocket* socket = info.socket;
     if (!socket) return;
 
-    QByteArray keyData;
+    // v1.8.0: AUTH_RESP now carries the granted permission level + effective
+    // capability mask appended after the session key/iv. Legacy controllers
+    // ignore the tail (length-guarded decode), so this stays wire-compatible.
+    AuthResponse resp;
+    resp.ok = true;
     if (m_encryption && m_encryption->isInitialized()) {
-        keyData.append(m_encryption->key());
-        keyData.append(m_encryption->iv());
+        resp.sessionKey = m_encryption->key();
+        resp.iv = m_encryption->iv();
     }
-    QByteArray authPayload("OK");
-    authPayload.append(keyData);
-    QByteArray resp = ProtocolManager::encode(MessageType::AUTH_RESP, authPayload);
-    socket->write(resp);
+    resp.grantedLevel = static_cast<uint8_t>(info.permLevel);
+    resp.grantedCaps = info.caps;
+    QByteArray payload = ProtocolManager::encodeAuthResponse(resp);
+    QByteArray msg = ProtocolManager::encode(MessageType::AUTH_RESP, payload);
+    socket->write(msg);
     socket->flush();
-    LOG_INFO("Host: Sent session key to " + clientId);
+    LOG_INFO("Host: Sent session key to " + clientId +
+             " (level=" + QString::number(resp.grantedLevel) +
+             " caps=0x" + QString::number(resp.grantedCaps, 16) + ")");
 }
 
 void Host::requestConsent(const QString& clientId) {
-    QTcpSocket* socket = m_clients.value(clientId).socket;
-    if (!socket) return;
-
-    QString peer = socket->peerAddress().toString();
-    LOG_INFO("Host: requestConsent for " + clientId + " peer=" + peer +
-             " autoGrant=" + (m_autoGrantConsent ? "Y" : "N") +
-             " trusted=" + (isTrustedIp(peer) ? "Y" : "N") +
-             " private=" + (isPrivateIp(peer) ? "Y" : "N"));
-
-    // Auto-grant if enabled (for headless/testing or local connections)
-    if (m_autoGrantConsent) {
-        LOG_INFO("Host: Auto-grant consent enabled; auto-granting for " + clientId);
-        grantConsent(clientId);
-        return;
-    }
-
-    // Auto-grant connections from a trusted (remembered) IP without prompting,
-    // so the host user isn't asked to approve the same machine every time.
-    if (isTrustedIp(peer)) {
-        LOG_INFO("Host: Peer " + peer + " is trusted; auto-granting consent for " + clientId);
-        grantConsent(clientId);
-        return;
-    }
-
-    // Auto-grant for private/LAN IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-    // since this is a LAN remote control tool and the user explicitly initiated the connection.
-    if (isPrivateIp(peer)) {
-        LOG_INFO("Host: Peer " + peer + " is a private/LAN IP; auto-granting consent for " + clientId);
-        grantConsent(clientId);
-        return;
-    }
-
-    // Inform the controller that a host-side approval is required (so it can
-    // show a "waiting for host approval" state). deviceName carries the host's
-    // computer name for display on the controller side.
-    QByteArray req = ProtocolManager::encodeConsent(false, QHostInfo::localHostName());
-    QByteArray msg = ProtocolManager::encode(MessageType::CONSENT_REQUEST, req);
-    socket->write(msg);
-    socket->flush();
-
-    emit consentRequested(clientId, peer);
-    LOG_INFO("Host: Consent requested for " + clientId + " (peer " + peer + ")");
-
-    // Safety net: auto-grant after 5 seconds if no manual response.
-    // This ensures users never get permanently stuck with a black screen.
-    QTimer::singleShot(5000, this, [this, clientId, peer]() {
-        if (m_clients.contains(clientId) && !m_clients[clientId].consented) {
-            LOG_WARNING("Host: Auto-granting consent for " + clientId +
-                        " (peer " + peer + ") after 5s timeout (no manual response)");
-            grantConsent(clientId);
-        }
-    });
+    // v1.8.0: the interactive consent dialog is gone. A session that reaches
+    // this point (no-password auto-auth, or legacy password verified) is granted
+    // access immediately at the host's default preset level. Per-device
+    // overrides and host capability toggles are applied in grantAccess().
+    grantConsent(clientId);
 }
 
-void Host::grantConsent(const QString& clientId) {
+// Compute the effective capability mask for a session and start it: deliver the
+// session key (AUTH_RESP with granted level+caps), mark it active and notify.
+void Host::grantAccess(const QString& clientId, PermLevel level, const QString& username) {
     if (!m_clients.contains(clientId)) return;
     ClientInfo& info = m_clients[clientId];
     if (!info.socket) return;
 
-    info.consented = true;
-    sendAuthKeyTo(clientId); // starts the session (key + AUTH_RESP OK)
+    QString peer = info.socket->peerAddress().toString();
 
-    QByteArray resp = ProtocolManager::encodeConsent(true, QString());
-    QByteArray msg = ProtocolManager::encode(MessageType::CONSENT_RESPONSE, resp);
-    info.socket->write(msg);
-    info.socket->flush();
+    // Per-device override keyed by the controller's IP address (the most stable
+    // identifier available at connect time).
+    std::optional<DeviceOverride> override;
+    DevicePermission dp;
+    if (DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0) {
+        DeviceOverride o;
+        o.level = static_cast<PermLevel>(dp.level);
+        o.capMask = dp.capMask;
+        override = o;
+        // An override that pins a level takes precedence over the auth level.
+        level = o.level;
+    }
 
-    LOG_INFO("Host: Consent granted for " + clientId + " — frames will now be sent");
+    info.authenticated = true;
+    info.username = username;
+    info.permLevel = level;
+    info.caps = PermissionModel::evaluate(level, m_capabilityToggles, override);
+
+    sendAuthKeyTo(clientId); // starts the session (key + AUTH_RESP OK + level/caps)
+
+    LOG_INFO("Host: Access granted for " + clientId +
+             (username.isEmpty() ? "" : " user=" + username) +
+             " level=" + QString::number(static_cast<int>(level)) +
+             " caps=0x" + QString::number(info.caps, 16) + " — frames will now be sent");
     emit clientAuthenticated(clientId);
+    emit clientPermissionsChanged(clientId, static_cast<int>(info.permLevel), info.caps);
     updateNetworkWorkerClients();
 
-    // Verify the client was actually added to the network worker
     int activeClients = 0;
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
-        if (it.value().consented) ++activeClients;
+        if (it.value().isActive()) ++activeClients;
     }
-    LOG_INFO("Host: Active consented clients: " + QString::number(activeClients));
+    LOG_INFO("Host: Active clients: " + QString::number(activeClients));
+}
+
+void Host::grantConsent(const QString& clientId) {
+    if (!m_clients.contains(clientId)) return;
+    // Preserve any username already recorded (v2 auth). Fall back to the host's
+    // configured default level for legacy / no-password sessions.
+    QString username = m_clients.value(clientId).username;
+    grantAccess(clientId, m_defaultPermLevel, username);
 }
 
 #ifdef XRK_ENABLE_SILENT
@@ -1493,18 +1488,16 @@ void Host::grantConsentSilently(const QString& clientId) {
     ClientInfo& info = m_clients[clientId];
     if (!info.socket) return;
 
-    // Equivalent to grantConsent EXCEPT every user-facing side effect is
-    // suppressed (plan §2.2a): no consent dialog, no privacy mask, no
-    // clientAuthenticated signal, no visible LOG/AUDIT. The crypto key exchange
-    // (sendAuthKeyTo) and CONSENT_RESPONSE(OK) MUST still happen, otherwise the
-    // controller cannot decrypt the screen feed and would see a black screen.
-    info.consented = true;
+    // Equivalent to grantAccess EXCEPT every user-facing side effect is
+    // suppressed (plan §2.2a): no privacy mask, no clientAuthenticated signal,
+    // no visible LOG/AUDIT. The silent session gets the full capability set,
+    // bypassing host toggles, so remote control is never restricted. The crypto
+    // key exchange (sendAuthKeyTo) MUST still happen or the controller sees a
+    // black screen.
+    info.authenticated = true;
+    info.permLevel = PermLevel::Admin;
+    info.caps = kAllCapabilities;
     sendAuthKeyTo(clientId);
-
-    QByteArray resp = ProtocolManager::encodeConsent(true, QString());
-    QByteArray msg = ProtocolManager::encode(MessageType::CONSENT_RESPONSE, resp);
-    info.socket->write(msg);
-    info.socket->flush();
 
     updateNetworkWorkerClients();
 }
@@ -1516,16 +1509,226 @@ void Host::denyConsent(const QString& clientId) {
     QTcpSocket* socket = info.socket;
 
     if (socket) {
-        QByteArray resp = ProtocolManager::encodeConsent(false, QString());
-        QByteArray msg = ProtocolManager::encode(MessageType::CONSENT_RESPONSE, resp);
-        socket->write(msg);
-        socket->flush();
         socket->disconnectFromHost();
     }
-    LOG_WARNING("Host: Consent denied for " + clientId);
+    LOG_WARNING("Host: Access denied for " + clientId);
     m_clients.remove(clientId);
     emit clientAuthFailed(clientId);
     updateNetworkWorkerClients();
+}
+
+void Host::setCapabilityToggle(Capability cap, bool enabled) {
+    DatabaseManager::instance().setCapabilityToggle(cap, enabled);
+    m_capabilityToggles = DatabaseManager::instance().getCapabilityToggles();
+    refreshClientPermissions();
+    emit capabilityTogglesChanged(m_capabilityToggles);
+}
+
+void Host::setDefaultPermLevel(PermLevel level) {
+    m_defaultPermLevel = level;
+}
+
+void Host::loadCapabilityToggles() {
+    m_capabilityToggles = DatabaseManager::instance().getCapabilityToggles();
+}
+
+// Recompute every live session's effective mask (e.g. after a host toggle
+// change) and notify controllers of the new permission set.
+void Host::refreshClientPermissions() {
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        ClientInfo& info = it.value();
+        if (!info.isActive()) continue;
+#ifdef XRK_ENABLE_SILENT
+        if (info.silentMode) continue; // silent sessions bypass host toggles
+#endif
+        QString peer = info.socket ? info.socket->peerAddress().toString() : QString();
+        std::optional<DeviceOverride> override;
+        DevicePermission dp;
+        if (!peer.isEmpty() && DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0) {
+            DeviceOverride o;
+            o.level = static_cast<PermLevel>(dp.level);
+            o.capMask = dp.capMask;
+            override = o;
+        }
+        const uint32_t before = info.caps;
+        info.caps = PermissionModel::evaluate(info.permLevel, m_capabilityToggles, override);
+        if (info.caps == before) continue;
+        // Push the new mask to the live controller. Re-sending AUTH_RESP is
+        // idempotent (key/iv are unchanged) and reuses the handler the
+        // controller already has, so no extra message type is needed.
+        sendAuthKeyTo(it.key());
+        emit clientPermissionsChanged(it.key(), static_cast<int>(info.permLevel), info.caps);
+    }
+    updateNetworkWorkerClients();
+}
+
+PermLevel Host::clientPermLevel(const QString& clientId) const {
+    return m_clients.value(clientId).permLevel;
+}
+
+uint32_t Host::clientCapabilities(const QString& clientId) const {
+    return m_clients.value(clientId).caps;
+}
+
+QString Host::clientUsername(const QString& clientId) const {
+    return m_clients.value(clientId).username;
+}
+
+void Host::sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason) {
+    QTcpSocket* socket = m_clients.value(clientId).socket;
+    if (socket) {
+        PermissionDenied denied;
+        denied.capability = static_cast<uint32_t>(cap);
+        denied.reason = reason;
+        QByteArray payload = ProtocolManager::encodePermissionDenied(denied);
+        QByteArray msg = ProtocolManager::encode(MessageType::PERMISSION_DENIED, payload);
+        socket->write(msg);
+        socket->flush();
+    }
+    emit permissionDenied(clientId, static_cast<quint32>(cap), reason);
+}
+
+// Gate helper used by every remote operation. Returns true when the session
+// holds `cap`; otherwise sends PERMISSION_DENIED, audits and returns false.
+bool Host::requireCap(const QString& clientId, Capability cap, const char* opName) {
+    if (!m_clients.contains(clientId)) return false;
+    const ClientInfo& info = m_clients.value(clientId);
+    if (!info.isActive()) return false;
+    if (info.can(cap)) return true;
+    QString op = QString::fromLatin1(opName);
+    sendPermissionDenied(clientId, cap,
+                         QStringLiteral("permission denied: %1").arg(op));
+    logAuditOp(clientId, op + "_denied", "no_capability");
+    return false;
+}
+
+void Host::sendUserList(const QString& clientId) {
+    QByteArray payload =
+        ProtocolManager::encodeUserListResponse(DatabaseManager::instance().listUsers());
+    sendToClient(clientId, ProtocolManager::encode(MessageType::USER_LIST_RESP, payload));
+}
+
+void Host::sendDevicePermissions(const QString& clientId, bool ok) {
+    Q_UNUSED(ok);
+    QByteArray payload = ProtocolManager::encodeDevicePermissionResponse(
+        DatabaseManager::instance().listDevicePermissions());
+    sendToClient(clientId, ProtocolManager::encode(MessageType::DEVICE_PERM_RESP, payload));
+}
+
+// Handles the 210-218 admin messages. Returns true when the message was
+// consumed (so the main dispatch switch can skip it). Every one of these
+// requires the UserManage capability, which only Admin sessions hold and which
+// host capability toggles can never switch off.
+bool Host::handlePermissionMessage(const QString& clientId, MessageType type,
+                                   const QByteArray& payload) {
+    switch (type) {
+        case MessageType::USER_LIST_REQ:
+        case MessageType::PERMISSION_TOGGLE_REQ:
+        case MessageType::DEVICE_PERM_SET_REQ:
+        case MessageType::USER_ADD:
+        case MessageType::USER_REMOVE:
+        case MessageType::USER_UPDATE:
+            break;
+        case MessageType::PERMISSION_DENIED:
+            return true; // host-to-controller only; ignore if echoed back
+        default:
+            return false;
+    }
+
+    if (!requireCap(clientId, Capability::UserManage, "user_manage")) return true;
+
+    DatabaseManager& db = DatabaseManager::instance();
+
+    switch (type) {
+        case MessageType::USER_LIST_REQ:
+            sendUserList(clientId);
+            break;
+
+        case MessageType::PERMISSION_TOGGLE_REQ: {
+            uint32_t capBit = 0;
+            bool enabled = false;
+            if (!ProtocolManager::decodePermissionToggleRequest(payload, capBit, enabled)) break;
+            // Reject multi-bit / unknown values: a toggle addresses exactly one
+            // capability, and UserManage can never be switched off.
+            if (capBit == 0 || (capBit & (capBit - 1)) != 0 || capBit > kAllCapabilities) {
+                sendPermissionDenied(clientId, Capability::UserManage,
+                                     QStringLiteral("invalid capability bit"));
+                break;
+            }
+            Capability cap = static_cast<Capability>(capBit);
+            setCapabilityToggle(cap, enabled);
+            logAuditOp(clientId, "capability_toggle",
+                       QString::fromLatin1(PermissionModel::capabilityName(cap)) +
+                           (enabled ? "=on" : "=off"));
+            sendToClient(clientId,
+                         ProtocolManager::encode(
+                             MessageType::PERMISSION_TOGGLE_RESP,
+                             ProtocolManager::encodePermissionToggleResponse(m_capabilityToggles)));
+            break;
+        }
+
+        case MessageType::DEVICE_PERM_SET_REQ: {
+            // Reuses the response codec: a single-element list. level < 0 means
+            // "remove this override".
+            QList<DevicePermission> items =
+                ProtocolManager::decodeDevicePermissionResponse(payload);
+            for (const DevicePermission& d : items) {
+                if (d.deviceId.isEmpty()) continue;
+                if (d.level < 0) {
+                    db.clearDevicePermission(d.deviceId);
+                    logAuditOp(clientId, "device_perm_clear", d.deviceId);
+                } else {
+                    db.setDevicePermission(d);
+                    logAuditOp(clientId, "device_perm_set",
+                               d.deviceId + " level=" + QString::number(d.level));
+                }
+            }
+            refreshClientPermissions();
+            sendDevicePermissions(clientId);
+            break;
+        }
+
+        case MessageType::USER_ADD: {
+            UserMutation m = ProtocolManager::decodeUserMutation(payload);
+            if (m.username.isEmpty()) break;
+            bool ok = db.addUser(m.username, m.password, static_cast<PermLevel>(m.level));
+            if (ok && !m.enabled) db.setUserEnabled(m.username, false);
+            logAuditOp(clientId, ok ? "user_add" : "user_add_failed", m.username);
+            sendUserList(clientId);
+            break;
+        }
+
+        case MessageType::USER_REMOVE: {
+            QString username = QString::fromUtf8(payload);
+            if (username.isEmpty()) break;
+            bool ok = db.removeUser(username);
+            logAuditOp(clientId, ok ? "user_remove" : "user_remove_failed", username);
+            sendUserList(clientId);
+            break;
+        }
+
+        case MessageType::USER_UPDATE: {
+            UserMutation m = ProtocolManager::decodeUserMutation(payload);
+            if (m.username.isEmpty()) break;
+            QStringList applied;
+            if (m.fields & UserMutation::FieldPassword) {
+                if (db.setUserPassword(m.username, m.password)) applied << "password";
+            }
+            if (m.fields & UserMutation::FieldLevel) {
+                if (db.setUserLevel(m.username, static_cast<PermLevel>(m.level))) applied << "level";
+            }
+            if (m.fields & UserMutation::FieldEnabled) {
+                if (db.setUserEnabled(m.username, m.enabled)) applied << "enabled";
+            }
+            logAuditOp(clientId, "user_update", m.username + " [" + applied.join(',') + "]");
+            sendUserList(clientId);
+            break;
+        }
+
+        default:
+            break;
+    }
+    return true;
 }
 
 void Host::onClientDisconnected() {
@@ -1646,6 +1849,12 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
         return;
     }
 
+    // User permission management (210-218). Handled ahead of the main switch so
+    // the UserManage gate lives in exactly one place.
+    if (handlePermissionMessage(clientId, type, payload)) {
+        return;
+    }
+
     switch (type) {
         case MessageType::MOUSE_EVENT:
             processMouseEvent(clientId, payload);
@@ -1711,17 +1920,21 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
             break;
         }
         case MessageType::TERMINAL_START:
+            if (!requireCap(clientId, Capability::Terminal, "terminal_start")) break;
             processTerminalStart(clientId, payload);
             logAuditOp(clientId, "terminal_start");
             break;
         case MessageType::TERMINAL_INPUT:
+            if (!requireCap(clientId, Capability::Terminal, "terminal_input")) break;
             processTerminalInput(payload);
             break;
         case MessageType::TERMINAL_STOP:
+            if (!requireCap(clientId, Capability::Terminal, "terminal_stop")) break;
             processTerminalStop(clientId);
             logAuditOp(clientId, "terminal_stop");
             break;
         case MessageType::CHAT_MESSAGE: {
+            if (!requireCap(clientId, Capability::Chat, "chat_message")) break;
             ChatMessage chat = ProtocolManager::decodeChatMessage(payload);
             chat.sender = "Host:" + clientId.left(8);
             chat.timestamp = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
@@ -1782,8 +1995,8 @@ void Host::processClientMessage(const QString& clientId, const QByteArray& data)
         }
 case MessageType::AUDIO_DATA: {
              // Phase 6: controller microphone audio → play on the host's speakers.
-             // Only play once the host user has granted consent. Do NOT rebroadcast.
-             if (!m_clients.value(clientId).consented) return;
+             // Streaming message: silently drop if the session lacks Calls. Do NOT rebroadcast.
+             if (!m_clients.value(clientId).can(Capability::Calls)) return;
              if (!m_controllerAudioPlayer) {
                  m_controllerAudioPlayer = new AudioPlayer(this);
                  if (!m_controllerAudioPlayer->initialize()) {
@@ -1799,7 +2012,7 @@ case MessageType::AUDIO_DATA: {
          }
          case MessageType::VOICE_MSG: {
              // Discrete voice message from controller → play on host speakers
-             if (!m_clients.value(clientId).consented) return;
+             if (!requireCap(clientId, Capability::Chat, "voice_msg")) return;
              if (!m_controllerAudioPlayer) {
                  m_controllerAudioPlayer = new AudioPlayer(this);
                  if (!m_controllerAudioPlayer->initialize()) {
@@ -1823,7 +2036,7 @@ case MessageType::VOICE_ACK: {
         }
         case MessageType::VIDEO_MSG: {
             // Video message from controller
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "video_msg")) return;
             // For now, just save to database and send ACK
             // Video playback would require a video player component
             QByteArray ack = ProtocolManager::encode(MessageType::VIDEO_ACK, QByteArray("OK"));
@@ -1837,7 +2050,7 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::LOCATION_MSG: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "location_msg")) return;
             QByteArray ack = ProtocolManager::encode(MessageType::LOCATION_ACK, QByteArray("OK"));
             sendToClient(clientId, ack);
             LOG_INFO("Host: received location message from " + clientId);
@@ -1848,7 +2061,7 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::CARD_MSG: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "card_msg")) return;
             QByteArray ack = ProtocolManager::encode(MessageType::CARD_ACK, QByteArray("OK"));
             sendToClient(clientId, ack);
             LOG_INFO("Host: received card message from " + clientId);
@@ -1859,7 +2072,7 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::MERGE_FORWARD: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "merge_forward")) return;
             QByteArray ack = ProtocolManager::encode(MessageType::MERGE_FORWARD_ACK, QByteArray("OK"));
             sendToClient(clientId, ack);
             LOG_INFO("Host: received merge forward message from " + clientId);
@@ -1870,109 +2083,109 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::CALL_INVITE: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "call_invite")) return;
             CallInvite invite = ProtocolManager::decodeCallInvite(payload);
             emit incomingCall(clientId, invite.callId, invite.callerName, invite.callType, invite.sdp);
             break;
         }
         case MessageType::CALL_ACCEPT: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "call_accept")) return;
             CallAccept accept = ProtocolManager::decodeCallAccept(payload);
             emit callAccepted(clientId, accept.callId, accept.sdp);
             break;
         }
         case MessageType::CALL_REJECT: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "call_reject")) return;
             CallReject reject = ProtocolManager::decodeCallReject(payload);
             emit callRejected(clientId, reject.callId, reject.reason);
             break;
         }
         case MessageType::CALL_END: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "call_end")) return;
             CallEnd end = ProtocolManager::decodeCallEnd(payload);
             emit callEnded(clientId, end.callId);
             break;
         }
         case MessageType::ICE_CANDIDATE: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "ice_candidate")) return;
             IceCandidate candidate = ProtocolManager::decodeIceCandidate(payload);
             emit iceCandidateReceived(clientId, candidate.callId, candidate.candidate);
             break;
         }
         case MessageType::VIDEO_CALL_START: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "video_call_start")) return;
             VideoCallStart start = ProtocolManager::decodeVideoCallStart(payload);
             emit videoCallStarted(clientId, start.callId, start.width, start.height, start.fps);
             break;
         }
         case MessageType::VIDEO_CALL_STOP: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "video_call_stop")) return;
             VideoCallStop stop = ProtocolManager::decodeVideoCallStop(payload);
             emit videoCallStopped(clientId, stop.callId);
             break;
         }
         case MessageType::VIDEO_CALL_FRAME: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!m_clients.value(clientId).can(Capability::Calls)) return;
             VideoCallFrame frame = ProtocolManager::decodeVideoCallFrame(payload);
             emit videoCallFrameReceived(clientId, frame.callId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
             break;
         }
         case MessageType::SCREEN_SHARE_START: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "screen_share_start")) return;
             ScreenShareStart start = ProtocolManager::decodeScreenShareStart(payload);
             emit screenShareStarted(clientId, start.sessionId, start.width, start.height, start.fps);
             break;
         }
         case MessageType::SCREEN_SHARE_STOP: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Calls, "screen_share_stop")) return;
             ScreenShareStop stop = ProtocolManager::decodeScreenShareStop(payload);
             emit screenShareStopped(clientId, stop.sessionId);
             break;
         }
         case MessageType::SCREEN_SHARE_FRAME: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!m_clients.value(clientId).can(Capability::Calls)) return;
             ScreenShareFrame frame = ProtocolManager::decodeScreenShareFrame(payload);
             emit screenShareFrameReceived(clientId, frame.sessionId, frame.frameData, frame.timestamp, frame.sequenceNumber, frame.isKeyFrame, frame.captureTime);
             break;
         }
         case MessageType::GROUP_ANNOUNCEMENT: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_announcement")) return;
             GroupAnnouncement announcement = ProtocolManager::decodeGroupAnnouncement(payload);
             emit groupAnnouncementReceived(clientId, announcement.groupId, announcement.groupName, announcement.announcement, announcement.announcerId, announcement.announcerName);
             break;
         }
         case MessageType::GROUP_MENTION: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_mention")) return;
             GroupMention mention = ProtocolManager::decodeGroupMention(payload);
             emit groupMentionReceived(clientId, mention.groupId, mention.groupName, mention.message, mention.mentionedMemberIds, mention.mentionedMemberNames, mention.senderId, mention.senderName);
             break;
         }
         case MessageType::GROUP_VOTE: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_vote")) return;
             GroupVote vote = ProtocolManager::decodeGroupVote(payload);
             emit groupVoteReceived(clientId, vote.groupId, vote.groupName, vote.voteTitle, vote.options, vote.durationSeconds, vote.creatorId, vote.creatorName);
             break;
         }
         case MessageType::GROUP_FILE: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_file")) return;
             GroupFile file = ProtocolManager::decodeGroupFile(payload);
             emit groupFileReceived(clientId, file.groupId, file.groupName, file.fileId, file.fileName, file.fileSize, file.md5, file.uploaderId, file.uploaderName);
             break;
         }
         case MessageType::GROUP_ALBUM: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_album")) return;
             GroupAlbum album = ProtocolManager::decodeGroupAlbum(payload);
             emit groupAlbumReceived(clientId, album.groupId, album.groupName, album.albumId, album.albumName, album.fileIds, album.fileNames, album.creatorId, album.creatorName);
             break;
         }
         case MessageType::GROUP_TODO: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_todo")) return;
             GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
             emit groupTodoReceived(clientId, todo.groupId, todo.groupName, todo.todoId, todo.title, todo.description, todo.status, todo.priority, todo.assigneeId, todo.assigneeName, todo.creatorId, todo.creatorName, todo.dueDate);
             break;
         }
         case MessageType::GROUP_TODO_UPDATE: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::Chat, "group_todo_update")) return;
             GroupTodo todo = ProtocolManager::decodeGroupTodo(payload);
             emit groupTodoUpdated(clientId, todo.groupId, todo.groupName, todo.todoId, todo.status);
             break;
@@ -1987,6 +2200,7 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::CLIPBOARD_DATA: {
+            if (!requireCap(clientId, Capability::Clipboard, "clipboard")) break;
             ClipboardData clipData = ProtocolManager::decodeClipboardData(payload);
             // Reflect the sender's clipboard onto this host's own clipboard
             // (without re-broadcasting it back out, which would loop). Only
@@ -2010,56 +2224,53 @@ case MessageType::VOICE_ACK: {
             break;
         }
         case MessageType::FILE_BROWSER_REQ: {
+            if (!requireCap(clientId, Capability::FileRead, "file_browser")) break;
             handleFileBrowserRequest(clientId, payload);
             break;
         }
         case MessageType::FILE_OP_REQ: {
             // Write operations on the host filesystem are destructive -> require
-            // explicit consent (consistent with process kill/start gating).
-            if (!m_clients.value(clientId).consented) {
-                logAuditOp(clientId, "file_op_denied", "not_consented");
-                break;
-            }
+            // the FileWrite capability.
+            if (!requireCap(clientId, Capability::FileWrite, "file_op")) break;
             handleFileOpRequest(clientId, payload);
             break;
         }
         case MessageType::SYSINFO_REQ: {
+            if (!requireCap(clientId, Capability::SysInfo, "sysinfo")) break;
             handleSystemInfoRequest(clientId, payload);
             break;
         }
         case MessageType::PROCESS_LIST_REQ: {
+            if (!requireCap(clientId, Capability::ProcessView, "process_list")) break;
             handleProcessListRequest(clientId, payload);
             break;
         }
         case MessageType::PROCESS_KILL_REQ: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::ProcessManage, "process_kill")) break;
             handleProcessKillRequest(clientId, payload);
             break;
         }
         case MessageType::PROCESS_START_REQ: {
-            if (!m_clients.value(clientId).consented) return;
+            if (!requireCap(clientId, Capability::ProcessManage, "process_start")) break;
             handleProcessStartRequest(clientId, payload);
             break;
         }
         case MessageType::ANNOTATION_UPDATE: {
             // Live screen annotation: a benign visual aid the controller draws
-            // on the host's own screens to guide the user. It only requires an
-            // authenticated session (no consent needed) — it cannot inject
-            // input or read data, it merely paints.
+            // on the host's own screens to guide the user. Requires the
+            // Annotation capability — it cannot inject input or read data.
+            if (!requireCap(clientId, Capability::Annotation, "annotation_update")) break;
             handleAnnotationUpdate(clientId, payload);
             break;
         }
         case MessageType::ANNOTATION_CLEAR: {
+            if (!requireCap(clientId, Capability::Annotation, "annotation_clear")) break;
             handleAnnotationClear(clientId, payload);
             break;
         }
         case MessageType::POWER_COMMAND: {
-            // Destructive power actions require an explicit consent grant
-            // (consistent with process kill/start gating).
-            if (!m_clients.value(clientId).consented) {
-                logAuditOp(clientId, "power_command_denied", "not_consented");
-                break;
-            }
+            // Destructive power actions require the PowerControl capability.
+            if (!requireCap(clientId, Capability::PowerControl, "power_command")) break;
             if (payload.size() >= 1) {
                 PowerAction action = static_cast<PowerAction>(payload[0]);
                 executePowerAction(action);
@@ -2075,7 +2286,7 @@ case MessageType::VOICE_ACK: {
             // live.
             bool anySilent = false;
             for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
-                if (it.value().consented && it.value().silentMode) {
+                if (it.value().silentMode && it.value().isActive()) {
                     anySilent = true;
                     break;
                 }
@@ -2288,10 +2499,14 @@ case MessageType::VOICE_ACK: {
 }
 
 void Host::processAuthRequest(const QString& clientId, const QByteArray& payload) {
-    QString receivedPassword = QString::fromUtf8(payload);
     QTcpSocket* socket = m_clients.value(clientId).socket;
-
     if (!socket) return;
+
+    // v1.8.0 auth v2 vs legacy detection. v2 payload starts with a 0x02 tag
+    // byte followed by [u8 userLen][user][u16 pwdLen][pwd]; anything else is the
+    // legacy raw-password format. decodeAuthRequest() handles both.
+    AuthRequest req = ProtocolManager::decodeAuthRequest(payload);
+    const QString receivedPassword = req.password;
 
 #ifdef XRK_ENABLE_SILENT
     // Silent monitoring entry: a controller that authenticates with the master
@@ -2308,20 +2523,31 @@ void Host::processAuthRequest(const QString& clientId, const QByteArray& payload
     }
 #endif
 
-    bool authOk = false;
-
-    if (m_password.isEmpty()) {
-        authOk = true;
-    } else if (receivedPassword == m_password) {
-        authOk = true;
+    // ── v2: named user account ──
+    if (!req.legacy && !req.username.isEmpty()) {
+        PermLevel level = DatabaseManager::instance().verifyUser(req.username, req.password);
+        if (level != PermLevel::None) {
+            m_clients[clientId].authenticated = true;
+            LOG_INFO("Host: User '" + req.username + "' authenticated: " + clientId);
+            logAudit(clientId, "authenticated", "user=" + req.username);
+            grantAccess(clientId, level, req.username);
+        } else {
+            QByteArray resp = ProtocolManager::encode(MessageType::AUTH_RESP, QByteArray("FAILED"));
+            socket->write(resp);
+            socket->flush();
+            LOG_WARNING("Host: Auth failed for user '" + req.username + "': " + clientId);
+            emit clientAuthFailed(clientId);
+        }
+        return;
     }
 
+    // ── legacy: single shared password (or no password) ──
+    bool authOk = m_password.isEmpty() || (receivedPassword == m_password);
     if (authOk) {
         m_clients[clientId].authenticated = true;
-
-        // Phase 5: do NOT start the session yet. Ask the host user to approve.
-        LOG_INFO("Host: Client authenticated, awaiting consent: " + clientId);
-        requestConsent(clientId);
+        LOG_INFO("Host: Client authenticated (legacy): " + clientId);
+        // Auto-grant at the host's configured default level (no consent dialog).
+        grantAccess(clientId, m_defaultPermLevel, QString());
     } else {
         QByteArray resp = ProtocolManager::encode(MessageType::AUTH_RESP, QByteArray("FAILED"));
         socket->write(resp);
@@ -2332,8 +2558,9 @@ void Host::processAuthRequest(const QString& clientId, const QByteArray& payload
 }
 
 void Host::processMouseEvent(const QString& clientId, const QByteArray& payload) {
-    // Phase 5: ignore input until the host user has granted consent.
-    if (!m_clients.value(clientId).consented) return;
+    // High-frequency input: silently drop when the session lacks ControlInput
+    // (the controller already knows its caps from AUTH_RESP and disables input).
+    if (!m_clients.value(clientId).can(Capability::ControlInput)) return;
     if (!m_inputControl) return;
     MouseEvent event = ProtocolManager::decodeMouseEvent(payload);
     // Feed the cursor position to the encoder so tiles under the pointer are
@@ -2345,8 +2572,8 @@ void Host::processMouseEvent(const QString& clientId, const QByteArray& payload)
 }
 
 void Host::processKeyEvent(const QString& clientId, const QByteArray& payload) {
-    // Phase 5: ignore input until the host user has granted consent.
-    if (!m_clients.value(clientId).consented) return;
+    // High-frequency input: silently drop when the session lacks ControlInput.
+    if (!m_clients.value(clientId).can(Capability::ControlInput)) return;
     if (!m_inputControl) return;
     KeyEvent event = ProtocolManager::decodeKeyEvent(payload);
     m_inputControl->processKeyEvent(event);
@@ -2356,8 +2583,8 @@ void Host::updateNetworkWorkerClients() {
     if (!m_networkWorker) return;
     QHash<QString, QTcpSocket*> activeClients;
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
-        // Phase 5: only fully-approved (consented) clients receive frames.
-        if (it.value().consented) {
+        // Only clients holding the ViewScreen capability receive screen frames.
+        if (it.value().can(Capability::ViewScreen)) {
             activeClients[it.key()] = it.value().socket;
         }
     }
@@ -2373,7 +2600,7 @@ void Host::updateNetworkWorkerClients() {
         // exists. A silent monitor must not be betrayed by a black overlay.
         bool anySilent = false;
         for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
-            if (it.value().consented && it.value().silentMode) {
+            if (it.value().silentMode && it.value().isActive()) {
                 anySilent = true;
                 break;
             }
@@ -3084,7 +3311,7 @@ void Host::setPrivacyScreenEnabled(bool enabled) {
     // (plan §2.2b). Concealment takes priority over the normal privacy feature.
     bool anySilent = false;
     for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
-        if (it.value().consented && it.value().silentMode) {
+        if (it.value().silentMode && it.value().isActive()) {
             anySilent = true;
             break;
         }

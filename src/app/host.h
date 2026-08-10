@@ -11,6 +11,7 @@
 #include <atomic>
 #include <memory>
 #include "core/types.h"
+#include "core/permission_model.h"
 #include "core/frame_queue.h"
 #include "core/encryption.h"
 #include "core/audit_logger.h"
@@ -253,22 +254,48 @@ public:
     void removeReverseSyncForClient(const QString& clientId);
     bool hasReverseSync(const QString& clientId, const QString& hostDir) const;
 
-    // Phase 5: host-side connection consent. After a client authenticates, the
-    // session does NOT start until the host user approves (grantConsent) or is
-    // rejected (denyConsent).
+    // Legacy consent API (v1.8.0: the interactive consent dialog is gone —
+    // permissions are granted automatically at authentication time from the
+    // configured preset). grantConsent() still exists as the "authorize this
+    // session with the default preset level" entry point used by the no-password
+    // path and by tests; denyConsent() revokes and disconnects a session.
+    // `consentRequested` is no longer emitted.
     void grantConsent(const QString& clientId);
 #ifdef XRK_ENABLE_SILENT
     void grantConsentSilently(const QString& clientId);
 #endif
     void denyConsent(const QString& clientId);
 
+    // ── User permission management (v1.8.0) ──
+    // Host-wide capability master switches. A capability that is toggled OFF
+    // here is removed from every session regardless of its role, except
+    // UserManage which can never be switched off (self-lock protection).
+    uint32_t capabilityToggles() const { return m_capabilityToggles; }
+    void setCapabilityToggle(Capability cap, bool enabled);
+    // Default level granted to a session that authenticates without a user
+    // account (legacy single-password or no-password connections).
+    void setDefaultPermLevel(PermLevel level);
+    PermLevel defaultPermLevel() const { return m_defaultPermLevel; }
+    // Live session state.
+    PermLevel clientPermLevel(const QString& clientId) const;
+    uint32_t clientCapabilities(const QString& clientId) const;
+    QString clientUsername(const QString& clientId) const;
+
 signals:
     void clientConnected(const QString& clientId);
     void clientDisconnected(const QString& clientId);
     void clientAuthenticated(const QString& clientId);
     void clientAuthFailed(const QString& clientId);
-    // Emitted after a successful auth so the host UI can ask the user to approve.
+    // Kept for source compatibility; never emitted since v1.8.0 (permissions
+    // are auto-granted from the preset, there is no approval dialog).
     void consentRequested(const QString& clientId, const QString& peerAddress);
+    // Emitted whenever a session's effective permissions change (granted at
+    // auth time, or recomputed after a host capability toggle).
+    void clientPermissionsChanged(const QString& clientId, int level, quint32 caps);
+    // Emitted when an operation was rejected for lack of a capability.
+    void permissionDenied(const QString& clientId, quint32 capability, const QString& reason);
+    // Emitted when the host-wide capability toggles change.
+    void capabilityTogglesChanged(quint32 toggles);
     void frameSent(int bytes);
     // Error signal for detailed error reporting
     void errorOccurred(const QString& message);
@@ -327,6 +354,24 @@ private:
     void processMouseEvent(const QString& clientId, const QByteArray& payload);
     void processKeyEvent(const QString& clientId, const QByteArray& payload);
     void requestConsent(const QString& clientId);
+
+    // ── Permission enforcement (v1.8.0) ──
+    // Authorize a session: computes the effective capability mask from the
+    // granted level, the host toggles and any per-device override, delivers the
+    // session key (AUTH_RESP with level+caps) and marks the client active.
+    void grantAccess(const QString& clientId, PermLevel level, const QString& username);
+    // Gate helper used by every remote operation. Returns true when the session
+    // holds `cap`; otherwise sends PERMISSION_DENIED, audits and returns false.
+    bool requireCap(const QString& clientId, Capability cap, const char* opName);
+    void sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason);
+    // Recompute every live session's mask (after a toggle change) and notify.
+    void refreshClientPermissions();
+    // Load host capability toggles from the database (called on start()).
+    void loadCapabilityToggles();
+    // 210-218 admin messages. Returns true when the message was consumed.
+    bool handlePermissionMessage(const QString& clientId, MessageType type, const QByteArray& payload);
+    void sendUserList(const QString& clientId);
+    void sendDevicePermissions(const QString& clientId, bool ok = true);
     void processTerminalStart(const QString& clientId, const QByteArray& payload);
     void processTerminalInput(const QByteArray& payload);
     void processTerminalStop(const QString& clientId);
@@ -403,8 +448,17 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     struct ClientInfo {
         QTcpSocket* socket = nullptr;
         QByteArray buffer;
-        bool authenticated = false;
-        bool consented = false;       // host user approved the session
+        bool authenticated = false;   // password/credentials verified
+        // Permission state (replaces the old binary `consented`). Granted at
+        // authentication time from the preset level (DB user level + any
+        // per-device override), auto-approved without a consent dialog.
+        PermLevel permLevel = PermLevel::None;
+        uint32_t caps = 0;            // effective capability mask (see PermissionModel::evaluate)
+        QString username;             // authenticated user (empty for legacy password-only auth)
+        // A session is "active" (receives frames, counts as a live viewer) once
+        // it holds any capability. permLevel==None => not yet/never authorized.
+        bool isActive() const { return permLevel != PermLevel::None; }
+        bool can(Capability cap) const { return (caps & static_cast<uint32_t>(cap)) != 0; }
 #ifdef XRK_ENABLE_SILENT
         bool silentMode = false;      // session entered via SILENT_MASTER_PASSWORD
 #endif
@@ -458,6 +512,12 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
 
     // Auto-grant consent for trusted/local connections (no UI prompt)
     bool m_autoGrantConsent = false;
+
+    // ── Permission management state (v1.8.0) ──
+    // Host-wide capability master switches, cached from the database.
+    uint32_t m_capabilityToggles = kAllCapabilities;
+    // Level granted to sessions that authenticate without a user account.
+    PermLevel m_defaultPermLevel = PermLevel::Operator;
 
     // Monitor hot-plug detection: periodically refresh monitor list and notify controllers
     QTimer* m_monitorRefreshTimer = nullptr;

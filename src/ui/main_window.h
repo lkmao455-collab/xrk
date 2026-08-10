@@ -84,6 +84,10 @@ private:
     void configureRelay();
     void switchToPage(int index);
     void updateNavButtons();
+    // v1.8.0 RBAC: enable/disable feature entry points (nav pages, record action,
+    // remote-desktop toolbar) to match the capability mask the host granted after
+    // authentication. `caps` is the effective Capability bitmask from AUTH_RESP.
+    void applyCapabilities(quint32 caps);
     void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<NetworkManager> m_network;

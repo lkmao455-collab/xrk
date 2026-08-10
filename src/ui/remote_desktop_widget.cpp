@@ -435,6 +435,38 @@ void RemoteDesktopWidget::stopRemote() {
     emit remoteStopped();
 }
 
+void RemoteDesktopWidget::applyCapabilities(quint32 caps) {
+    // Grey out any toolbar control whose backing capability the host did not
+    // grant. A disabled button cannot be triggered, so the operator never issues
+    // an action the host would reject with PERMISSION_DENIED (219).
+    auto gate = [caps](QPushButton* btn, Capability cap, const QString& deniedTip) {
+        if (!btn) return;
+        const bool allowed = PermissionModel::hasCapability(caps, cap);
+        btn->setEnabled(allowed);
+        if (!allowed) {
+            // If a checkable control was left ON from a prior session, turn it off
+            // so its state matches the now-revoked capability.
+            if (btn->isCheckable() && btn->isChecked()) {
+                btn->setChecked(false);
+            }
+            btn->setToolTip(deniedTip);
+        }
+    };
+
+    gate(m_takeoverButton,      Capability::ControlInput, tr("无控制权限"));
+    gate(m_blockInputButton,    Capability::ControlInput, tr("无控制权限"));
+    gate(m_ctrlAltDelButton,    Capability::ControlInput, tr("无控制权限"));
+    gate(m_annotateButton,      Capability::Annotation,   tr("无标注权限"));
+    gate(m_annotateColorButton, Capability::Annotation,   tr("无标注权限"));
+    gate(m_annotateClearButton, Capability::Annotation,   tr("无标注权限"));
+    gate(m_micButton,           Capability::Calls,        tr("无语音权限"));
+    gate(m_audioButton,         Capability::Calls,        tr("无语音权限"));
+    gate(m_chatOverlayToggleBtn, Capability::Chat,        tr("无聊天权限"));
+
+    // Snapshot is a local save of the visible frame; it only needs ViewScreen,
+    // which every authenticated session holds, so it stays enabled.
+}
+
 bool RemoteDesktopWidget::isRemoteActive() const {
     return m_active;
 }
