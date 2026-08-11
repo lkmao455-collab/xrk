@@ -7,6 +7,8 @@
 #include "chat_widget.h"
 #include "system_info_widget.h"
 #include "remote_process_widget.h"
+#include "permission_console_dialog.h"
+#include "audit_log_viewer.h"
 #include "settings_widget.h"
 #include "core/network_manager.h"
 #include <QCloseEvent>
@@ -22,6 +24,7 @@
 #include "app/nat_traversal.h"
 #include "core/audit_logger.h"
 #include "core/translation_manager.h"
+#include "core/permission_model.h"
 #include "core/logger.h"
 #include "clipboard_history_widget.h"
 #include "media_test_dialog.h"
@@ -143,6 +146,61 @@ void MainWindow::updateNavButtons() {
         if (m_navButtons[i]) {
             m_navButtons[i]->setChecked(i == m_currentPage);
         }
+    }
+}
+
+void MainWindow::applyCapabilities(quint32 caps) {
+    auto have = [caps](Capability cap) {
+        return PermissionModel::hasCapability(caps, cap);
+    };
+
+    // Sidebar pages map to the capability needed to use that feature. Pages whose
+    // capability is absent are disabled so the operator cannot navigate into a
+    // feature the host will reject.
+    auto gatePage = [&](PageIndex page, Capability cap) {
+        if (m_navButtons[page]) {
+            m_navButtons[page]->setEnabled(have(cap));
+        }
+    };
+
+    // Desktop (screen) is the baseline — every authenticated session can view it.
+    gatePage(PAGE_DESKTOP,  Capability::ViewScreen);
+    gatePage(PAGE_FILES,    Capability::FileRead);   // file transfer (read) gates the page
+    gatePage(PAGE_TERMINAL, Capability::Terminal);
+    gatePage(PAGE_CHAT,     Capability::Chat);
+    gatePage(PAGE_MONITOR,  Capability::SysInfo);
+    gatePage(PAGE_CLIPBOARD,Capability::Clipboard);
+    gatePage(PAGE_PROCESS,  Capability::ProcessView);
+    // Home / settings are always available.
+
+    // Menu/toolbar actions that depend on a capability.
+    if (m_recordAction) m_recordAction->setEnabled(have(Capability::Record));
+    if (m_screenshotAction) m_screenshotAction->setEnabled(have(Capability::ViewScreen));
+    if (m_cameraAction) m_cameraAction->setEnabled(have(Capability::ViewScreen));
+    // Admin console entry: only an Admin/UserManage session may manage users.
+    if (m_permConsoleAction) m_permConsoleAction->setEnabled(have(Capability::UserManage));
+    if (!have(Capability::UserManage) && m_permConsole) m_permConsole->close();
+    // Audit-log viewer: admin oversight, also gated by UserManage.
+    if (m_auditLogAction) m_auditLogAction->setEnabled(have(Capability::UserManage));
+    if (!have(Capability::UserManage) && m_auditViewer) m_auditViewer->close();
+
+    // Remote-desktop toolbar buttons (annotation / control / voice / chat ...).
+    m_remoteDesktopWidget->applyCapabilities(caps);
+
+    // If the operator is currently on a now-disabled page, bounce them back to
+    // the desktop view so they aren't stranded on an unusable feature page.
+    if (m_currentPage == PAGE_TERMINAL && !have(Capability::Terminal)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_FILES && !have(Capability::FileRead)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_CHAT && !have(Capability::Chat)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_MONITOR && !have(Capability::SysInfo)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_PROCESS && !have(Capability::ProcessView)) {
+        switchToPage(PAGE_DESKTOP);
+    } else if (m_currentPage == PAGE_CLIPBOARD && !have(Capability::Clipboard)) {
+        switchToPage(PAGE_DESKTOP);
     }
 }
 
@@ -283,6 +341,9 @@ void MainWindow::setupMenuBar() {
     QMenu* toolsMenu = menuBar->addMenu("\u5de5\u5177(&T)");
     toolsMenu->addAction(m_mediaTestAction);
     toolsMenu->addSeparator();
+    toolsMenu->addAction(m_auditLogAction);
+    toolsMenu->addAction(m_permConsoleAction);
+    toolsMenu->addAction(m_requireApprovalAction);
     toolsMenu->addAction(m_webConsoleAction);
 
     QMenu* helpMenu = menuBar->addMenu("\u5e2e\u52a9(&H)");
@@ -363,6 +424,12 @@ void MainWindow::onRemoteStopped() {
     }
     m_sysInfoWidget->setConnected(false);
     m_processWidget->setConnected(false);
+
+    // v1.8.0 RBAC: session ended → revoke admin console entry and close it.
+    if (m_permConsoleAction) m_permConsoleAction->setEnabled(false);
+    if (m_permConsole) m_permConsole->close();
+    if (m_auditLogAction) m_auditLogAction->setEnabled(false);
+    if (m_auditViewer) m_auditViewer->close();
 
     // Hide sidebar and return to home when disconnected
     m_navSidebar->setVisible(false);
@@ -585,9 +652,20 @@ void MainWindow::onConnectToIp(const QString& ip, uint16_t port) {
 
     QString password;
     if (m_host->isPasswordRequired()) {
+        // v1.8.0 RBAC: optionally identify with a named account. Leaving the
+        // username blank sends a legacy (shared-password) AUTH_REQ so old hosts
+        // keep working; a non-empty username triggers the v2 named-account flow
+        // and the host grants that account's role/capabilities.
         bool ok;
-        password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
-            "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+        QString username = QInputDialog::getText(this, tr("连接认证"),
+            tr("用户名(留空使用共享密码):"), QLineEdit::Normal, QString(), &ok);
+        if (!ok) {
+            return;
+        }
+        m_remoteController->setAuthUsername(username.trimmed());
+
+        password = QInputDialog::getText(this, tr("连接认证"),
+            tr("请输入访问密码:"), QLineEdit::Password, QString(), &ok);
         if (!ok) {
             return;
         }
@@ -652,8 +730,13 @@ void MainWindow::onConnectToCode(const QString& code) {
         QString password;
         if (m_host->isPasswordRequired()) {
             bool ok;
-            password = QInputDialog::getText(this, "\u8fde\u63a5\u8ba4\u8bc1",
-                "\u8bf7\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801:", QLineEdit::Password, QString(), &ok);
+            QString username = QInputDialog::getText(this, tr("连接认证"),
+                tr("用户名(留空使用共享密码):"), QLineEdit::Normal, QString(), &ok);
+            if (!ok) return;
+            m_remoteController->setAuthUsername(username.trimmed());
+
+            password = QInputDialog::getText(this, tr("连接认证"),
+                tr("请输入访问密码:"), QLineEdit::Password, QString(), &ok);
             if (!ok) return;
         }
         m_remoteController->startRemoteByDevice(code, password);
@@ -973,6 +1056,38 @@ void MainWindow::setupConnections() {
         // Auth dialog is handled by RemoteDesktopWidget
     });
 
+    // v1.8.0 RBAC: once the host grants a permission level + capability mask,
+    // enable only the features the session is allowed to use.
+    connect(m_remoteController.get(), &RemoteController::capabilitiesChanged,
+            this, [this](int level, quint32 caps) {
+        applyCapabilities(caps);
+        static const char* kLevelNames[] = {"无", "只读", "操作员", "管理员"};
+        const char* levelName = (level >= 0 && level <= 3) ? kLevelNames[level] : "未知";
+        statusBar()->showMessage(tr("已授权: %1 (能力 0x%2)")
+                                     .arg(QString::fromUtf8(levelName))
+                                     .arg(caps, 0, 16));
+    });
+
+    // Host refused a capability the controller tried to use (message 219).
+    connect(m_remoteController.get(), &RemoteController::permissionDenied,
+            this, [this](int capability, const QString& reason) {
+        Capability cap = static_cast<Capability>(static_cast<uint32_t>(capability));
+        QString capName = QString::fromUtf8(PermissionModel::capabilityName(cap));
+        QString msg = reason.isEmpty()
+            ? tr("操作被拒绝: 缺少 %1 权限").arg(capName)
+            : tr("操作被拒绝 (%1): %2").arg(capName, reason);
+        statusBar()->showMessage(msg, 5000);
+        QMessageBox::warning(this, tr("权限不足"), msg);
+
+        // v1.8.0 RBAC: record the denial in the audit trail so rejected
+        // privileged operations are visible to an administrator reviewing logs.
+        if (m_auditLogger) {
+            QString sid = m_remoteController ? m_remoteController->currentSessionId() : QString();
+            m_auditLogger->logOperation(sid, "permission_denied",
+                QString("capability=%1 reason=%2").arg(capName, reason));
+        }
+    });
+
     connect(m_remoteController.get(), &RemoteController::transportEstablished,
             this, &MainWindow::onTransportEstablished);
 
@@ -1125,6 +1240,60 @@ void MainWindow::createActions() {
 
     m_webConsoleAction = new QAction("\u6253\u5f00 Web \u63a7\u5236\u53f0", this);
     connect(m_webConsoleAction, &QAction::triggered, this, &MainWindow::onOpenWebConsole);
+
+    // v1.8.0 RBAC: admin console. Disabled until an authenticated session grants
+    // the UserManage capability (see applyCapabilities); hidden entry otherwise.
+    m_permConsoleAction = new QAction(tr("用户与权限管理"), this);
+    m_permConsoleAction->setEnabled(false);
+    connect(m_permConsoleAction, &QAction::triggered, this, [this]() {
+        if (!m_remoteController || !m_remoteController->hasCapability(Capability::UserManage)) {
+            QMessageBox::warning(this, tr("权限不足"), tr("当前会话没有用户管理权限"));
+            return;
+        }
+        if (!m_permConsole) {
+            m_permConsole = new PermissionConsoleDialog(m_remoteController.get(), this);
+            m_permConsole->setAttribute(Qt::WA_DeleteOnClose);
+        }
+        m_permConsole->refreshAll();
+        m_permConsole->show();
+        m_permConsole->raise();
+        m_permConsole->activateWindow();
+    });
+
+    // v1.8.0 RBAC: audit-log viewer. Disabled until an authenticated session
+    // grants the UserManage capability (see applyCapabilities); hidden otherwise.
+    m_auditLogAction = new QAction(tr("审计日志"), this);
+    m_auditLogAction->setEnabled(false);
+    connect(m_auditLogAction, &QAction::triggered, this, &MainWindow::onShowAuditLog);
+
+    // v1.8.0 RBAC: host-side real-time approval. This is a local host setting
+    // (not a session capability), so it stays enabled regardless of the
+    // controller session state.
+    m_requireApprovalAction = new QAction(tr("连接需本机审批"), this);
+    m_requireApprovalAction->setCheckable(true);
+    m_requireApprovalAction->setChecked(m_host && m_host->requireApproval());
+    m_requireApprovalAction->setToolTip(
+        tr("开启后，控制端认证成功也要等本机点「允许」才能开始会话"));
+    connect(m_requireApprovalAction, &QAction::toggled, this, [this](bool on) {
+        if (m_host) m_host->setRequireApproval(on);
+        statusBar()->showMessage(on ? tr("已开启连接审批") : tr("已关闭连接审批"), 3000);
+    });
+}
+
+void MainWindow::onShowAuditLog() {
+    if (!m_auditLogger) return;
+    if (!m_remoteController || !m_remoteController->hasCapability(Capability::UserManage)) {
+        QMessageBox::warning(this, tr("权限不足"), tr("当前会话没有查看审计日志的权限"));
+        return;
+    }
+    if (!m_auditViewer) {
+        m_auditViewer = new AuditLogViewer(m_auditLogger.get(), this);
+        m_auditViewer->setAttribute(Qt::WA_DeleteOnClose);
+    }
+    m_auditViewer->refreshLogs();
+    m_auditViewer->show();
+    m_auditViewer->raise();
+    m_auditViewer->activateWindow();
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

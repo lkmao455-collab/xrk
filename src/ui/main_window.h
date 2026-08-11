@@ -34,6 +34,8 @@ class ClipboardHistoryWidget;
 class IPMsgWidget;
 class IPMsgManager;
 class WebSocketGateway;
+class PermissionConsoleDialog;
+class AuditLogViewer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -74,6 +76,8 @@ private slots:
     void onIPMsg2Clicked();
     // Phase E2: start the bundled web gateway on demand and open the SPA in a browser.
     void onOpenWebConsole();
+    // v1.8.0 RBAC: open the audit-log viewer (admin oversight; gated by UserManage).
+    void onShowAuditLog();
 
 private:
     void setupUI();
@@ -84,6 +88,10 @@ private:
     void configureRelay();
     void switchToPage(int index);
     void updateNavButtons();
+    // v1.8.0 RBAC: enable/disable feature entry points (nav pages, record action,
+    // remote-desktop toolbar) to match the capability mask the host granted after
+    // authentication. `caps` is the effective Capability bitmask from AUTH_RESP.
+    void applyCapabilities(quint32 caps);
     void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<NetworkManager> m_network;
@@ -106,6 +114,10 @@ private:
     // Phase 5: connection consent dialog (tracks the open dialog to close it if
     // the client disconnects before the host user decides).
     QPointer<QDialog> m_consentDialog;
+    // v1.8.0 RBAC admin console (tracked so re-opening reuses the same dialog).
+    QPointer<PermissionConsoleDialog> m_permConsole;
+    // v1.8.0 RBAC audit-log viewer (tracked so re-opening reuses the same dialog).
+    QPointer<AuditLogViewer> m_auditViewer;
 
     bool m_hostMode = false;
     bool m_relayMode = false;
@@ -149,6 +161,9 @@ private:
     QAction* m_silentMonitorAction = nullptr;
 #endif
     QAction* m_lockScreenAction = nullptr;
+    QAction* m_permConsoleAction = nullptr;   // v1.8.0 RBAC: open admin console (UserManage)
+    QAction* m_auditLogAction = nullptr;      // v1.8.0 RBAC: open audit-log viewer (UserManage)
+    QAction* m_requireApprovalAction = nullptr; // v1.8.0 RBAC: host-side real-time approval switch
     QAction* m_mediaTestAction = nullptr;
     QAction* m_ipmsgAction = nullptr;
     QAction* m_ipmsg2Action = nullptr;

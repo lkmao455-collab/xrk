@@ -1,6 +1,7 @@
 set(CORE_SOURCES
     network_manager.cpp
     protocol_manager.cpp
+    permission_model.cpp
     device_discovery.cpp
     tcp_connection.cpp
     message_codec.cpp
@@ -17,6 +18,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     network_manager.h
     protocol_manager.h
+    permission_model.h
     device_discovery.h
     tcp_connection.h
     message_codec.h
@@ -41,7 +43,7 @@ if(EXISTS "${FFMPEG_ROOT}/include")
     target_include_directories(xrk_core PUBLIC "${FFMPEG_ROOT}/include")
 endif()
 
-target_link_libraries(xrk_core PUBLIC Qt6::Core Qt6::Network Qt6::Gui)
+target_link_libraries(xrk_core PUBLIC Qt6::Core Qt6::Network Qt6::Gui Qt6::Concurrent)
 
 if(WIN32)
     # ArpResolver uses SendARP() (iphlpapi) and InetPtonA() (ws2_32).

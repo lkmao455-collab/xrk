@@ -186,7 +186,34 @@ static QByteArray encodeFileData(const FileData& data);
     // the controller's device name (shown on the host's confirmation prompt).
     static QByteArray encodeConsent(bool allowed, const QString& deviceName);
     static void decodeConsent(const QByteArray& data, bool& allowed, QString& deviceName);
-    
+
+    // ── User Permission Management (v1.8.0) ──
+    static QByteArray encodeAuthRequest(const AuthRequest& req);
+    static AuthRequest decodeAuthRequest(const QByteArray& data);
+    static QByteArray encodeAuthResponse(const AuthResponse& resp);
+    static AuthResponse decodeAuthResponse(const QByteArray& data);
+    static QByteArray encodePermissionDenied(const PermissionDenied& denied);
+    static PermissionDenied decodePermissionDenied(const QByteArray& data);
+    static QByteArray encodeUserListResponse(const QList<UserRecord>& users);
+    static QList<UserRecord> decodeUserListResponse(const QByteArray& data);
+    static QByteArray encodeDevicePermissionResponse(const QList<DevicePermission>& devices);
+    static QList<DevicePermission> decodeDevicePermissionResponse(const QByteArray& data);
+    static QByteArray encodePermissionToggleResponse(uint32_t toggles);
+    static uint32_t decodePermissionToggleResponse(const QByteArray& data);
+    // PERMISSION_TOGGLE_REQ (212): [u32 capability][u8 enabled]
+    static QByteArray encodePermissionToggleRequest(uint32_t capability, bool enabled);
+    static bool decodePermissionToggleRequest(const QByteArray& data,
+                                              uint32_t& capability, bool& enabled);
+    // USER_ADD (216) / USER_UPDATE (218)
+    static QByteArray encodeUserMutation(const UserMutation& mutation);
+    static UserMutation decodeUserMutation(const QByteArray& data);
+    // AUDIT_LOG_RESP (221): JSON array of audit entries serialized as UTF-8 text.
+    static QByteArray encodeAuditLogResponse(const QJsonArray& entries);
+    static QJsonArray decodeAuditLogResponse(const QByteArray& data);
+    // TEMP_GRANT_REQ/RESP (222/223): a time-limited device grant.
+    static QByteArray encodeTemporaryGrant(const TemporaryGrant& grant);
+    static TemporaryGrant decodeTemporaryGrant(const QByteArray& data);
+
     // E2EE (End-to-End Encryption) encode/decode functions
     static QByteArray encodeE2EEKeyExchange(const QByteArray& publicKey, const QString& sessionId);
     static QByteArray decodeE2EEKeyExchange(const QByteArray& data, QByteArray& publicKey, QString& sessionId);

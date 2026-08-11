@@ -17,6 +17,7 @@
 #include <QTextBrowser>
 #include <memory>
 #include "core/types.h"
+#include "core/permission_model.h"
 
 namespace xrk {
 
@@ -32,6 +33,11 @@ public:
     void startRemote(const QString& ip, uint16_t port);
     void startRemote(const QString& ip, uint16_t port, const QString& password);
     void stopRemote();
+    // v1.8.0 RBAC: enable/disable toolbar controls to match the capability mask
+    // granted by the host after auth. Controls whose capability bit is absent are
+    // disabled (greyed out) so the operator cannot invoke an action the host will
+    // only reject. `caps` is the effective Capability bitmask from AUTH_RESP.
+    void applyCapabilities(quint32 caps);
     // Enter the concealed UI mode used by a silent monitoring session: hide the
     // privacy-screen control and default to NOT forwarding local input.
     void enterSilentUiMode();

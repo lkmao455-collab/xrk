@@ -205,6 +205,17 @@ Suite(s): FrameQueueTest
 Suite(s): HostAuth
 - `SendsKeyOnAutoAuth`: 回归——无密码的真实 Host 必须在 auto-auth 时发送含 50 字节会话密钥（"OK"+32 key+16 IV）的 AUTH_RESP。
 
+### tests/test_permission_host.cpp
+Suite(s): PermissionCodecTest, HostPermissionTest
+- `PermissionCodecTest.PermissionToggleRequestRoundTrip` / `PermissionToggleResponseRoundTrip`: 212 请求/响应编解码往返一致。
+- `PermissionCodecTest.UserMutationRoundTrip`: 216/218 UserMutation（username/password/level/enabled/fields）往返一致。
+- `PermissionCodecTest.DevicePermissionResponseRoundTrip`: 214/215 DevicePermission 编解码往返（含 capMask/note）。
+- `PermissionCodecTest.UserListResponseRoundTrip` / `PermissionDeniedRoundTrip`: 211 / 219 编解码往返。
+- `HostPermissionTest.OperatorCannotManageUsers`: Operator 收到 USER_LIST_REQ 时被 PERMISSION_DENIED(UserManage) 拒绝。
+- `HostPermissionTest.OperatorTerminalDeniedButSysinfoAllowed`: Operator 缺 Terminal 被拒、有 SysInfo 正常响应。
+- `HostPermissionTest.AdminManagesUsersAndToggles`: Admin 会话（v2 AUTH_REQ）列出用户、切换能力位、增删用户均成功。
+- `HostPermissionTest.AdminSetsAndClearsDevicePermission`: Admin 通过 214 设置/清除设备权限并得到 215 列表。
+
 ### tests/test_host_encoder_default.cpp
 Suite(s): HostEncoder
 - `DefaultEncoderIsJpeg`: 回归——启动的 Host 默认 JPEG 编码器（非 H264）。

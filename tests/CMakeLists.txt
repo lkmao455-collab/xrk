@@ -53,6 +53,8 @@ if(XRK_GTEST_AVAILABLE)
         test_screen_capture.cpp
         test_remote_controller_monitor.cpp
         test_protocol_extended.cpp
+        test_permission_model.cpp
+        test_permission_host.cpp
         test_connection_history.cpp
         test_tcp_connection.cpp
         test_tile_encoder.cpp

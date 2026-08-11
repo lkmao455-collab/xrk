@@ -18,6 +18,9 @@
 #include <QMap>
 #include <memory>
 
+#include "core/permission_model.h"
+#include "core/types.h"
+
 namespace xrk {
 
 struct IPMsgDevice;
@@ -95,6 +98,30 @@ public:
     // Settings
     bool setSetting(const QString& key, const QVariant& value);
     QVariant getSetting(const QString& key, const QVariant& defaultValue = QVariant()) const;
+
+    // --- Permission management (schema v5) ---
+
+    // Users. Passwords are stored as sha256(salt + password) with a per-user salt.
+    bool addUser(const QString& username, const QString& password, PermLevel level);
+    bool removeUser(const QString& username);
+    QList<UserRecord> listUsers() const;
+    bool getUser(const QString& username, UserRecord& out) const;
+    bool setUserPassword(const QString& username, const QString& password);
+    bool setUserLevel(const QString& username, PermLevel level);
+    bool setUserEnabled(const QString& username, bool enabled);
+    // Returns the granted level, or PermLevel::None when the user is unknown,
+    // disabled, or the password does not match. Updates last_login on success.
+    PermLevel verifyUser(const QString& username, const QString& password);
+
+    // Host-wide capability toggles, persisted as a bitmask in `settings`.
+    quint32 getCapabilityToggles() const;
+    bool setCapabilityToggle(Capability cap, bool enabled);
+
+    // Per-device permission overrides.
+    bool getDevicePermission(const QString& deviceId, DevicePermission& out) const;
+    bool setDevicePermission(const DevicePermission& perm);
+    bool clearDevicePermission(const QString& deviceId);
+    QList<DevicePermission> listDevicePermissions() const;
 
     // Recent chats
     struct RecentChat {

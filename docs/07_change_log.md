@@ -2,6 +2,31 @@
 
 ## 版本历史
 
+### v1.8.0 — 基于角色的访问控制（RBAC）🚧 开发中
+- **权限模型（`src/core/permission_model.{h,cpp}`）**：不依赖 Qt/Host 的纯计算模块，便于单测
+  - `PermLevel`（None/Viewer/Operator/Admin）+ `Capability` 15 个能力位（查看屏幕/控制输入/剪贴板/读写文件/进程查看与管理/终端/系统信息/电源/通话/聊天/标注/录制/用户管理）
+  - `evaluate(level, hostToggles, deviceOverride)`：角色默认能力 ∩ 主机全局开关 ∩ 设备级覆盖；`UserManage` 位不受主机开关关闭影响，避免管理员把自己锁死
+- **协议 v2（`types.h` + `ProtocolManager`）**
+  - `AUTH_REQ`(13) 扩展为 `[0x02][u8 userLen][user][u16 pwdLen][pwd]`；无用户名时保持旧版「裸访问码」载荷，老客户端零改动可用
+  - `AUTH_RESP`(14) 在 `"OK" + key(32) + iv(16)` 之后追加 `[u8 level][u32 caps]`（50→55 字节），长度守卫解码，旧客户端忽略尾部
+  - 新增消息：`USER_LIST_REQ/RESP`(210/211)、`PERMISSION_TOGGLE_REQ/RESP`(212/213)、`DEVICE_PERM_SET_REQ`/`DEVICE_PERM_RESP`(214/215)、`USER_ADD/REMOVE/UPDATE`(216/217/218)、`PERMISSION_DENIED`(219)、`AUDIT_LOG_REQ/RESP`(220/221)、`TEMP_GRANT_REQ/RESP`(222/223)
+- **持久化（DatabaseManager schema v5）**：用户表（用户名/口令散列/级别/启用位/最后登录）+ 设备权限表（deviceId/level/capMask/备注）及对应 CRUD API
+- **Host 门禁改写**：会话持有 `permLevel` + `caps`；所有特权操作经 `requireCap()` 校验，拒绝时回 `PERMISSION_DENIED`(219) 并写审计 `<op>_denied`
+- **权限管理控制台（`PermissionConsoleDialog`）**：管理员一站式入口
+  - 用户页（增删改、改级别、启停）、主机能力开关页、设备权限页（按控制端 IP 覆盖级别/能力掩码）
+  - 「审计日志」按钮：经 `AUDIT_LOG_REQ`(220) 远程拉取被控端审计条目
+  - 「临时授权」按钮：给某设备下发限时授权（级别 + 分钟数，0 分钟＝撤销）
+- **限时授权（Temporary Grant）**：`TemporaryGrant{deviceId, level, capMask, expiresAt}` 叠加在持久化设备覆盖之上；Host 端定时器到期自动回收并刷新在线会话权限，审计 `temp_grant_set` / `temp_grant_clear`
+- **实时审批工作流**：主机菜单「连接需本机审批」开启后，认证通过的会话先挂起在 `PermLevel::None`（无能力、不推帧），经本机批准后才落到目标级别；拒绝则记审计并断开；受信 IP 直接放行
+- **审计日志排序修复**：`AuditLogger::entriesSince()` 跨日志文件轮转时会整体反转列表，导致返回的是最旧而非最新条目；改为逐文件「新→旧」拼接并按 limit 截断
+- **Web 客户端 RBAC 对齐**
+  - `types/protocol.ts` 补齐 210–223 消息号 + `PermLevel` / `Capability` / `ALL_CAPABILITIES`（与 C++ 侧逐位对齐）
+  - `services/protocol.ts` 新增 `encodeAuthRequest`（v2/legacy 双路）、`decodeAuthResponse`（55 字节新格式 + 50 字节旧格式兼容）、`decodePermissionDenied`、`hasCapability` / `capabilityLabel` / `permLevelLabel` / `requiredCapabilityFor`
+  - 新增 `services/messageBus.ts` 消息订阅机制（`subscribe` / `publish` / `ANY_MESSAGE`），`useWebSocket` 收包后统一 `publish`，新消息类型不必再改硬编码 switch
+  - `store/connection.ts` 增加 `permLevel` / `capabilities` / `capsKnown` / `lastDenied` 与 `hasCap()`；`capsKnown=false`（旧版被控端）时不做客户端置灰，仍由 Host 权威裁决
+  - UI：连接页新增可选「用户名」（留空＝访问码模式）、工具栏角色徽章（悬停显示已授予能力）、无「控制输入」能力时鼠标/键盘/触控全部禁用并显示「只读模式」、`PERMISSION_DENIED` 提示条（6 秒自动消失）
+- **测试**：C++ 侧 704 项通过 / 1 跳过（缺 libx264 的 H264 编解码用例）；Web 侧 Jest 94 项通过（协议编解码 / 消息总线 / 能力门禁 / 角色徽章）
+
 ### v1.7.0 — Web 触控输入 / 快照导出 / 远程文件管理（读写）✅ 已发布 (2026-08-09)
 - **Web 客户端触控输入（touchInput.ts）**：React Web 客户端新增 `TouchGestureController`（DOM 无关，便于单测）
   - 单击 → PRESS+RELEASE+CLICK（左键）；拖拽 → PRESS+MOVE…+RELEASE（无 CLICK）；长按（不移动，定时器）→ 右键（RELEASE 左 + PRESS 右 + RELEASE 右）+ 抑制 CLICK
