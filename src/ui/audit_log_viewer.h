@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QVBoxLayout>
 #include <QJsonObject>
+#include <QJsonArray>
 
 namespace xrk {
 
@@ -22,6 +23,11 @@ public:
 
     void refreshLogs();
 
+    // Snapshot mode: display a fixed set of entries (e.g. a host audit log
+    // fetched over the network) instead of a live AuditLogger. Used by the
+    // permission console's "审计日志" button.
+    void setEntries(const QJsonArray& entries);
+
 private slots:
     void onFilterChanged();
     void onExportClicked();
@@ -34,6 +40,7 @@ private:
     void applyDarkTheme();
 
     AuditLogger* m_logger = nullptr;
+    QJsonArray m_snapshot;       // fixed entries for snapshot mode (no live logger)
     QTableWidget* m_table = nullptr;
     QComboBox* m_typeFilter = nullptr;
     QDateTimeEdit* m_fromDate = nullptr;

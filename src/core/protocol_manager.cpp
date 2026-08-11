@@ -2,6 +2,9 @@
 #include "message_codec.h"
 #include <QDataStream>
 #include <QBuffer>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonParseError>
 
 namespace xrk {
 
@@ -2201,7 +2204,10 @@ QByteArray ProtocolManager::encodeAuthRequest(const AuthRequest& req) {
     // v2: [0x02][u8 userLen][user][u16 pwdLen BE][pwd]
     stream << static_cast<uint8_t>(0x02);
     QByteArray user = req.username.toUtf8();
-    stream << static_cast<uint8_t>(user.size() > 255 ? 255 : user.size());
+    // Truncate the payload itself, not just the length byte: writing more bytes
+    // than the declared length would desynchronise the pwdLen field that follows.
+    if (user.size() > 255) user.truncate(255);
+    stream << static_cast<uint8_t>(user.size());
     stream.writeRawData(user.constData(), user.size());
     QByteArray pwd = req.password.toUtf8();
     stream << static_cast<uint16_t>(pwd.size());
@@ -2462,6 +2468,65 @@ UserMutation ProtocolManager::decodeUserMutation(const QByteArray& data) {
     m.enabled = (en != 0);
     m.fields = fields;
     return m;
+}
+
+QByteArray ProtocolManager::encodeAuditLogResponse(const QJsonArray& entries) {
+    QByteArray json = QJsonDocument(entries).toJson(QJsonDocument::Compact);
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    stream << static_cast<uint32_t>(json.size());
+    stream.writeRawData(json.constData(), json.size());
+    return data;
+}
+
+QJsonArray ProtocolManager::decodeAuditLogResponse(const QByteArray& data) {
+    QJsonArray out;
+    if (data.size() < 4) return out;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t len;
+    stream >> len;
+    if (len == 0 || len > static_cast<uint32_t>(data.size())) return out;
+    QByteArray json = data.mid(stream.device()->pos(), static_cast<int>(len));
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray()) return out;
+    return doc.array();
+}
+
+QByteArray ProtocolManager::encodeTemporaryGrant(const TemporaryGrant& grant) {
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::BigEndian);
+    QByteArray id = grant.deviceId.toUtf8();
+    stream << static_cast<uint32_t>(id.size());
+    stream.writeRawData(id.constData(), id.size());
+    stream << static_cast<int32_t>(grant.level);
+    stream << static_cast<int32_t>(grant.capMask);
+    stream << static_cast<qint64>(grant.expiresAt);
+    return data;
+}
+
+TemporaryGrant ProtocolManager::decodeTemporaryGrant(const QByteArray& data) {
+    TemporaryGrant g;
+    if (data.size() < 4 + 4 + 4 + 8) return g;
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    uint32_t len;
+    stream >> len;
+    if (len > static_cast<uint32_t>(data.size())) return g;
+    g.deviceId = QString::fromUtf8(data.mid(stream.device()->pos(), static_cast<int>(len)));
+    stream.skipRawData(static_cast<int>(len));
+    qint32 level, mask;
+    qint64 exp;
+    stream >> level;
+    stream >> mask;
+    stream >> exp;
+    g.level = level;
+    g.capMask = mask;
+    g.expiresAt = exp;
+    return g;
 }
 
 QByteArray ProtocolManager::encodeQualityInfo(const QualityInfo& info) {

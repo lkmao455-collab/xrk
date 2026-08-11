@@ -32,6 +32,7 @@ set(UI_SOURCES
     notification_center_widget.cpp
     key_verification_dialog.cpp
     remote_process_widget.cpp
+    permission_console_dialog.cpp
 )
 
 set(UI_HEADERS
@@ -68,6 +69,7 @@ set(UI_HEADERS
     notification_center_widget.h
     key_verification_dialog.h
     remote_process_widget.h
+    permission_console_dialog.h
 )
 
 add_library(xrk_ui STATIC ${UI_SOURCES} ${UI_HEADERS})

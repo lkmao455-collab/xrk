@@ -745,6 +745,11 @@ bool Host::start(uint16_t port) {
     m_autoSwitchTimer = new QTimer(this);
     connect(m_autoSwitchTimer, &QTimer::timeout, this, &Host::performAutoSwitchStep);
 
+    // Temporary-grant expiry sweeper (clears expired grants and re-notifies).
+    m_tempGrantTimer = new QTimer(this);
+    connect(m_tempGrantTimer, &QTimer::timeout, this, &Host::onTempGrantExpiry);
+    m_tempGrantTimer->start(15000);
+
     onDiscoveryBroadcastTimer();
 
     if (!m_auditLogger) {
@@ -815,6 +820,13 @@ void Host::stop() {
         m_discoveryTimer->deleteLater();
         m_discoveryTimer = nullptr;
     }
+
+    if (m_tempGrantTimer) {
+        m_tempGrantTimer->stop();
+        m_tempGrantTimer->deleteLater();
+        m_tempGrantTimer = nullptr;
+    }
+    m_tempGrants.clear();
 
     if (m_monitorRefreshTimer) {
         m_monitorRefreshTimer->stop();
@@ -1423,11 +1435,48 @@ void Host::sendAuthKeyTo(const QString& clientId) {
 }
 
 void Host::requestConsent(const QString& clientId) {
-    // v1.8.0: the interactive consent dialog is gone. A session that reaches
-    // this point (no-password auto-auth, or legacy password verified) is granted
-    // access immediately at the host's default preset level. Per-device
+    // A session that reaches this point (no-password auto-auth, or legacy
+    // password verified) gets the host's default preset level. Per-device
     // overrides and host capability toggles are applied in grantAccess().
+    // With real-time approval enabled the session is parked first.
+    if (beginApproval(clientId, m_defaultPermLevel, QString())) return;
     grantConsent(clientId);
+}
+
+void Host::setRequireApproval(bool enabled) {
+    if (m_requireApproval == enabled) return;
+    m_requireApproval = enabled;
+    LOG_INFO(QString("Host: real-time approval %1").arg(enabled ? "enabled" : "disabled"));
+}
+
+bool Host::isAwaitingApproval(const QString& clientId) const {
+    return m_clients.value(clientId).awaitingApproval;
+}
+
+bool Host::beginApproval(const QString& clientId, PermLevel level, const QString& username) {
+    if (!m_requireApproval) return false;
+    if (!m_clients.contains(clientId)) return false;
+
+    ClientInfo& info = m_clients[clientId];
+    if (!info.socket) return false;
+    // A trusted IP (the host user ticked "remember this device") skips the prompt.
+    QString peer = info.socket->peerAddress().toString();
+    if (isTrustedIp(peer)) return false;
+
+    // Park the session: authenticated, but no level and therefore no caps until
+    // the host user decides. isActive() stays false so no frames are sent.
+    info.awaitingApproval = true;
+    info.pendingLevel = level;
+    if (!username.isEmpty()) info.username = username;
+
+    // Tell the controller to show "waiting for approval" instead of hanging.
+    sendToClient(clientId, ProtocolManager::encode(
+        MessageType::CONSENT_REQUEST, ProtocolManager::encodeConsent(false, QHostInfo::localHostName())));
+
+    logAudit(clientId, "consent_requested", "peer=" + peer);
+    LOG_INFO("Host: awaiting approval for " + clientId + " (peer " + peer + ")");
+    emit consentRequested(clientId, peer);
+    return true;
 }
 
 // Compute the effective capability mask for a session and start it: deliver the
@@ -1443,14 +1492,17 @@ void Host::grantAccess(const QString& clientId, PermLevel level, const QString& 
     // identifier available at connect time).
     std::optional<DeviceOverride> override;
     DevicePermission dp;
-    if (DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0) {
-        DeviceOverride o;
+    bool hasOverride = DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0;
+    DeviceOverride o;
+    if (hasOverride) {
         o.level = static_cast<PermLevel>(dp.level);
         o.capMask = dp.capMask;
-        override = o;
         // An override that pins a level takes precedence over the auth level.
         level = o.level;
     }
+    // A temporary grant (if active) stacks on top of the persisted override.
+    bool tempActive = applyTempGrant(peer, o, level);
+    if (hasOverride || tempActive) override = o;
 
     info.authenticated = true;
     info.username = username;
@@ -1476,10 +1528,25 @@ void Host::grantAccess(const QString& clientId, PermLevel level, const QString& 
 
 void Host::grantConsent(const QString& clientId) {
     if (!m_clients.contains(clientId)) return;
-    // Preserve any username already recorded (v2 auth). Fall back to the host's
-    // configured default level for legacy / no-password sessions.
-    QString username = m_clients.value(clientId).username;
-    grantAccess(clientId, m_defaultPermLevel, username);
+    ClientInfo& info = m_clients[clientId];
+    // Preserve any username already recorded (v2 auth). A parked session keeps
+    // the level resolved at auth time; otherwise fall back to the host default.
+    QString username = info.username;
+    PermLevel level = info.awaitingApproval && info.pendingLevel != PermLevel::None
+                          ? info.pendingLevel
+                          : m_defaultPermLevel;
+
+    if (info.awaitingApproval) {
+        info.awaitingApproval = false;
+        info.pendingLevel = PermLevel::None;
+        logAudit(clientId, "consent_granted", "level=" + QString::number(static_cast<int>(level)));
+        // Release the controller's "waiting for approval" state before the key
+        // exchange so it knows the session is starting.
+        sendToClient(clientId, ProtocolManager::encode(
+            MessageType::CONSENT_RESPONSE, ProtocolManager::encodeConsent(true, QHostInfo::localHostName())));
+    }
+
+    grantAccess(clientId, level, username);
 }
 
 #ifdef XRK_ENABLE_SILENT
@@ -1508,7 +1575,16 @@ void Host::denyConsent(const QString& clientId) {
     ClientInfo& info = m_clients[clientId];
     QTcpSocket* socket = info.socket;
 
+    logAudit(clientId, "consent_denied", info.username.isEmpty() ? QString() : "user=" + info.username);
+    info.awaitingApproval = false;
+    info.pendingLevel = PermLevel::None;
+
     if (socket) {
+        // Tell the controller it was rejected (so it can show a reason instead
+        // of a bare disconnect), then flush before tearing the socket down.
+        socket->write(ProtocolManager::encode(
+            MessageType::CONSENT_RESPONSE, ProtocolManager::encodeConsent(false, QHostInfo::localHostName())));
+        socket->flush();
         socket->disconnectFromHost();
     }
     LOG_WARNING("Host: Access denied for " + clientId);
@@ -1544,12 +1620,15 @@ void Host::refreshClientPermissions() {
         QString peer = info.socket ? info.socket->peerAddress().toString() : QString();
         std::optional<DeviceOverride> override;
         DevicePermission dp;
-        if (!peer.isEmpty() && DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0) {
-            DeviceOverride o;
+        bool hasOverride = !peer.isEmpty() &&
+            DatabaseManager::instance().getDevicePermission(peer, dp) && dp.level >= 0;
+        DeviceOverride o;
+        if (hasOverride) {
             o.level = static_cast<PermLevel>(dp.level);
             o.capMask = dp.capMask;
-            override = o;
         }
+        bool tempActive = !peer.isEmpty() && applyTempGrant(peer, o, info.permLevel);
+        if (hasOverride || tempActive) override = o;
         const uint32_t before = info.caps;
         info.caps = PermissionModel::evaluate(info.permLevel, m_capabilityToggles, override);
         if (info.caps == before) continue;
@@ -1560,6 +1639,37 @@ void Host::refreshClientPermissions() {
         emit clientPermissionsChanged(it.key(), static_cast<int>(info.permLevel), info.caps);
     }
     updateNetworkWorkerClients();
+}
+
+bool Host::applyTempGrant(const QString& peer, DeviceOverride& override, PermLevel& level) {
+    auto it = m_tempGrants.find(peer);
+    if (it == m_tempGrants.end()) return false;
+    const TemporaryGrant& g = it.value();
+    // Expired grants are dropped lazily here and by onTempGrantExpiry().
+    if (g.expiresAt >= 0 && g.expiresAt <= QDateTime::currentMSecsSinceEpoch()) {
+        m_tempGrants.erase(it);
+        return false;
+    }
+    if (g.level >= 0) {
+        override.level = static_cast<PermLevel>(g.level);
+        level = override.level;
+    }
+    if (g.capMask >= 0) override.capMask = g.capMask;
+    return true;
+}
+
+void Host::onTempGrantExpiry() {
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool changed = false;
+    for (auto it = m_tempGrants.begin(); it != m_tempGrants.end();) {
+        if (it.value().expiresAt >= 0 && it.value().expiresAt <= now) {
+            it = m_tempGrants.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (changed) refreshClientPermissions();
 }
 
 PermLevel Host::clientPermLevel(const QString& clientId) const {
@@ -1574,7 +1684,8 @@ QString Host::clientUsername(const QString& clientId) const {
     return m_clients.value(clientId).username;
 }
 
-void Host::sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason) {
+void Host::sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason,
+                                 const char* opName) {
     QTcpSocket* socket = m_clients.value(clientId).socket;
     if (socket) {
         PermissionDenied denied;
@@ -1586,10 +1697,17 @@ void Host::sendPermissionDenied(const QString& clientId, Capability cap, const Q
         socket->flush();
     }
     emit permissionDenied(clientId, static_cast<quint32>(cap), reason);
+
+    // v1.8.0 RBAC: every denial is one audit entry. Centralized here so all
+    // rejection paths (requireCap and the direct denials) log exactly once.
+    // logAuditOp() applies the usual session-visibility rules.
+    QString op = opName ? QString::fromLatin1(opName) : QStringLiteral("permission_denied");
+    logAuditOp(clientId, op + "_denied",
+               QString("capability=%1 reason=%2").arg(static_cast<uint32_t>(cap)).arg(reason));
 }
 
 // Gate helper used by every remote operation. Returns true when the session
-// holds `cap`; otherwise sends PERMISSION_DENIED, audits and returns false.
+// holds `cap`; otherwise sends PERMISSION_DENIED (which audits) and returns false.
 bool Host::requireCap(const QString& clientId, Capability cap, const char* opName) {
     if (!m_clients.contains(clientId)) return false;
     const ClientInfo& info = m_clients.value(clientId);
@@ -1597,8 +1715,7 @@ bool Host::requireCap(const QString& clientId, Capability cap, const char* opNam
     if (info.can(cap)) return true;
     QString op = QString::fromLatin1(opName);
     sendPermissionDenied(clientId, cap,
-                         QStringLiteral("permission denied: %1").arg(op));
-    logAuditOp(clientId, op + "_denied", "no_capability");
+                         QStringLiteral("permission denied: %1").arg(op), opName);
     return false;
 }
 
@@ -1628,6 +1745,8 @@ bool Host::handlePermissionMessage(const QString& clientId, MessageType type,
         case MessageType::USER_ADD:
         case MessageType::USER_REMOVE:
         case MessageType::USER_UPDATE:
+        case MessageType::AUDIT_LOG_REQ:
+        case MessageType::TEMP_GRANT_REQ:
             break;
         case MessageType::PERMISSION_DENIED:
             return true; // host-to-controller only; ignore if echoed back
@@ -1652,7 +1771,8 @@ bool Host::handlePermissionMessage(const QString& clientId, MessageType type,
             // capability, and UserManage can never be switched off.
             if (capBit == 0 || (capBit & (capBit - 1)) != 0 || capBit > kAllCapabilities) {
                 sendPermissionDenied(clientId, Capability::UserManage,
-                                     QStringLiteral("invalid capability bit"));
+                                     QStringLiteral("invalid capability bit"),
+                                     "invalid_capability_bit");
                 break;
             }
             Capability cap = static_cast<Capability>(capBit);
@@ -1722,6 +1842,36 @@ bool Host::handlePermissionMessage(const QString& clientId, MessageType type,
             }
             logAuditOp(clientId, "user_update", m.username + " [" + applied.join(',') + "]");
             sendUserList(clientId);
+            break;
+        }
+
+        case MessageType::AUDIT_LOG_REQ: {
+            // v1.8.0 RBAC: return the host's recent audit entries so an admin
+            // can review security-relevant events from the permission console.
+            QJsonArray entries = m_auditLogger
+                ? m_auditLogger->recentEntries(500)
+                : QJsonArray();
+            QByteArray resp = ProtocolManager::encodeAuditLogResponse(entries);
+            sendToClient(clientId, ProtocolManager::encode(MessageType::AUDIT_LOG_RESP, resp));
+            break;
+        }
+
+        case MessageType::TEMP_GRANT_REQ: {
+            // v1.8.0 RBAC: set (or clear, when expiresAt < 0) a time-limited
+            // device grant. Applied on top of the persisted override and pushed
+            // to live sessions immediately via refreshClientPermissions().
+            TemporaryGrant g = ProtocolManager::decodeTemporaryGrant(payload);
+            if (g.expiresAt < 0) {
+                m_tempGrants.remove(g.deviceId);
+                logAuditOp(clientId, "temp_grant_clear", g.deviceId);
+            } else {
+                m_tempGrants[g.deviceId] = g;
+                logAuditOp(clientId, "temp_grant_set",
+                           g.deviceId + " expiresAt=" + QString::number(g.expiresAt));
+            }
+            refreshClientPermissions();
+            QByteArray resp = ProtocolManager::encodeTemporaryGrant(g);
+            sendToClient(clientId, ProtocolManager::encode(MessageType::TEMP_GRANT_RESP, resp));
             break;
         }
 
@@ -2530,7 +2680,11 @@ void Host::processAuthRequest(const QString& clientId, const QByteArray& payload
             m_clients[clientId].authenticated = true;
             LOG_INFO("Host: User '" + req.username + "' authenticated: " + clientId);
             logAudit(clientId, "authenticated", "user=" + req.username);
-            grantAccess(clientId, level, req.username);
+            // Real-time approval (if enabled) parks the session here; the
+            // resolved level is applied later by grantConsent().
+            if (!beginApproval(clientId, level, req.username)) {
+                grantAccess(clientId, level, req.username);
+            }
         } else {
             QByteArray resp = ProtocolManager::encode(MessageType::AUTH_RESP, QByteArray("FAILED"));
             socket->write(resp);
@@ -2546,8 +2700,11 @@ void Host::processAuthRequest(const QString& clientId, const QByteArray& payload
     if (authOk) {
         m_clients[clientId].authenticated = true;
         LOG_INFO("Host: Client authenticated (legacy): " + clientId);
-        // Auto-grant at the host's configured default level (no consent dialog).
-        grantAccess(clientId, m_defaultPermLevel, QString());
+        // Grant at the host's configured default level, unless real-time
+        // approval is on — then park until the host user decides.
+        if (!beginApproval(clientId, m_defaultPermLevel, QString())) {
+            grantAccess(clientId, m_defaultPermLevel, QString());
+        }
     } else {
         QByteArray resp = ProtocolManager::encode(MessageType::AUTH_RESP, QByteArray("FAILED"));
         socket->write(resp);

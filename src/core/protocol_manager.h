@@ -207,6 +207,12 @@ static QByteArray encodeFileData(const FileData& data);
     // USER_ADD (216) / USER_UPDATE (218)
     static QByteArray encodeUserMutation(const UserMutation& mutation);
     static UserMutation decodeUserMutation(const QByteArray& data);
+    // AUDIT_LOG_RESP (221): JSON array of audit entries serialized as UTF-8 text.
+    static QByteArray encodeAuditLogResponse(const QJsonArray& entries);
+    static QJsonArray decodeAuditLogResponse(const QByteArray& data);
+    // TEMP_GRANT_REQ/RESP (222/223): a time-limited device grant.
+    static QByteArray encodeTemporaryGrant(const TemporaryGrant& grant);
+    static TemporaryGrant decodeTemporaryGrant(const QByteArray& data);
 
     // E2EE (End-to-End Encryption) encode/decode functions
     static QByteArray encodeE2EEKeyExchange(const QByteArray& publicKey, const QString& sessionId);

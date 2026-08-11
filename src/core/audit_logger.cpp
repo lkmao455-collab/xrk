@@ -61,16 +61,22 @@ QJsonArray AuditLogger::recentEntries(int count) const {
 }
 
 QJsonArray AuditLogger::entriesSince(const QDateTime& since, int limit) const {
-    QJsonArray entries;
+    QJsonArray sorted;
 
     QDir dir(m_logDir);
+    // Names are audit_YYYY-MM-DD.log, so sorting by name sorts chronologically.
     QStringList logFiles = dir.entryList(QStringList() << "audit_*.log", QDir::Files, QDir::Name);
-    if (logFiles.isEmpty()) return entries;
+    if (logFiles.isEmpty()) return sorted;
 
-    for (int fi = logFiles.size() - 1; fi >= 0; --fi) {
+    // Walk the newest file first and emit each file's lines newest-first, so the
+    // result is globally newest-first and `limit` truncates the *oldest* tail.
+    // (Reversing a list that was built newest-file-first would have returned the
+    // oldest entries instead — the admin console relies on getting the newest.)
+    for (int fi = logFiles.size() - 1; fi >= 0 && sorted.size() < limit; --fi) {
         QFile file(dir.absoluteFilePath(logFiles[fi]));
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
 
+        QJsonArray fileEntries;
         while (!file.atEnd()) {
             QByteArray line = file.readLine().trimmed();
             if (line.isEmpty()) continue;
@@ -87,14 +93,13 @@ QJsonArray AuditLogger::entriesSince(const QDateTime& since, int limit) const {
                 if (entryTime.isValid() && entryTime < since) continue;
             }
 
-            entries.append(entry);
+            fileEntries.append(entry);
         }
         file.close();
-    }
 
-    QJsonArray sorted;
-    for (int i = entries.size() - 1; i >= 0 && sorted.size() < limit; --i) {
-        sorted.append(entries[i]);
+        for (int i = fileEntries.size() - 1; i >= 0 && sorted.size() < limit; --i) {
+            sorted.append(fileEntries[i]);
+        }
     }
 
     return sorted;

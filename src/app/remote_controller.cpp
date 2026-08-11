@@ -14,6 +14,7 @@
 #include <QDataStream>
 #include <QCryptographicHash>
 #include <QPainter>
+#include <QJsonArray>
 
 namespace xrk {
 
@@ -225,6 +226,10 @@ uint16_t RemoteController::currentPort() const {
     return m_currentPort;
 }
 
+QString RemoteController::currentSessionId() const {
+    return m_currentSessionId;
+}
+
 void RemoteController::setAutoReconnect(bool enabled) {
     m_autoReconnect = enabled;
     if (m_connection) {
@@ -369,6 +374,95 @@ bool RemoteController::hasCapability(Capability cap) const {
     // Effective capabilities are whatever the host granted in AUTH_RESP. Before a
     // successful auth m_grantedCaps is 0, so every capability reads as denied.
     return PermissionModel::hasCapability(m_grantedCaps, cap);
+}
+
+// ───────────── v1.8.0 RBAC admin console (requires UserManage) ─────────────
+// These drive the host's Host::handlePermissionMessage. The host itself enforces
+// the UserManage capability and answers with PERMISSION_DENIED (219) if this
+// session is not an admin, so the controller does not gate here.
+
+void RemoteController::requestUserList() {
+    if (!m_connection) return;
+    m_connection->send(ProtocolManager::encode(MessageType::USER_LIST_REQ, QByteArray(), m_currentSessionId));
+}
+
+void RemoteController::addUser(const QString& username, const QString& password, int level, bool enabled) {
+    if (!m_connection) return;
+    UserMutation m;
+    m.username = username;
+    m.password = password;
+    m.level = static_cast<uint8_t>(level);
+    m.enabled = enabled;
+    QByteArray payload = ProtocolManager::encodeUserMutation(m);
+    m_connection->send(ProtocolManager::encode(MessageType::USER_ADD, payload, m_currentSessionId));
+}
+
+void RemoteController::removeUser(const QString& username) {
+    if (!m_connection) return;
+    // USER_REMOVE payload is the raw UTF-8 username.
+    m_connection->send(ProtocolManager::encode(MessageType::USER_REMOVE, username.toUtf8(), m_currentSessionId));
+}
+
+void RemoteController::updateUser(const QString& username, uint8_t fields,
+                                 const QString& password, int level, bool enabled) {
+    if (!m_connection) return;
+    UserMutation m;
+    m.username = username;
+    m.fields = fields;
+    m.password = password;
+    m.level = static_cast<uint8_t>(level);
+    m.enabled = enabled;
+    QByteArray payload = ProtocolManager::encodeUserMutation(m);
+    m_connection->send(ProtocolManager::encode(MessageType::USER_UPDATE, payload, m_currentSessionId));
+}
+
+void RemoteController::setCapabilityToggle(Capability cap, bool enabled) {
+    if (!m_connection) return;
+    QByteArray payload = ProtocolManager::encodePermissionToggleRequest(static_cast<uint32_t>(cap), enabled);
+    m_connection->send(ProtocolManager::encode(MessageType::PERMISSION_TOGGLE_REQ, payload, m_currentSessionId));
+}
+
+void RemoteController::setDevicePermission(const DevicePermission& perm) {
+    if (!m_connection) return;
+    // DEVICE_PERM_SET_REQ reuses the response codec (single-element list).
+    QByteArray payload = ProtocolManager::encodeDevicePermissionResponse({perm});
+    m_connection->send(ProtocolManager::encode(MessageType::DEVICE_PERM_SET_REQ, payload, m_currentSessionId));
+}
+
+void RemoteController::clearDevicePermission(const QString& deviceId) {
+    // level < 0 tells the host to remove the override for this device.
+    DevicePermission perm;
+    perm.deviceId = deviceId;
+    perm.level = -1;
+    setDevicePermission(perm);
+}
+
+void RemoteController::requestDevicePermissions() {
+    if (!m_connection) return;
+    // The host has no dedicated "list" request; sending DEVICE_PERM_SET_REQ with
+    // an empty list mutates nothing and makes the host reply with the current
+    // device-permission set (DEVICE_PERM_RESP).
+    QByteArray payload = ProtocolManager::encodeDevicePermissionResponse({});
+    m_connection->send(ProtocolManager::encode(MessageType::DEVICE_PERM_SET_REQ, payload, m_currentSessionId));
+}
+
+void RemoteController::requestAuditLog() {
+    if (!m_connection) return;
+    m_connection->send(ProtocolManager::encode(MessageType::AUDIT_LOG_REQ, QByteArray(), m_currentSessionId));
+}
+
+void RemoteController::requestTempGrant(const TemporaryGrant& grant) {
+    if (!m_connection) return;
+    QByteArray payload = ProtocolManager::encodeTemporaryGrant(grant);
+    m_connection->send(ProtocolManager::encode(MessageType::TEMP_GRANT_REQ, payload, m_currentSessionId));
+}
+
+void RemoteController::clearTempGrant(const QString& deviceId) {
+    // expiresAt < 0 tells the host to drop any temporary grant for this device.
+    TemporaryGrant grant;
+    grant.deviceId = deviceId;
+    grant.expiresAt = -1;
+    requestTempGrant(grant);
 }
 
 void RemoteController::sendTerminalStart(const QString& shellType, uint32_t cols, uint32_t rows) {
@@ -1221,6 +1315,42 @@ void RemoteController::processMessage(MessageType type, const QByteArray& payloa
             LOG_WARNING("[Auth] Host denied capability " + QString::number(denied.capability) +
                         " reason=" + denied.reason);
             emit permissionDenied(static_cast<int>(denied.capability), denied.reason);
+            break;
+        }
+        case MessageType::USER_LIST_RESP: {
+            // v1.8.0 RBAC admin console: host returned the configured user list.
+            QList<UserRecord> users = ProtocolManager::decodeUserListResponse(payload);
+            LOG_INFO("[Admin] User list received: " + QString::number(users.size()) + " users");
+            emit userListReceived(users);
+            break;
+        }
+        case MessageType::PERMISSION_TOGGLE_RESP: {
+            // Host echoed the full capability-toggle bitmask after a change.
+            uint32_t toggles = ProtocolManager::decodePermissionToggleResponse(payload);
+            LOG_INFO("[Admin] Capability toggles = 0x" + QString::number(toggles, 16));
+            emit capabilityTogglesReceived(toggles);
+            break;
+        }
+        case MessageType::DEVICE_PERM_RESP: {
+            // Host returned the current per-device permission overrides.
+            QList<DevicePermission> devs = ProtocolManager::decodeDevicePermissionResponse(payload);
+            LOG_INFO("[Admin] Device permissions received: " + QString::number(devs.size()));
+            emit devicePermissionsReceived(devs);
+            break;
+        }
+        case MessageType::AUDIT_LOG_RESP: {
+            // Host returned its recent audit entries; forward to the admin UI.
+            QJsonArray entries = ProtocolManager::decodeAuditLogResponse(payload);
+            LOG_INFO("[Admin] Audit log received: " + QString::number(entries.size()) + " entries");
+            emit auditLogReceived(entries);
+            break;
+        }
+        case MessageType::TEMP_GRANT_RESP: {
+            // Host echoes back the temporary grant it actually stored.
+            TemporaryGrant grant = ProtocolManager::decodeTemporaryGrant(payload);
+            LOG_INFO("[Admin] Temp grant ack for " + grant.deviceId +
+                     " expiresAt=" + QString::number(grant.expiresAt));
+            emit tempGrantReceived(grant);
             break;
         }
         default:

@@ -1461,6 +1461,24 @@ TEST_F(ProtocolExtendedTest, AuthRequestV2RoundTrip) {
     EXPECT_EQ(decoded.password, "s3cret");
 }
 
+TEST_F(ProtocolExtendedTest, AuthRequestV2TruncatesOverlongUsername) {
+    // The user-name length is a single byte. Writing more bytes than the
+    // declared length would desynchronise the pwdLen field that follows, so the
+    // encoder must truncate the payload itself, not just the length byte.
+    AuthRequest req;
+    req.legacy = false;
+    req.username = QString(300, QChar('u')); // 300 ASCII bytes
+    req.password = "s3cret";
+    QByteArray encoded = ProtocolManager::encodeAuthRequest(req);
+    ASSERT_GE(encoded.size(), 2);
+    EXPECT_EQ(static_cast<uint8_t>(encoded.at(1)), 255);
+    EXPECT_EQ(encoded.size(), 1 + 1 + 255 + 2 + 6);
+    AuthRequest decoded = ProtocolManager::decodeAuthRequest(encoded);
+    EXPECT_FALSE(decoded.legacy);
+    EXPECT_EQ(decoded.username.size(), 255);
+    EXPECT_EQ(decoded.password, "s3cret"); // still aligned
+}
+
 TEST_F(ProtocolExtendedTest, AuthResponseV2RoundTrip) {
     AuthResponse resp;
     resp.ok = true;

@@ -48,6 +48,7 @@ public:
     bool isRemoteActive() const;
     QString currentIp() const;
     uint16_t currentPort() const;
+    QString currentSessionId() const;
 
     // v1.8.0 RBAC: identity + effective capabilities granted by the host after
     // authentication. The controller sends these up so the UI can hide/disable
@@ -56,6 +57,25 @@ public:
     bool hasCapability(Capability cap) const;
     PermLevel grantedLevel() const { return m_grantedLevel; }
     uint32_t grantedCapabilities() const { return m_grantedCaps; }
+
+    // v1.8.0 RBAC admin console (only meaningful for an Admin/UserManage session).
+    // The host enforces UserManage and replies with PERMISSION_DENIED otherwise.
+    void requestUserList();
+    void addUser(const QString& username, const QString& password, int level, bool enabled = true);
+    void removeUser(const QString& username);
+    // `fields` is a bitwise-OR of UserMutation::Field selecting which of
+    // password/level/enabled to apply.
+    void updateUser(const QString& username, uint8_t fields,
+                    const QString& password, int level, bool enabled);
+    void setCapabilityToggle(Capability cap, bool enabled);
+    void setDevicePermission(const DevicePermission& perm);
+    void clearDevicePermission(const QString& deviceId);
+    void requestDevicePermissions();
+    // v1.8.0 RBAC: request the host's recent audit entries (admin only).
+    void requestAuditLog();
+    // v1.8.0 RBAC: install a time-limited permission override (admin only).
+    void requestTempGrant(const TemporaryGrant& grant);
+    void clearTempGrant(const QString& deviceId);
 
     void setAutoReconnect(bool enabled);
     bool isAutoReconnect() const;
@@ -151,6 +171,14 @@ signals:
     void capabilitiesChanged(int level, quint32 caps);
     // Host denied a capability the controller tried to use (message 219).
     void permissionDenied(int capability, const QString& reason);
+    // v1.8.0 RBAC admin console responses from the host.
+    void userListReceived(const QList<UserRecord>& users);
+    void capabilityTogglesReceived(quint32 toggles);
+    void devicePermissionsReceived(const QList<DevicePermission>& devices);
+    // v1.8.0 RBAC: host returned its recent audit entries (AUDIT_LOG_RESP).
+    void auditLogReceived(const QJsonArray& entries);
+    // v1.8.0 RBAC: host acknowledged a temporary grant (TEMP_GRANT_RESP).
+    void tempGrantReceived(const TemporaryGrant& grant);
     // Phase 5: host-side connection consent.
     void consentRequested();    // host is deciding; show "waiting for approval"
     void consentGranted();      // host approved; session will start

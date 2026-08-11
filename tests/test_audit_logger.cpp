@@ -75,6 +75,40 @@ TEST_F(AuditLoggerTest, RecentEntriesLimitNewestFirst) {
     EXPECT_TRUE(entries.at(1).toObject().value("operation").toString() == "op-a");
 }
 
+// Regression: with more than one daily log file present, recentEntries() must
+// still return the *newest* entries. The old implementation collected files
+// newest-first and then reversed the whole list, which made a capped query
+// return the oldest entries instead — the admin console showed stale history.
+TEST_F(AuditLoggerTest, RecentEntriesAcrossRotatedFilesReturnsNewest) {
+    // A file from a past day (sorts before today's file by name).
+    QFile oldFile(m_tempDir.path() + "/audit_20200101.log");
+    ASSERT_TRUE(oldFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    for (int i = 0; i < 5; ++i) {
+        oldFile.write(QString("{\"type\":\"operation\",\"operation\":\"old-%1\","
+                              "\"timestamp\":\"2020-01-01T00:00:0%1\"}\n")
+                          .arg(i).toUtf8());
+    }
+    oldFile.close();
+
+    {
+        AuditLogger logger(m_tempDir.path());
+        logger.logOperation("c1", "new-a");
+        logger.logOperation("c1", "new-b");
+    }
+
+    AuditLogger reader(m_tempDir.path());
+    QJsonArray capped = reader.recentEntries(2);
+    ASSERT_EQ(capped.size(), 2);
+    EXPECT_EQ(capped.at(0).toObject().value("operation").toString(), "new-b");
+    EXPECT_EQ(capped.at(1).toObject().value("operation").toString(), "new-a");
+
+    // An uncapped query still returns everything, newest first.
+    QJsonArray all = reader.recentEntries(1000);
+    EXPECT_EQ(all.size(), 7);
+    EXPECT_EQ(all.at(0).toObject().value("operation").toString(), "new-b");
+    EXPECT_EQ(all.at(6).toObject().value("operation").toString(), "old-0");
+}
+
 TEST_F(AuditLoggerTest, EntriesSinceFilter) {
     {
         AuditLogger logger(m_tempDir.path());

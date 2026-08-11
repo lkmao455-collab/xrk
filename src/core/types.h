@@ -146,6 +146,13 @@ AUDIO_START = 140,
     USER_REMOVE = 217,            // admin -> host: remove a user
     USER_UPDATE = 218,            // admin -> host: update a user (password/level/enabled)
     PERMISSION_DENIED = 219,      // host -> controller: op rejected (cap + reason)
+    // ───────────── Audit log retrieval (v1.8.0) ─────────────
+    // 220-221 sit in the free 206-249 gap, just after the RBAC block.
+    AUDIT_LOG_REQ = 220,          // admin -> host: request recent audit entries
+    AUDIT_LOG_RESP = 221,         // host -> admin: JSON array of audit entries
+    // ───────────── Time-limited (temporary) grants (v1.8.0) ─────────────
+    TEMP_GRANT_REQ = 222,         // admin -> host: set/clear a temporary device grant
+    TEMP_GRANT_RESP = 223,        // host -> admin: echo of the applied grant
     SYSINFO_REQ = 170,
     SYSINFO_RESP = 171,
 
@@ -592,6 +599,16 @@ struct DevicePermission {
     int level = 1;           // PermLevel; -1 means "no override / inherit"
     int capMask = -1;        // explicit capability AND-mask, -1 = use role default
     QString note;
+};
+
+// Temporary (time-limited) device grant. Set by an admin via TEMP_GRANT_REQ and
+// applied on top of the persisted device override until `expiresAt`. Keyed by
+// the controller's peer address (same key as DevicePermission::deviceId).
+struct TemporaryGrant {
+    QString deviceId;
+    int level = -1;          // PermLevel to grant; -1 = leave level unchanged
+    int capMask = -1;        // explicit capability AND-mask; -1 = leave caps unchanged
+    qint64 expiresAt = -1;   // epoch ms; < 0 means CLEAR the temporary grant
 };
 
 // USER_ADD (216) / USER_UPDATE (218) payload. `fields` selects which members

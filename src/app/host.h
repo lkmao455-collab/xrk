@@ -168,6 +168,9 @@ public:
     void stop();
     bool isRunning() const;
 
+    // Test/diagnostic accessor for the host's audit trail (may be null before start()).
+    AuditLogger* auditLogger() const { return m_auditLogger; }
+
     // Bind the Host to the NetworkManager that owns the unified 9998 discovery
     // channel (plan §1.4). Pass nullptr to let the Host create its own internal
     // NetworkManager for discovery (service mode). Call before start().
@@ -254,12 +257,21 @@ public:
     void removeReverseSyncForClient(const QString& clientId);
     bool hasReverseSync(const QString& clientId, const QString& hostDir) const;
 
-    // Legacy consent API (v1.8.0: the interactive consent dialog is gone —
-    // permissions are granted automatically at authentication time from the
-    // configured preset). grantConsent() still exists as the "authorize this
-    // session with the default preset level" entry point used by the no-password
-    // path and by tests; denyConsent() revokes and disconnects a session.
-    // `consentRequested` is no longer emitted.
+    // Consent / real-time approval API.
+    //
+    // With approval OFF (the default) a session that passes authentication is
+    // granted its preset level immediately — grantConsent() is just the
+    // "authorize with the resolved level" entry point used by the no-password
+    // path and by tests.
+    //
+    // With approval ON the host holds the session at PermLevel::None after a
+    // successful authentication, emits consentRequested() so the host UI can
+    // prompt, and tells the controller to display "waiting for approval"
+    // (CONSENT_REQUEST). The session only starts once the host user calls
+    // grantConsent(); denyConsent() rejects it and disconnects.
+    void setRequireApproval(bool enabled);
+    bool requireApproval() const { return m_requireApproval; }
+    bool isAwaitingApproval(const QString& clientId) const;
     void grantConsent(const QString& clientId);
 #ifdef XRK_ENABLE_SILENT
     void grantConsentSilently(const QString& clientId);
@@ -286,8 +298,9 @@ signals:
     void clientDisconnected(const QString& clientId);
     void clientAuthenticated(const QString& clientId);
     void clientAuthFailed(const QString& clientId);
-    // Kept for source compatibility; never emitted since v1.8.0 (permissions
-    // are auto-granted from the preset, there is no approval dialog).
+    // Emitted only when real-time approval is enabled (setRequireApproval) and
+    // the peer is not already trusted: the session is parked until the host UI
+    // answers with grantConsent()/denyConsent().
     void consentRequested(const QString& clientId, const QString& peerAddress);
     // Emitted whenever a session's effective permissions change (granted at
     // auth time, or recomputed after a host capability toggle).
@@ -363,13 +376,19 @@ private:
     // Gate helper used by every remote operation. Returns true when the session
     // holds `cap`; otherwise sends PERMISSION_DENIED, audits and returns false.
     bool requireCap(const QString& clientId, Capability cap, const char* opName);
-    void sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason);
+    void sendPermissionDenied(const QString& clientId, Capability cap, const QString& reason,
+                               const char* opName = nullptr);
     // Recompute every live session's mask (after a toggle change) and notify.
     void refreshClientPermissions();
     // Load host capability toggles from the database (called on start()).
     void loadCapabilityToggles();
     // 210-218 admin messages. Returns true when the message was consumed.
     bool handlePermissionMessage(const QString& clientId, MessageType type, const QByteArray& payload);
+    // Apply any active temporary grant for `peer` on top of the device override;
+    // updates `level` when the grant pins a level. Returns true if a grant is active.
+    bool applyTempGrant(const QString& peer, DeviceOverride& override, PermLevel& level);
+    // Drop expired temporary grants; refresh live sessions if any expired.
+    void onTempGrantExpiry();
     void sendUserList(const QString& clientId);
     void sendDevicePermissions(const QString& clientId, bool ok = true);
     void processTerminalStart(const QString& clientId, const QByteArray& payload);
@@ -455,6 +474,10 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
         PermLevel permLevel = PermLevel::None;
         uint32_t caps = 0;            // effective capability mask (see PermissionModel::evaluate)
         QString username;             // authenticated user (empty for legacy password-only auth)
+        // Real-time approval: level resolved at auth time but withheld until the
+        // host user approves. None => nothing pending.
+        PermLevel pendingLevel = PermLevel::None;
+        bool awaitingApproval = false;
         // A session is "active" (receives frames, counts as a live viewer) once
         // it holds any capability. permLevel==None => not yet/never authorized.
         bool isActive() const { return permLevel != PermLevel::None; }
@@ -518,6 +541,16 @@ void sendSyncNotify(const QString& clientId, const QString& hostDir,
     uint32_t m_capabilityToggles = kAllCapabilities;
     // Level granted to sessions that authenticate without a user account.
     PermLevel m_defaultPermLevel = PermLevel::Operator;
+    // Temporary (time-limited) device grants, keyed by controller peer address.
+    // In-memory only: cleared on host restart (matches the "time-limited" intent).
+    QHash<QString, TemporaryGrant> m_tempGrants;
+    QTimer* m_tempGrantTimer = nullptr;
+    // Real-time approval: when true, an authenticated session is parked until
+    // the host user calls grantConsent()/denyConsent().
+    bool m_requireApproval = false;
+    // Starts the approval flow for a session that already passed auth. Returns
+    // true when the session was parked (caller must not grant access itself).
+    bool beginApproval(const QString& clientId, PermLevel level, const QString& username);
 
     // Monitor hot-plug detection: periodically refresh monitor list and notify controllers
     QTimer* m_monitorRefreshTimer = nullptr;

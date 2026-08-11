@@ -89,18 +89,20 @@ void AuditLogViewer::setupUI() {
 }
 
 void AuditLogViewer::refreshLogs() {
-    if (!m_logger) return;
-    QDateTime from = m_fromDate->dateTime();
-    QDateTime to = m_toDate->dateTime();
-    QJsonArray entries = m_logger->entriesSince(from, 5000);
+    // Source is a live logger (when available) or a fixed snapshot (host log
+    // fetched over the network).
+    QJsonArray entries = m_logger
+        ? m_logger->entriesSince(m_fromDate->dateTime(), 5000)
+        : m_snapshot;
 
-    // Filter by date range
+    // Filter by date range. Timestamps are stored as ISO strings, so parse them
+    // as such (not as a raw number — that would always yield 0 and drop everything).
     QJsonArray filtered;
-    qint64 fromMs = from.toMSecsSinceEpoch();
-    qint64 toMs = to.toMSecsSinceEpoch();
+    qint64 fromMs = m_fromDate->dateTime().toMSecsSinceEpoch();
+    qint64 toMs = m_toDate->dateTime().toMSecsSinceEpoch();
     for (const auto& val : entries) {
         QJsonObject obj = val.toObject();
-        qint64 ts = obj["timestamp"].toVariant().toLongLong();
+        qint64 ts = QDateTime::fromString(obj["timestamp"].toString(), Qt::ISODate).toMSecsSinceEpoch();
         if (ts >= fromMs && ts <= toMs) {
             filtered.append(obj);
         }
@@ -130,6 +132,11 @@ void AuditLogViewer::refreshLogs() {
     populateTable(result);
 }
 
+void AuditLogViewer::setEntries(const QJsonArray& entries) {
+    m_snapshot = entries;
+    refreshLogs();
+}
+
 void AuditLogViewer::populateTable(const QJsonArray& entries) {
     m_table->setRowCount(entries.size());
     for (int i = 0; i < entries.size(); ++i) {
@@ -157,8 +164,7 @@ void AuditLogViewer::onExportClicked() {
     QString path = QFileDialog::getSaveFileName(this, tr("导出审计日志"), "audit_log.json", "JSON (*.json)");
     if (path.isEmpty()) return;
 
-    QDateTime from = m_fromDate->dateTime();
-    QJsonArray entries = m_logger->entriesSince(from, 10000);
+    QJsonArray entries = m_logger ? m_logger->entriesSince(m_fromDate->dateTime(), 10000) : m_snapshot;
     QFile file(path);
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(entries).toJson());
